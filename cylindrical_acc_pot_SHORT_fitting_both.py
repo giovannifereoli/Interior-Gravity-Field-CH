@@ -336,6 +336,7 @@ fitted_params = result[0]
 # Sigma_inv = np.diag(1 / Sigma * (Sigma > 1e-10))
 # fitted_params = Vt.T @ Sigma_inv @ U.T @ aug_b
 
+np.save("fitted_params_both.npy", fitted_params)
 print("Fitted parameters for cylindrical acceleration fitting:", fitted_params)
 
 
@@ -849,11 +850,17 @@ def acceleration_poly(position):
     potential, acceleration, tensor = evaluable_eros(
         computation_points=position, parallel=False
     )
-    print(acceleration)
     return acceleration
 
 
 # Initial conditions
+""" Final State:
+        -5.45118663e-02,
+        -6.08104828e-02,
+        7.29726385e-01,
+        9.74202292e-07,
+        1.09203903e-06,
+        -7.28180036e-06,"""
 initial_position = np.array([0.0, 0.0, 0.27])  # Adjust as needed
 initial_velocity = np.array([1e-6, 1e-6, -0.00001])  # Adjust as needed
 t_span = np.linspace(0, -55000, 100)
