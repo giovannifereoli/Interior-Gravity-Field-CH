@@ -75,10 +75,23 @@ def compute_coefficients(m, n):
         )
 
     A_mn_integral, _ = integrate.nquad(
-        integrand_A, [[0, ALPHA * R_star], [0, 2 * np.pi], [0, L]]
+        integrand_A,
+        [[0, ALPHA * R_star], [0, 2 * np.pi], [0, L]],
+        opts=[
+            {"epsabs": 1e-12, "epsrel": 1e-12},
+            {"epsabs": 1e-12, "epsrel": 1e-12},
+            {"epsabs": 1e-12, "epsrel": 1e-12},
+        ],
     )
+
     B_mn_integral, _ = integrate.nquad(
-        integrand_B, [[0, ALPHA * R_star], [0, 2 * np.pi], [0, L]]
+        integrand_B,
+        [[0, ALPHA * R_star], [0, 2 * np.pi], [0, L]],
+        opts=[
+            {"epsabs": 1e-12, "epsrel": 1e-12},
+            {"epsabs": 1e-12, "epsrel": 1e-12},
+            {"epsabs": 1e-12, "epsrel": 1e-12},
+        ],
     )
 
     A_mn = (2 / (np.pi * L * (ALPHA * R_star) ** 2 * J_mn_squared)) * A_mn_integral
@@ -105,3 +118,14 @@ np.save("B_coefficients.npy", B)
 
 print(f"A coefficients shape: {A.shape}")
 print(f"B coefficients shape: {B.shape}")
+
+
+"""
+  def transform_rho(rho_log):
+        return np.exp(rho_log) / (1 + np.exp(rho_log))
+
+    A_mn_integral, _ = integrate.nquad(
+        lambda rho_log, phi, z: transform_rho(rho_log)
+        * integrand_A(transform_rho(rho_log), phi, z),
+        [[-10, np.log(ALPHA * R_star)], [0, 2 * np.pi], [0, L]],
+    )"""
