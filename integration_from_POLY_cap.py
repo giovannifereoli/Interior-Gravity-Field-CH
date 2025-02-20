@@ -104,12 +104,12 @@ B_mn_integral, _ = integrate.nquad(
 A_mn = (
     2
     / (np.pi * (ALPHA * R_star) ** 2 * J_mn_squared)
-    * np.exp(-j_mn * L / (ALPHA * R_star))
+    * np.exp(j_mn * L / (ALPHA * R_star))
 ) * A_mn_integral
 B_mn = (
     2
     / (np.pi * (ALPHA * R_star) ** 2 * J_mn_squared)
-    * np.exp(-j_mn * L / (ALPHA * R_star))
+    * np.exp(j_mn * L / (ALPHA * R_star))
 ) * B_mn_integral
 
 # Close progress bar

@@ -46,6 +46,7 @@ CYLINDER_HEIGHT = 0.5  # Height of the cylinder in meters
 CYLINDER_RADIUS = 0.1  # Radius of the cylinder in meters
 CYLINDER_ROTATION = np.eye(3)  # Rotation matrix (identity matrix by default)
 NUM_POINTS = 1000  # Number of points to generate
+ALPHA = 100  # Scaling parameter
 
 # Define cylinder parameters (2)
 """
@@ -130,9 +131,7 @@ def prepare_linear_system_new(points, potentials, n_n, n_m):
     b = potentials
 
     k = lambda m, n: jn_zeros(m, n)[-1]
-    alpha = 100  # TODO: i dont like to add this parameter, it should be calculated from the data... maybe SOI?
-    R_alpha = alpha * CYLINDER_RADIUS
-    G = 1e-11
+    R_alpha = ALPHA * CYLINDER_RADIUS
 
     idx = 0
     for m in range(n_m):
@@ -154,7 +153,7 @@ def prepare_linear_system_new(points, potentials, n_n, n_m):
 
 
 # Generate the matrix A and vector b
-n_n, n_m = 50, 50  # Truncation parameters
+n_n, n_m = 20, 20  # Truncation parameters
 num_params = 2 * n_n * n_m  # Updated for two coefficients per term (A and B)
 points = structured_results["points"]
 potentials = structured_results["potential"]

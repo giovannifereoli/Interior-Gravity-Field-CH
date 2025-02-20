@@ -1,11 +1,11 @@
 import numpy as np
-import scipy.integrate as integrate
 import scipy.special as sp
 from tqdm import tqdm
 from polyhedral_gravity import Polyhedron, PolyhedronIntegrity, GravityEvaluable
 import mesh_utility
 from joblib import Parallel, delayed
 from numba import njit
+from scipy.integrate import dblquad
 
 # Load mesh for the polyhedral gravity model
 vertices, faces = mesh_utility.read_pk_file("3dmeshes/eros.pk")
@@ -27,6 +27,7 @@ CYLINDER_CENTER = np.array([0.0, 0.0, 0.28])  # Center of the cylinder base in X
 CYLINDER_HEIGHT = 0.5  # Height of the cylinder in meters
 CYLINDER_RADIUS = 0.1  # Radius of the cylinder in meters
 CYLINDER_ROTATION = np.eye(3)  # Rotation matrix (identity matrix by default)
+NUM_POINTS = 25  # Number of points to generate
 
 # Define Bessel-related parameters
 M_max = 25  # Max value of m
@@ -45,8 +46,8 @@ B = np.zeros((M_max, N_max))
 bessel_zeros = {m: sp.jn_zeros(m, N_max) for m in range(M_max)}
 precomputed_bessel = {
     (m, n): (
-        sp.jv(m, bessel_zeros[m][n - 1] / (ALPHA * R_star)),
-        sp.jv(m + 1, bessel_zeros[m][n - 1]),
+        lambda rho: sp.jv(m, bessel_zeros[m][n - 1] * rho / (ALPHA * R_star)),
+        (sp.jv(m + 1, bessel_zeros[m][n - 1])) ** 2,
     )
     for m in range(M_max)
     for n in range(1, N_max + 1)
@@ -63,45 +64,52 @@ def Phi_alpha(rho, phi, z):
 
 
 # Define volume integrals using numba for speed
-@njit
-def compute_integrand_A(rho, phi, z, phi_alpha, J_mn_val, j_mn):
-    exp_val = np.exp(j_mn * z / (ALPHA * R_star))
-    return rho * phi_alpha * J_mn_val * np.cos(phi) * exp_val
+def compute_integrand_A(rho, phi, phi_alpha, J_mn_func, j_mn):
+    return rho * phi_alpha * J_mn_func(rho) * np.cos(phi)
 
 
-@njit
-def compute_integrand_B(rho, phi, z, phi_alpha, J_mn_val, j_mn):
-    exp_val = np.exp(j_mn * z / (ALPHA * R_star))
-    return rho * phi_alpha * J_mn_val * np.sin(phi) * exp_val
+def compute_integrand_B(rho, phi, phi_alpha, J_mn_func, j_mn):
+    return rho * phi_alpha * J_mn_func(rho) * np.sin(phi)
 
 
 # Function to compute A_mn and B_mn in parallel
 def compute_coefficients(m, n):
     j_mn = bessel_zeros[m][n - 1]
-    J_mn_val, J_mn_squared = precomputed_bessel[(m, n)]
-    J_mn_squared = J_mn_squared**2
+    J_mn_func, J_mn_squared = precomputed_bessel[(m, n)]
 
-    def integrand_A(rho, phi, z):
-        phi_alpha = Phi_alpha(rho, phi, z)
-        return compute_integrand_A(rho, phi, z, phi_alpha, J_mn_val, j_mn)
+    def integrand_A(phi, rho):  # OSS: contrary!
+        phi_alpha = Phi_alpha(rho, phi, L)
+        return compute_integrand_A(rho, phi, phi_alpha, J_mn_func, j_mn)
 
-    def integrand_B(rho, phi, z):
-        phi_alpha = Phi_alpha(rho, phi, z)
-        return compute_integrand_B(rho, phi, z, phi_alpha, J_mn_val, j_mn)
+    def integrand_B(phi, rho):
+        phi_alpha = Phi_alpha(rho, phi, L)
+        return compute_integrand_B(rho, phi, phi_alpha, J_mn_func, j_mn)
 
-    A_mn_integral, _ = integrate.nquad(
+    A_mn_integral, _ = dblquad(
         integrand_A,
-        [[0, ALPHA * R_star], [0, 2 * np.pi], [0, L]],
-        opts={"epsabs": 1e-4, "epsrel": 1e-4},
+        0,
+        ALPHA * R_star,
+        0,
+        2 * np.pi,
     )
-    B_mn_integral, _ = integrate.nquad(
+    B_mn_integral, _ = dblquad(
         integrand_B,
-        [[0, ALPHA * R_star], [0, 2 * np.pi], [0, L]],
-        opts={"epsabs": 1e-4, "epsrel": 1e-4},
+        0,
+        ALPHA * R_star,
+        0,
+        2 * np.pi,
     )
 
-    A_mn = (2 / (np.pi * L * (ALPHA * R_star) ** 2 * J_mn_squared)) * A_mn_integral
-    B_mn = (2 / (np.pi * L * (ALPHA * R_star) ** 2 * J_mn_squared)) * B_mn_integral
+    A_mn = (
+        2
+        / (np.pi * (ALPHA * R_star) ** 2 * J_mn_squared)
+        * np.exp(j_mn * L / (ALPHA * R_star))
+    ) * A_mn_integral
+    B_mn = (
+        2
+        / (np.pi * (ALPHA * R_star) ** 2 * J_mn_squared)
+        * np.exp(j_mn * L / (ALPHA * R_star))
+    ) * B_mn_integral
 
     return m, n - 1, A_mn, B_mn
 

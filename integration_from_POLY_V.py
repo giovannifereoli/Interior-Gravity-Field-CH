@@ -27,8 +27,8 @@ CYLINDER_RADIUS = 0.1  # Radius of the cylinder in meters
 CYLINDER_ROTATION = np.eye(3)  # Rotation matrix (identity matrix by default)
 
 # Define Bessel-related parameters
-m = 0  # Order of Bessel function
-n = 3  # Index of Bessel function
+m = 3  # Order of Bessel function
+n = 15  # Index of Bessel function
 j_mn = sp.jn_zeros(m, n)[-1]
 ALPHA = 100  # Scaling parameter
 L = CYLINDER_HEIGHT
@@ -92,15 +92,19 @@ def integrand_B(rho, phi, z):
 
 # Perform numerical integration using scipy.integrate.nquad
 A_mn_integral, _ = integrate.nquad(
-    integrand_A, [[0, ALPHA * R_star], [0, 2 * np.pi], [0, L]]
+    integrand_A,
+    [[0, R_star], [0, 2 * np.pi], [0, L]],
+    opts={"epsabs": 1e-14, "epsrel": 1e-14, "limit": 100},
 )
 B_mn_integral, _ = integrate.nquad(
-    integrand_B, [[0, ALPHA * R_star], [0, 2 * np.pi], [0, L]]
+    integrand_B,
+    [[0, R_star], [0, 2 * np.pi], [0, L]],
+    opts={"epsabs": 1e-14, "epsrel": 1e-14, "limit": 100},
 )
 
 # Compute final A_mn and B_mn values
-A_mn = (2 / (np.pi * L * (ALPHA * R_star) ** 2 * J_mn_squared)) * A_mn_integral
-B_mn = (2 / (np.pi * L * (ALPHA * R_star) ** 2 * J_mn_squared)) * B_mn_integral
+A_mn = (2 / (np.pi * L * (R_star**2) * J_mn_squared)) * A_mn_integral
+B_mn = (2 / (np.pi * L * (R_star**2) * J_mn_squared)) * B_mn_integral
 
 # Close progress bar
 progress_bar.close()

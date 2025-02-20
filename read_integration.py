@@ -1,11 +1,5 @@
 #########################################################################################################################
-# Small Body Characterization - Cylinder Gravity LS Fitting
-# Author: Giovanni Fereoli (The University of Coloradto at Boulder)
-# Advisor: Dr. McMahon (The University of Colorado at Boulder)
-# Acknowledgement: None
-# Date: 2024-09-30
-#
-# TODO: 1) Fai accelerazioni
+# TODO: 1) WONRG PARSING???
 #########################################################################################################################
 
 # Import necessary libraries
@@ -156,39 +150,34 @@ A_coeff = np.load("A_coefficients.npy")
 B_coeff = np.load("B_coefficients.npy")
 
 
-def create_fitted_parameters(A, B, n_m, n_n):
+def reconstruct_fitted_params(A, B):
     """
-    Create and fit parameters for given matrices A and B.
-    This function initializes a 1D array of fitted parameters and assigns values
-    to the matrices A and B based on the provided dimensions n_m and n_n. The
-    fitted parameters are printed in scientific notation.
-    Parameters:
-    A (numpy.ndarray): A 2D array to store the fitted parameters for A_mn.
-    B (numpy.ndarray): A 2D array to store the fitted parameters for B_mn.
-    n_m (int): The number of rows in matrices A and B.
-    n_n (int): The number of columns in matrices A and B.
-    Returns:
-    numpy.ndarray: A 1D array containing the fitted parameters.
-    """
-    fitted_params = np.zeros((np.concatenate((A.flatten(), B.flatten())).shape[0],))
+    Reconstruct the flattened fitted parameters array from A and B coefficient matrices.
 
-    print("Fitted Parameters (in scientific notation):")
+    Args:
+        A: 2D array of A_mn coefficients (shape: n_m x n_n).
+        B: 2D array of B_mn coefficients (shape: n_m x n_n).
+
+    Returns:
+        fitted_params: Flattened 1D array of fitted coefficients.
+    """
+    n_m, n_n = A.shape
+    fitted_params = np.zeros(n_m * n_n * 2)
+
     idx = 0
     for m in range(n_m):
-        for n in range(1, n_n + 1):
-            # Extract alternating coefficients for A_mn and B_mn
-            A[m, n - 1] = fitted_params[idx]
-            B[m, n - 1] = fitted_params[idx + 1]
-            print(f"  A[m={m}, n={n}] = {A[m, n - 1]:.6e}")
-            print(f"  B[m={m}, n={n}] = {B[m, n - 1]:.6e}")
+        for n in range(n_n):
+            # Store coefficients alternately in the flattened array
+            fitted_params[idx] = A[m, n]
+            fitted_params[idx + 1] = B[m, n]
             idx += 2
 
     return fitted_params
 
 
 # Calculate percentage error
-fitted_params = create_fitted_parameters(A_coeff, B_coeff, n_m, n_n)
-fitted_potentials = A @ fitted_params
+fitted_params = reconstruct_fitted_params(A_coeff, B_coeff)
+fitted_potentials = 100 * A @ fitted_params
 percentage_error = 100 * np.abs((fitted_potentials - b) / b)
 print("Percentage Error:", percentage_error)
 

@@ -66,6 +66,7 @@ CYLINDER_ROTATION = np.eye(3)  # Rotation matrix (identity matrix by default)
 NUM_POINTS = 1000  # Number of points to generate
 
 # 2) as before,Rotation x-axis
+"""
 CYLINDER_CENTER = np.array([-0.1, -0.28, 0])  # Center of the cylinder base in XYZ
 CYLINDER_HEIGHT = 0.5  # Height of the cylinder in meters
 CYLINDER_RADIUS = 0.09  # Radius of the cylinder in meters
@@ -73,6 +74,7 @@ CYLINDER_ROTATION = np.array(
     [[1, 0, 0], [0, 0, -1], [0, 1, 0]]
 )  # Rotation matrix (identity matrix by default)
 NUM_POINTS = 1000  # Number of points to generate
+"""
 
 # 3) as before,Rotation x-axis
 # CYLINDER_CENTER = np.array([0.87, 0.2, 0])  # Center of the cylinder base in XYZ
