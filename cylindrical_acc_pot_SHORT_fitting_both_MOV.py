@@ -56,7 +56,7 @@ vertices, faces = np.array(vertices), np.array(faces)
 DENSITY = 1.0
 
 # 1) No rotation
-CYLINDER_CENTER = np.array([0.0, 0.0, 0.27])  # Center of the cylinder base in XYZ
+CYLINDER_CENTER = np.array([0.0, 0.0, 0.28])  # Center of the cylinder base in XYZ
 CYLINDER_HEIGHT = 0.5  # Height of the cylinder in meters
 CYLINDER_RADIUS = 0.1  # Radius of the cylinder in meters
 CYLINDER_ROTATION = np.eye(3)  # Rotation matrix (identity matrix by default)
