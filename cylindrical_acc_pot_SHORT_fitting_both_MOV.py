@@ -383,9 +383,9 @@ def compute_and_plot_covariance(cov_matrix, n_n, n_m):
         color=COLOR_PALETTE[2],
         edgecolor="black",
     )
-    plt.xlabel("Order m", labelpad=10)
+    plt.xlabel("Order m (-)", labelpad=10)
     plt.yscale("log")
-    plt.ylabel("Standard Deviation", labelpad=10)
+    plt.ylabel("Standard Deviation (-)", labelpad=10)
     plt.legend(
         loc="best",
         frameon=True,
