@@ -24,15 +24,12 @@ import matplotlib.pyplot as plt
 from scipy.special import (
     jv as BesselJ,
     jvp as BesselJp,
-    iv as BesselI,
     jn_zeros,
-    factorial,
 )
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import matplotlib as mpl
-from scipy.optimize import lsq_linear
 from scipy.integrate import solve_ivp
-from scipy.stats import lognorm
+from datetime import datetime
 
 
 # Use a colorblind-friendly color palette
@@ -389,16 +386,17 @@ def compute_and_plot_covariance(cov_matrix, n_n, n_m):
     plt.xlabel("Order m", labelpad=10)
     plt.yscale("log")
     plt.ylabel("Standard Deviation", labelpad=10)
-    plt.title("Scatter Plot of Standard Deviations of A and B Coefficients", pad=10)
     plt.legend(
         loc="best",
         frameon=True,
         fancybox=True,
         edgecolor="black",
+        fontsize=14,
     )
     plt.grid(True, linestyle="--", linewidth=0.7, alpha=0.8)
     plt.minorticks_on()  # Enable minor ticks
     plt.grid(which="minor", linestyle=":", linewidth=0.5, alpha=0.5)
+    plt.savefig("Images/covariances_plot.pdf", dpi=1200, bbox_inches="tight")
 
 
 # Call the function to compute and plot standard deviations
@@ -487,7 +485,9 @@ def plot_coefficients_semilogy(A, B, n_n, n_m):
         frameon=True,
         fancybox=True,
         edgecolor="black",
+        fontsize=14,
     )
+    plt.savefig("Images/coefficients_plot.pdf", dpi=1200, bbox_inches="tight")
 
 
 # Function to display coefficients in matrix form
@@ -556,7 +556,6 @@ def plot_histogram_with_gaussian(percentage_error, title="Percentage Error"):
     )
 
     # Add labels and title
-    plt.title(title, pad=10)
     plt.xlabel("Percentage Error (-)", labelpad=10)
     plt.ylabel("Frequency Density (-)", labelpad=10)
     plt.legend(
@@ -564,10 +563,16 @@ def plot_histogram_with_gaussian(percentage_error, title="Percentage Error"):
         frameon=True,
         fancybox=True,
         edgecolor="black",
+        fontsize=14,
     )
     plt.grid(True, linestyle="--", linewidth=0.7, alpha=0.8)
     plt.minorticks_on()  # Enable minor ticks
     plt.grid(which="minor", linestyle=":", linewidth=0.5, alpha=0.5)
+    plt.savefig(
+        f"Images/histo_plot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+        dpi=1200,
+        bbox_inches="tight",
+    )
 
 
 ## Plot percentage error on the cylinder
@@ -601,11 +606,15 @@ def plot_error_on_cylinder(cylinder_points, percentage_error, title="Percentage 
     cbar.set_label("Percentage Error (-)")
 
     # Set labels and title
-    plt.title(title, pad=10)
     ax.set_xlabel("$X$ (m)", labelpad=10)
     ax.set_ylabel("$Y$ (m)", labelpad=10)
     ax.set_zlabel("$Z$ (m)", labelpad=10)
     ax.set_aspect("equal")
+    plt.savefig(
+        f"Images/cylerror_plot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+        dpi=1200,
+        bbox_inches="tight",
+    )
 
 
 def compute_fitted_cylindrical_acceleration(points, fitted_params, n_n, n_m):
@@ -705,6 +714,292 @@ plot_histogram_with_gaussian(percentage_error, title="Potential Error")
 plot_error_on_cylinder(cylinder_points, percentage_error, title="Potential Error")
 
 
+## Compare Trajectories
+
+
+def propagate_trajectory(
+    initial_position,
+    initial_velocity,
+    acceleration_func,
+    t_span,
+    method="RK45",
+):
+    """
+    Propagate a trajectory using SciPy's ODE solver.
+
+    Args:
+        initial_position: Initial position in Cartesian coordinates (3,).
+        initial_velocity: Initial velocity in Cartesian coordinates (3,).
+        acceleration_func: Function to compute acceleration (takes position as input).
+        max_time: Maximum propagation time.
+        time_step: Time step for integration output.
+        method: Integration method to use (default: DOP853).
+
+    Returns:
+        t: Array of time values.
+        y: Array of propagated states (N, 6) with [x, y, z, vx, vy, vz].
+    """
+
+    def dynamics(t, state):
+        position = state[:3]
+        velocity = state[3:]
+        acceleration = acceleration_func(position)
+        return np.hstack((velocity, acceleration))
+
+    # Initial state: [x, y, z, vx, vy, vz]
+    initial_state = np.hstack((initial_position, initial_velocity))
+
+    # Solve the system
+    sol = solve_ivp(
+        dynamics,
+        t_span=(t_span[0], t_span[-1]),
+        y0=initial_state,
+        method=method,
+        t_eval=t_span,
+        rtol=1e-12,
+        atol=1e-12,
+    )
+
+    return sol.t, sol.y
+
+
+def plot_trajectories(t_poly, y_poly, t_fitted, y_fitted):
+    """
+    Plots the trajectories of polyhedron and fitted models in 3D space.
+
+    Parameters:
+    t_poly (array-like): Time points for the constant-density polyhedron model.
+    y_poly (array-like): Trajectory data for the constant-density polyhedron model, shape (3, N).
+    t_fitted (array-like): Time points for the fitted model.
+    y_fitted (array-like): Trajectory data for the fitted model, shape (3, N).
+
+    Returns:
+    None
+    """
+
+    fig = plt.figure(figsize=(12, 8))
+    ax = fig.add_subplot(111, projection="3d")
+
+    # Plot constant-density polyhedron trajectory
+    ax.plot(
+        y_poly[0, :],
+        y_poly[1, :],
+        y_poly[2, :],
+        label="Constant Density Polyhedron",
+        linewidth=2,
+        color=COLOR_PALETTE[0],
+    )
+
+    # Plot fitted trajectory
+    ax.plot(
+        y_fitted[0, :],
+        y_fitted[1, :],
+        y_fitted[2, :],
+        label="Interior Bessel Cylindrical Harmonics",
+        linewidth=2,
+        color=COLOR_PALETTE[1],
+    )
+
+    # Plot asteroid mesh
+    mesh = Poly3DCollection(
+        vertices[faces],
+        alpha=0.8,
+        edgecolor="k",
+        linewidths=0.3,
+        facecolor=COLOR_PALETTE[-1],
+    )
+    ax.add_collection3d(mesh)
+
+    # Plot the cylinder
+    theta = np.linspace(0, 2 * np.pi, 50)  # Angular discretization
+    z = np.linspace(0, CYLINDER_HEIGHT, 50)  # Height discretization
+    theta, z = np.meshgrid(theta, z)
+    x = CYLINDER_RADIUS * np.cos(theta)
+    y = CYLINDER_RADIUS * np.sin(theta)
+
+    # Apply cylinder rotation and translation
+    cylinder_points = np.column_stack(
+        [x.flatten(), y.flatten(), z.flatten()]
+    )  # Flatten and stack as Nx3
+    transformed_cylinder = cylinder_points @ CYLINDER_ROTATION.T + CYLINDER_CENTER
+    x_cylinder = transformed_cylinder[:, 0].reshape(x.shape)
+    y_cylinder = transformed_cylinder[:, 1].reshape(y.shape)
+    z_cylinder = transformed_cylinder[:, 2].reshape(z.shape)
+
+    ax.plot_surface(
+        x_cylinder,
+        y_cylinder,
+        z_cylinder,
+        color="lightyellow",
+        alpha=0.3,  # Low opacity for a subtle appearance
+        edgecolor="none",
+    )
+
+    # Set labels and title
+    ax.set_xlabel("$X$ (m)", labelpad=10)
+    ax.set_ylabel("$Y$ (m)", labelpad=10)
+    ax.set_zlabel("$Z$ (m)", labelpad=10)
+    plt.legend(
+        loc="best",
+        frameon=True,
+        fancybox=True,
+        edgecolor="black",
+        fontsize=14,
+    )
+    ax.set_aspect("equal")
+    plt.savefig(f"Images/trajectory_plot.pdf", dpi=1200, bbox_inches="tight")
+
+
+def cylindrical_to_cartesian_acceleration(points, cylindrical_accelerations):
+    """
+    Convert cylindrical acceleration components to Cartesian coordinates.
+
+    Args:
+        points: Cartesian points (N, 3).
+        cylindrical_accelerations: Cylindrical accelerations (N, 3): [a_rho, a_phi, a_z].
+        cylinder_center: Center of the cylinder in Cartesian coordinates (3,).
+        cylinder_rotation: Rotation matrix of the cylinder (3, 3).
+
+    Returns:
+        Cartesian accelerations (N, 3).
+    """
+    transformed_points = (points - CYLINDER_CENTER) @ CYLINDER_ROTATION.T
+    rho = np.sqrt(transformed_points[:, 0] ** 2 + transformed_points[:, 1] ** 2)
+    phi = np.arctan2(transformed_points[:, 1], transformed_points[:, 0])
+
+    a_rho, a_phi, a_z = (
+        cylindrical_accelerations[:, 0],
+        cylindrical_accelerations[:, 1],
+        cylindrical_accelerations[:, 2],
+    )
+    a_x = a_rho * np.cos(phi) - a_phi * np.sin(phi)
+    a_y = a_rho * np.sin(phi) + a_phi * np.cos(phi)
+
+    return np.column_stack((a_x, a_y, a_z))
+
+
+def acceleration_fitted(position):
+    """
+    Compute the acceleration at a given position using fitted cylindrical harmonics.
+
+    Parameters:
+    position (np.ndarray): A 3-element array representing the Cartesian coordinates of the position.
+
+    Returns:
+    np.ndarray: A 3-element array representing the acceleration in Cartesian coordinates.
+    """
+    # Compute acceleration components in cylindrical coordinates
+    a_rho, a_phi, a_z = compute_fitted_cylindrical_acceleration(
+        np.array([position]), fitted_params, n_n, n_m
+    )[0]
+
+    # Convert acceleration back to Cartesian coordinates
+    return cylindrical_to_cartesian_acceleration(
+        np.array([position]), np.array([[a_rho, a_phi, a_z]])
+    )[0]
+
+
+def acceleration_poly(position):
+    """
+    Evaluate the gravitational acceleration at a given position using the polyhedron gravity model.
+
+    Parameters:
+    position (array-like): The position at which to evaluate the gravitational acceleration.
+                           It should be an array-like object representing the coordinates.
+
+    Returns:
+    numpy.ndarray: The gravitational acceleration at the given position.
+    """
+    # Evaluate gravity at position using the polyhedron gravity model
+    potential, acceleration, tensor = evaluable_eros(
+        computation_points=position, parallel=False
+    )
+    return acceleration
+
+
+# Initial conditions
+initial_position = np.array(
+    [
+        -5.45118663e-02,
+        -6.08104828e-02,
+        7.29726385e-01,
+    ]
+)  # Adjust as needed
+initial_velocity = np.array(
+    [9.74202292e-07, 1.09203903e-06, -7.28180036e-06]
+)  # Adjust as needed
+t_span = np.linspace(0, 55000, 100)
+
+# Propagate trajectories using SciPy's ODE solver
+print("Propagating trajectories...")
+print("  - Fitted Model")
+t_fitted, y_fitted = propagate_trajectory(
+    initial_position, initial_velocity, acceleration_fitted, t_span
+)
+print(" Done with fitted model.")
+print("  - Poly Model")
+t_poly, y_poly = propagate_trajectory(
+    initial_position, initial_velocity, acceleration_poly, t_span
+)
+print(" Done with constant-density polyhedron model.")
+
+# Plot trajectories
+plot_trajectories(t_poly, y_poly, t_fitted, y_fitted)
+
+
+def plot_differences_semilogy(t, y_poly, y_fitted):
+    """
+    Plot semi-logarithmic differences between y_poly and y_fitted for each state variable.
+
+    Args:
+        t: Time array.
+        y_poly: State array for the constant-density polyhedron model (N, 6).
+        y_fitted: State array for the fitted model (N, 6).
+    """
+
+    differences = np.abs(y_poly - y_fitted)
+
+    labels = [
+        "$\delta x$",
+        "$ \delta y$",
+        "$\delta  z$",
+        "$ \delta v_x$",
+        "$\delta v_y$",
+        "$\delta v_z$",
+    ]
+    marker_styles = ["o", "s", "^", "D", "v", "<"]
+
+    fig, axs = plt.subplots(2, 3, figsize=(12, 8), sharex=True, sharey=True)
+    axs = axs.ravel()  # Flatten the axes array for easier indexing
+
+    for i in range(6):
+        axs[i].semilogy(
+            t[1:],
+            differences[i, 1:],
+            color="black",
+            marker=marker_styles[i],
+            label=f"Difference in {labels[i]}",
+            linestyle="-",
+            markersize=4,
+        )
+        axs[i].set_xlabel("Time (s)", fontsize=14, labelpad=10)
+        axs[i].set_ylabel("Absolute Difference (km , km/sec)", fontsize=14, labelpad=10)
+        axs[i].grid(True, which="both", linestyle="--", alpha=0.7)
+        axs[i].legend(
+            loc="best",
+            frameon=True,
+            fancybox=True,
+            edgecolor="black",
+            fontsize=14,
+        )
+
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(f"Images/trajectory_diff_plot.pdf", dpi=1200, bbox_inches="tight")
+
+
+# Plot differences in trajectories
+plot_differences_semilogy(t_poly, y_poly, y_fitted)
+
 ## Analyze Contributions
 
 
@@ -760,14 +1055,11 @@ def plot_top_coefficients(top_coefficients):
     plt.xticks(range(len(labels)), labels, rotation=45, ha="right")
     plt.xlabel("Coefficient ($A_{m,n}$, $B_{m,n}$)", labelpad=10)
     plt.ylabel("Magnitude (-)", labelpad=10)
-    plt.title(
-        "Top Coefficients Sorted by Magnitude",
-    )
     plt.grid(True, linestyle="--", axis="y", linewidth=0.7, alpha=0.8)
     plt.minorticks_on()  # Enable minor ticks
     plt.grid(which="minor", linestyle=":", linewidth=0.5, alpha=0.5)
     plt.tight_layout()
-    plt.show()
+    plt.savefig(f"Images/topcoeff_plot.pdf", dpi=1200, bbox_inches="tight")
 
 
 # Extract the top 20 coefficients
@@ -780,3 +1072,7 @@ plot_top_coefficients(top_coefficients)
 print("Top Coefficients:")
 for m, n, t, value in top_coefficients:
     print(f"{t}_{m},{n}: {value:.6e}")
+
+
+# Plots
+plt.show()

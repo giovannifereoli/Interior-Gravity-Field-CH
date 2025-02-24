@@ -487,12 +487,6 @@ def plot_histogram_with_gaussian(percentage_error, title="Percentage Error"):
     plt.legend(loc="upper right")
     plt.grid(True, linestyle="--", alpha=0.6)
 
-    from scipy.stats import lognorm
-
-
-import matplotlib.pyplot as plt
-import numpy as np
-
 
 def plot_histogram_with_lognormal(data, title="Log-Normal Fit"):
     plt.figure(figsize=(12, 8))
