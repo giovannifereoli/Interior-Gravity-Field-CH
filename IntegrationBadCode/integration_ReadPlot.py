@@ -111,7 +111,7 @@ def prepare_linear_system_new(points, potentials, n_n, n_m):
 
     num_points = len(points)
     num_params = 2 * n_n * n_m  # Updated for A and B coefficients
-    A = np.zeros((num_points, num_params))
+    A_mat = np.zeros((num_points, num_params))
     b = potentials
 
     k = lambda m, n: jn_zeros(m, n)[-1]
@@ -128,20 +128,20 @@ def prepare_linear_system_new(points, potentials, n_n, n_m):
             bessel_j = BesselJ(m, k_mn * rho / R_alpha)
 
             # Populate matrix A with coefficients for A_mn and B_mn
-            A[:, idx] = norm_coeff * exp_term * bessel_j * np.cos(m * phi)
-            A[:, idx + 1] = norm_coeff * exp_term * bessel_j * np.sin(m * phi)
+            A_mat[:, idx] = norm_coeff * exp_term * bessel_j * np.cos(m * phi)
+            A_mat[:, idx + 1] = norm_coeff * exp_term * bessel_j * np.sin(m * phi)
 
             idx += 2
 
-    return A, b
+    return A_mat, b
 
 
 # Generate the matrix A and vector b
-n_n, n_m = 25, 25  # Truncation parameters
+n_n, n_m = 20, 20  # Truncation parameters
 num_params = 2 * n_n * n_m  # Updated for two coefficients per term (A and B)
 points = structured_results["points"]
 potentials = structured_results["potential"]
-A, b = prepare_linear_system_new(
+A_mat, b = prepare_linear_system_new(
     points, potentials, n_n, n_m
 )  # Using the updated function
 
@@ -177,7 +177,7 @@ def reconstruct_fitted_params(A, B):
 
 # Calculate percentage error
 fitted_params = reconstruct_fitted_params(A_coeff, B_coeff)
-fitted_potentials = 100 * A @ fitted_params
+fitted_potentials = 100 * A_mat @ fitted_params
 percentage_error = 100 * np.abs((fitted_potentials - b) / b)
 print("Percentage Error:", percentage_error)
 

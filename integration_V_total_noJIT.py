@@ -22,14 +22,14 @@ eros = Polyhedron(
 evaluable_eros = GravityEvaluable(eros)
 
 # Define cylindrical coordinates of evaluation points
-CYLINDER_CENTER = np.array([0.0, 0.0, 0.28])  # Center of the cylinder base in XYZ
+CYLINDER_CENTER = np.array([0.0, 0.0, 1])  # Center of the cylinder base in XYZ
 CYLINDER_HEIGHT = 0.5  # Height of the cylinder in meters
 CYLINDER_RADIUS = 0.1  # Radius of the cylinder in meters
 CYLINDER_ROTATION = np.eye(3)  # Rotation matrix (identity matrix by default)
 
 # Define Bessel-related parameters
-M_max = 25  # Max value of m
-N_max = 25  # Max value of n
+M_max = 10  # Max value of m
+N_max = 10  # Max value of n
 
 # Define other parameters
 ALPHA = 100  # Scaling parameter
@@ -94,8 +94,10 @@ def compute_coefficients(m, n):
         ],
     )
 
-    A_mn = (2 / (np.pi * L * (ALPHA * R_star) ** 2 * J_mn_squared)) * A_mn_integral
-    B_mn = (2 / (np.pi * L * (ALPHA * R_star) ** 2 * J_mn_squared)) * B_mn_integral
+    THETA = 2 * np.pi if m == 0 else np.pi
+
+    A_mn = (2 / (THETA * L * (ALPHA * R_star) ** 2 * J_mn_squared)) * A_mn_integral
+    B_mn = (2 / (THETA * L * (ALPHA * R_star) ** 2 * J_mn_squared)) * B_mn_integral
 
     return m, n - 1, A_mn, B_mn
 

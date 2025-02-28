@@ -4,6 +4,8 @@ import scipy.special as sp
 from tqdm import tqdm
 from polyhedral_gravity import Polyhedron, PolyhedronIntegrity, GravityEvaluable
 import mesh_utility
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 
 # Load mesh for the polyhedral gravity model
 vertices, faces = mesh_utility.read_pk_file("3dmeshes/eros.pk")
@@ -11,6 +13,9 @@ vertices, faces = np.array(vertices), np.array(faces)
 
 # Define asteroid density
 DENSITY = 1.0
+
+# Initialize Constant to Help with Integration
+CONST = 1e11
 
 # Initialize polyhedron object and gravity evaluator
 eros = Polyhedron(
@@ -27,8 +32,8 @@ CYLINDER_RADIUS = 0.1  # Radius of the cylinder in meters
 CYLINDER_ROTATION = np.eye(3)  # Rotation matrix (identity matrix by default)
 
 # Define Bessel-related parameters
-m = 3  # Order of Bessel function
-n = 15  # Index of Bessel function
+m = 0  # Order of Bessel function
+n = 3  # Index of Bessel function
 j_mn = sp.jn_zeros(m, n)[-1]
 ALPHA = 100  # Scaling parameter
 L = CYLINDER_HEIGHT
@@ -69,7 +74,7 @@ def track_progress(func):
 # Define the integrand for A_mn
 @track_progress
 def integrand_A(rho, phi, z):
-    return (
+    return CONST * (
         rho
         * Phi_alpha(rho, phi, z)
         * sp.jv(m, j_mn * rho / (ALPHA * R_star))
@@ -81,7 +86,7 @@ def integrand_A(rho, phi, z):
 # Define the integrand for B_mn
 @track_progress
 def integrand_B(rho, phi, z):
-    return (
+    return CONST * (
         rho
         * Phi_alpha(rho, phi, z)
         * sp.jv(m, j_mn * rho / (ALPHA * R_star))
@@ -90,21 +95,57 @@ def integrand_B(rho, phi, z):
     )
 
 
+# Generate grid points for rho, phi, and z based on the given limits
+rho = np.linspace(0, ALPHA * R_star, 50)  # rho from 0 to R_star
+phi = np.linspace(0, 2 * np.pi, 50)  # phi from 0 to 2*pi
+z = L
+
+# Create meshgrid for rho and phi
+R, Phi = np.meshgrid(rho, phi)
+
+# Initialize an empty array to store the results for A_mn values
+A_mn_values = np.zeros((len(rho), len(phi)))
+
+# Loop over each value of rho and phi
+for i in range(len(rho)):
+    for j in range(len(phi)):
+        print(f"rho: {i}, phi: {j}")
+        A_mn_values[i, j] = integrand_A(rho[i], phi[j], z)
+# Create a polar plot
+fig, ax = plt.subplots(figsize=(8, 6), subplot_kw={"projection": "polar"})
+
+# Plot contour on the polar plot
+contour = ax.contourf(Phi, R, A_mn_values.T, 20, cmap="viridis")
+
+# Add labels and title
+ax.set_xlabel("phi (radians)")
+ax.set_ylabel("rho")
+ax.set_title("Polar plot of the integrand A_mn at z = L")
+
+# Show color bar
+fig.colorbar(contour)
+
+plt.show()
+
 # Perform numerical integration using scipy.integrate.nquad
 A_mn_integral, _ = integrate.nquad(
     integrand_A,
-    [[0, R_star], [0, 2 * np.pi], [0, L]],
+    [[0, ALPHA * R_star], [0, 2 * np.pi], [0, L]],
     opts={"epsabs": 1e-14, "epsrel": 1e-14, "limit": 100},
 )
 B_mn_integral, _ = integrate.nquad(
     integrand_B,
-    [[0, R_star], [0, 2 * np.pi], [0, L]],
+    [[0, ALPHA * R_star], [0, 2 * np.pi], [0, L]],
     opts={"epsabs": 1e-14, "epsrel": 1e-14, "limit": 100},
 )
 
 # Compute final A_mn and B_mn values
-A_mn = (2 / (np.pi * L * (R_star**2) * J_mn_squared)) * A_mn_integral
-B_mn = (2 / (np.pi * L * (R_star**2) * J_mn_squared)) * B_mn_integral
+A_mn = (
+    (2 / (np.pi * L * ((ALPHA * R_star) ** 2) * J_mn_squared)) * A_mn_integral / CONST
+)
+B_mn = (
+    (2 / (np.pi * L * ((ALPHA * R_star) ** 2) * J_mn_squared)) * B_mn_integral / CONST
+)
 
 # Close progress bar
 progress_bar.close()
