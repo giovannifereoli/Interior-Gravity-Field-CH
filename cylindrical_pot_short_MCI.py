@@ -11,6 +11,7 @@ from scipy.stats import norm
 import matplotlib.pyplot as plt
 from scipy.special import jv as BesselJ, jn_zeros
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+import scipy.integrate as integrate
 import matplotlib as mpl
 
 # TODO: integral should be within o and alpha * R
@@ -33,9 +34,10 @@ vertices, faces = np.array(vertices), np.array(faces)
 DENSITY = 1.0
 
 # Define cylinder parameters
-CYLINDER_CENTER = np.array([0.0, 0.0, 0.4])  # Center of the cylinder base in XYZ
+CYLINDER_CENTER = np.array([0.0, 0.0, 0.28])  # Center of the cylinder base in XYZ
 CYLINDER_HEIGHT = 0.5  # Height of the cylinder in meters
 CYLINDER_RADIUS = 0.1  # Radius of the cylinder in meters
+ALPHA = 100  # scaling parameter
 CYLINDER_ROTATION = np.eye(3)  # Rotation matrix (identity matrix by default)
 
 
@@ -55,7 +57,6 @@ def random_rotation_matrix():
 # CYLINDER_ROTATION = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]])
 
 NUM_POINTS = 1000  # Number of points to generate
-ALPHA = 100  # Scaling parameter
 
 
 # Initialize the polyhedron object
@@ -89,13 +90,15 @@ cylinder_points = generate_points_in_cylinder(
 )
 
 
-# Modified random point generator for the extended domain:
-def generate_points_in_cylinder_extended(center, radius, height, rotation, num_points):
+# Modified random point generator for the extended_lid domain:
+def generate_points_in_cylinder_extended_lid(
+    center, radius, height, rotation, num_points
+):
     np.random.seed(1)  # For reproducibility
     theta = np.random.uniform(0, 2 * np.pi, num_points)
     # Sample radius from 0 to ALPHA * radius
     r = np.sqrt(np.random.uniform(0, (ALPHA * radius) ** 2, num_points))
-    z = np.random.uniform(0, height, num_points)
+    z = CYLINDER_HEIGHT + 0 * np.random.uniform(0, 2 * np.pi, num_points)
     x = r * np.cos(theta)
     y = r * np.sin(theta)
     local_points = np.column_stack((x, y, z))
@@ -104,8 +107,8 @@ def generate_points_in_cylinder_extended(center, radius, height, rotation, num_p
     return translated_points
 
 
-# Use the extended generator for Monte Carlo integration:
-extended_cylinder_points = generate_points_in_cylinder_extended(
+# Use the extended_lid generator for Monte Carlo integration:
+extended_lid_cylinder_points = generate_points_in_cylinder_extended_lid(
     CYLINDER_CENTER, CYLINDER_RADIUS, CYLINDER_HEIGHT, CYLINDER_ROTATION, NUM_POINTS
 )
 
@@ -133,12 +136,12 @@ structured_results = {
 }
 
 # Evaluate gravity at each point
-results_extended = []
-for point in tqdm(extended_cylinder_points, desc="Evaluating gravity at points"):
+results_extended_lid = []
+for point in tqdm(extended_lid_cylinder_points, desc="Evaluating gravity at points"):
     potential, acceleration, tensor = evaluable_eros(
         computation_points=point, parallel=False
     )
-    results_extended.append(
+    results_extended_lid.append(
         {
             "point": point,
             "potential": potential,
@@ -148,11 +151,11 @@ for point in tqdm(extended_cylinder_points, desc="Evaluating gravity at points")
     )
 
 # Convert results to a structured numpy array for easier processing
-structured_extended_results = {
-    "points": np.array([res["point"] for res in results_extended]),
-    "potential": np.array([res["potential"] for res in results_extended]),
-    "acceleration": np.array([res["acceleration"] for res in results_extended]),
-    "tensor": np.array([res["tensor"] for res in results_extended]),
+structured_extended_lid_results = {
+    "points": np.array([res["point"] for res in results_extended_lid]),
+    "potential": np.array([res["potential"] for res in results_extended_lid]),
+    "acceleration": np.array([res["acceleration"] for res in results_extended_lid]),
+    "tensor": np.array([res["tensor"] for res in results_extended_lid]),
 }
 
 
@@ -166,7 +169,7 @@ def prepare_linear_system_new(points, potentials, n_n, n_m):
 
     num_points = len(points)
     num_params = 2 * n_n * n_m  # Updated for A and B coefficients
-    A_mat = np.zeros((num_points, num_params))
+    A = np.zeros((num_points, num_params))
     b = potentials
 
     k = lambda m, n: jn_zeros(m, n)[-1]
@@ -175,19 +178,18 @@ def prepare_linear_system_new(points, potentials, n_n, n_m):
     idx = 0
     for m in range(n_m):
         for n in range(1, n_n + 1):
-            k_mn = k(m, n)
-
             # Compute terms
+            k_mn = k(m, n)
             exp_term = np.exp(-k_mn * z / R_alpha)
             bessel_j = BesselJ(m, k_mn * rho / R_alpha)
 
             # Populate matrix A with coefficients for A_mn and B_mn
-            A_mat[:, idx] = exp_term * bessel_j * np.cos(m * phi)
-            A_mat[:, idx + 1] = exp_term * bessel_j * np.sin(m * phi)
+            A[:, idx] = exp_term * bessel_j * np.cos(m * phi)
+            A[:, idx + 1] = exp_term * bessel_j * np.sin(m * phi)
 
             idx += 2
 
-    return A_mat, b
+    return A, b
 
 
 # Generate the matrix A and vector b
@@ -204,7 +206,6 @@ A_mat, b = prepare_linear_system_new(
 def monte_carlo_integration(n_n, n_m, points, potentials):
     A_mn, B_mn = np.zeros((n_m, n_n)), np.zeros((n_m, n_n))
     volume = np.pi * CYLINDER_RADIUS**2 * CYLINDER_HEIGHT
-    # volume = np.pi * (ALPHA * CYLINDER_RADIUS) ** 2 * CYLINDER_HEIGHT
     k = lambda m, n: jn_zeros(m, n)[-1]
 
     transformed_points = (points - CYLINDER_CENTER) @ CYLINDER_ROTATION.T
@@ -259,90 +260,85 @@ def monte_carlo_integration(n_n, n_m, points, potentials):
     return A_mn, B_mn
 
 
-def monte_carlo_integration2(n_n, n_m, points, potentials):
+# Efficient nquad-based coefficient computation
+def compute_coefficients_nquad(n_n, n_m, unused_points, unused_potentials):
     A_mn, B_mn = np.zeros((n_m, n_n)), np.zeros((n_m, n_n))
-    volume = np.pi * CYLINDER_RADIUS**2 * CYLINDER_HEIGHT
-    k = lambda m, n: jn_zeros(m, n)[-1]
+    total_evals = n_m * n_n
+    progress_bar = tqdm(total=total_evals, desc="nquad Integration", unit="evals")
 
-    transformed_points = (points - CYLINDER_CENTER) @ CYLINDER_ROTATION.T
-    rho, phi, z = (
-        np.linalg.norm(transformed_points[:, :2], axis=1),
-        np.arctan2(transformed_points[:, 1], transformed_points[:, 0]),
-        transformed_points[:, 2],
-    )
+    def Phi_alpha(rho, phi, z):
+        """Evaluates the gravitational potential at cylindrical coordinates (rho, phi, z)."""
+        x = rho * np.cos(phi)
+        y = rho * np.sin(phi)
+        cartesian_point = np.array([x, y, z]) @ CYLINDER_ROTATION + CYLINDER_CENTER
+        potential, _, _ = evaluable_eros(
+            computation_points=cartesian_point, parallel=False
+        )
+        return potential
 
-    for m in tqdm(range(n_m), desc="Monte Carlo Integration: m-loop"):
+    def integrand_A(rho, phi, z, m, n):
+        k_mn = jn_zeros(m, n)[-1]
+        R_alpha = ALPHA * CYLINDER_RADIUS
+        return (
+            rho
+            * Phi_alpha(rho, phi, z)
+            * BesselJ(m, k_mn * rho / R_alpha)
+            * np.cos(m * phi)
+            * np.exp(k_mn * z / R_alpha)
+        )
+
+    def integrand_B(rho, phi, z, m, n):
+        k_mn = jn_zeros(m, n)[-1]
+        R_alpha = ALPHA * CYLINDER_RADIUS
+        return (
+            rho
+            * Phi_alpha(rho, phi, z)
+            * BesselJ(m, k_mn * rho / R_alpha)
+            * np.sin(m * phi)
+            * np.exp(k_mn * z / R_alpha)
+        )
+
+    for m in range(n_m):
         for n in range(1, n_n + 1):
-            k_mn = k(m, n)
+            k_mn = jn_zeros(m, n)[-1]
+            J_mn_squared = BesselJ(m + 1, k_mn) ** 2
             R_alpha = ALPHA * CYLINDER_RADIUS
-
-            # Compute the normalization factor for the radial eigenfunction
-            # Using the derived formula:
-            norm_factor = (
-                k_mn
-                / (R_alpha)
-                * sum(BesselJ(k, k_mn / ALPHA) ** 2 for k in range(m + 1, 1000))
+            A_mn_integral, _ = integrate.nquad(
+                integrand_A,
+                [[0, CYLINDER_RADIUS], [0, 2 * np.pi], [0, CYLINDER_HEIGHT]],
+                args=(m, n),
+            )
+            B_mn_integral, _ = integrate.nquad(
+                integrand_B,
+                [[0, CYLINDER_RADIUS], [0, 2 * np.pi], [0, CYLINDER_HEIGHT]],
+                args=(m, n),
             )
 
-            # Evaluate the basis functions and exponential factor at the Monte Carlo points
-            J_values = BesselJ(m + 1, k_mn * rho / (R_alpha))
-            exp_values = np.exp(k_mn * z / (R_alpha))
-            cos_values, sin_values = np.cos(m * phi), np.sin(m * phi)
-
-            # Monte Carlo integration of the projection
-            A_mn_integral = (
-                volume
-                * np.sum(rho * potentials * J_values * cos_values * exp_values)
-                / len(points)
-            )
-            B_mn_integral = (
-                volume
-                * np.sum(rho * potentials * J_values * sin_values * exp_values)
-                / len(points)
-            )
-
-            # For m = 0, the angular integral is over 2pi; otherwise, it's pi
             THETA = 2 * np.pi if m == 0 else np.pi
-
-            # Use the computed norm_factor in the denominator
             A_mn[m, n - 1] = (
-                2 / (THETA * CYLINDER_HEIGHT * norm_factor)
+                2 / (THETA * CYLINDER_HEIGHT * (R_alpha) ** 2 * J_mn_squared)
             ) * A_mn_integral
             B_mn[m, n - 1] = (
-                2 / (THETA * CYLINDER_HEIGHT * norm_factor)
+                2 / (THETA * CYLINDER_HEIGHT * (R_alpha) ** 2 * J_mn_squared)
             ) * B_mn_integral
+            progress_bar.update(1)
 
+    progress_bar.close()
     return A_mn, B_mn
 
 
-"""'
-def monte_carlo_integration_surface(n_n, n_m, points, potentials_unused):
+def monte_carlo_integration_surface(n_n, n_m, points, potentials):
     # Allocate coefficient matrices.
     A_mn, B_mn = np.zeros((n_m, n_n)), np.zeros((n_m, n_n))
 
     # Integration over the top surface (area of a circle)
-    area = np.pi * CYLINDER_RADIUS**2
+    area = np.pi * (ALPHA * CYLINDER_RADIUS) ** 2
     k = lambda m, n: jn_zeros(m, n)[-1]
 
     # Transform points to cylindrical coordinates.
     transformed_points = (points - CYLINDER_CENTER) @ CYLINDER_ROTATION.T
     rho = np.linalg.norm(transformed_points[:, :2], axis=1)
     phi = np.arctan2(transformed_points[:, 1], transformed_points[:, 0])
-
-    # Recompute potentials at z = CYLINDER_HEIGHT.
-    potentials = []
-    for point in tqdm(points, desc="Evaluating gravity at points with z=L"):
-        # Transform the global point to the cylinder's local coordinates.
-        local_point = (point - CYLINDER_CENTER) @ CYLINDER_ROTATION.T
-        # Force the local z-coordinate to be CYLINDER_HEIGHT (i.e. top of cylinder).
-        local_point[2] = CYLINDER_HEIGHT
-        # Transform back to global coordinates.
-        point_top = local_point @ CYLINDER_ROTATION + CYLINDER_CENTER
-        # Evaluate gravity at the modified point.
-        pot, _, _ = evaluable_eros(computation_points=point_top, parallel=False)
-        # Append the potential (assumed scalar) to the list.
-        potentials.append(pot)
-    potentials = np.array(potentials)
 
     # Loop over the (m,n) modes.
     for m in tqdm(range(n_m), desc="Monte Carlo Integration: m-loop"):
@@ -381,15 +377,24 @@ def monte_carlo_integration_surface(n_n, n_m, points, potentials_unused):
                 / (THETA * (ALPHA * CYLINDER_RADIUS) ** 2 * J_mn_squared)
             ) * B_mn_integral
 
-    return A_mn, B_mn"""
+    return A_mn, B_mn
 
 
-A_mn, B_mn = monte_carlo_integration(
+A_mn, B_mn = compute_coefficients_nquad(
     n_m,
     n_n,
     structured_results["points"],
     structured_results["potential"],
 )
+
+
+"""
+A_mn, B_mn = monte_carlo_integration_surface(
+    n_m,
+    n_n,
+    structured_extended_lid_results["points"],
+    structured_extended_lid_results["potential"],
+)"""
 
 
 def reconstruct_fitted_params(A, B):

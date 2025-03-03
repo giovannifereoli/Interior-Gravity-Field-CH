@@ -15,7 +15,7 @@ vertices, faces = np.array(vertices), np.array(faces)
 DENSITY = 1.0
 
 # Initialize Constant to Help with Integration
-CONST = 1e11
+CONST = 1
 
 # Initialize polyhedron object and gravity evaluator
 eros = Polyhedron(
@@ -95,8 +95,9 @@ def integrand_B(rho, phi, z):
     )
 
 
+"""
 # Generate grid points for rho, phi, and z based on the given limits
-rho = np.linspace(0, ALPHA * R_star, 50)  # rho from 0 to R_star
+rho = np.linspace(0, 50 * R_star, 50)  # rho from 0 to R_star
 phi = np.linspace(0, 2 * np.pi, 50)  # phi from 0 to 2*pi
 z = L
 
@@ -126,25 +127,31 @@ ax.set_title("Polar plot of the integrand A_mn at z = L")
 fig.colorbar(contour)
 
 plt.show()
+"""
 
 # Perform numerical integration using scipy.integrate.nquad
 A_mn_integral, _ = integrate.nquad(
     integrand_A,
     [[0, ALPHA * R_star], [0, 2 * np.pi], [0, L]],
-    opts={"epsabs": 1e-14, "epsrel": 1e-14, "limit": 100},
 )
 B_mn_integral, _ = integrate.nquad(
     integrand_B,
     [[0, ALPHA * R_star], [0, 2 * np.pi], [0, L]],
-    opts={"epsabs": 1e-14, "epsrel": 1e-14, "limit": 100},
 )
+# A_mn_integral2, _ = integrate.nquad(
+#    integrand_A,
+#    [[R_star, ALPHA * R_star], [0, 2 * np.pi], [0, L]],
+# )
+# B_mn_integral2, _ = integrate.nquad(
+#    integrand_B, [[R_star, ALPHA * R_star], [0, 2 * np.pi], [0, L]]
+# )
 
 # Compute final A_mn and B_mn values
 A_mn = (
-    (2 / (np.pi * L * ((ALPHA * R_star) ** 2) * J_mn_squared)) * A_mn_integral / CONST
+    (2 / (np.pi * L * ((ALPHA * R_star) ** 2) * J_mn_squared)) * (A_mn_integral) / CONST
 )
 B_mn = (
-    (2 / (np.pi * L * ((ALPHA * R_star) ** 2) * J_mn_squared)) * B_mn_integral / CONST
+    (2 / (np.pi * L * ((ALPHA * R_star) ** 2) * J_mn_squared)) * (B_mn_integral) / CONST
 )
 
 # Close progress bar
