@@ -236,12 +236,14 @@ def monte_carlo_integration(n_n, n_m, points, potentials):
                 / len(points)
             )
 
-            THETA = 2 * np.pi if m == 0 else np.pi
+            # Angular normalization: 2π for m = 0, π for m >= 1.
+            THETA_COS = 2 * np.pi if m == 0 else np.pi
+            THETA_SIN = np.inf if m == 0 else np.pi
 
             A_mn[m, n - 1] = (
                 2
                 / (
-                    THETA
+                    THETA_COS
                     * CYLINDER_HEIGHT
                     * (ALPHA * CYLINDER_RADIUS) ** 2
                     * J_mn_squared
@@ -250,7 +252,7 @@ def monte_carlo_integration(n_n, n_m, points, potentials):
             B_mn[m, n - 1] = (
                 2
                 / (
-                    THETA
+                    THETA_SIN
                     * CYLINDER_HEIGHT
                     * (ALPHA * CYLINDER_RADIUS) ** 2
                     * J_mn_squared
@@ -314,12 +316,15 @@ def compute_coefficients_nquad(n_n, n_m, unused_points, unused_potentials):
                 args=(m, n),
             )
 
-            THETA = 2 * np.pi if m == 0 else np.pi
+            # Angular normalization: 2π for m = 0, π for m >= 1.
+            THETA_COS = 2 * np.pi if m == 0 else np.pi
+            THETA_SIN = np.inf if m == 0 else np.pi
+
             A_mn[m, n - 1] = (
-                2 / (THETA * CYLINDER_HEIGHT * (R_alpha) ** 2 * J_mn_squared)
+                2 / (THETA_COS * CYLINDER_HEIGHT * (R_alpha) ** 2 * J_mn_squared)
             ) * A_mn_integral
             B_mn[m, n - 1] = (
-                2 / (THETA * CYLINDER_HEIGHT * (R_alpha) ** 2 * J_mn_squared)
+                2 / (THETA_SIN * CYLINDER_HEIGHT * (R_alpha) ** 2 * J_mn_squared)
             ) * B_mn_integral
             progress_bar.update(1)
 
@@ -363,18 +368,19 @@ def monte_carlo_integration_surface(n_n, n_m, points, potentials):
             )
 
             # Angular normalization: 2π for m = 0, π for m >= 1.
-            THETA = 2 * np.pi if m == 0 else np.pi
+            THETA_COS = 2 * np.pi if m == 0 else np.pi
+            THETA_SIN = np.inf if m == 0 else np.pi
 
             # Normalize the coefficients using the Bessel orthogonality relation.
             A_mn[m, n - 1] = (
                 2
                 * comp_factor
-                / (THETA * (ALPHA * CYLINDER_RADIUS) ** 2 * J_mn_squared)
+                / (THETA_COS * (ALPHA * CYLINDER_RADIUS) ** 2 * J_mn_squared)
             ) * A_mn_integral
             B_mn[m, n - 1] = (
                 2
                 * comp_factor
-                / (THETA * (ALPHA * CYLINDER_RADIUS) ** 2 * J_mn_squared)
+                / (THETA_SIN * (ALPHA * CYLINDER_RADIUS) ** 2 * J_mn_squared)
             ) * B_mn_integral
 
     return A_mn, B_mn
