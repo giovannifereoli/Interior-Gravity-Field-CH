@@ -63,10 +63,10 @@ CYLINDER_ROTATION = np.eye(3)  # Rotation matrix (identity matrix by default)
 NUM_POINTS = 1000  # Number of points to generate
 
 # 2) as before,Rotation x-axis
-"""
+"""'
 CYLINDER_CENTER = np.array([-0.1, -0.28, 0])  # Center of the cylinder base in XYZ
 CYLINDER_HEIGHT = 0.5  # Height of the cylinder in meters
-CYLINDER_RADIUS = 0.09  # Radius of the cylinder in meters
+CYLINDER_RADIUS = 0.1  # Radius of the cylinder in meters
 CYLINDER_ROTATION = np.array(
     [[1, 0, 0], [0, 0, -1], [0, 1, 0]]
 )  # Rotation matrix (identity matrix by default)
@@ -74,14 +74,15 @@ NUM_POINTS = 1000  # Number of points to generate
 """
 
 # 3) as before,Rotation x-axis
-# CYLINDER_CENTER = np.array([0.87, 0.2, 0])  # Center of the cylinder base in XYZ
-# CYLINDER_HEIGHT = 0.5  # Height of the cylinder in meters
-# CYLINDER_RADIUS = 0.1  # Radius of the cylinder in meters
-# CYLINDER_ROTATION = np.array(
-#    [[0, 0, 1], [0, 1, 0], [-1, 0, 0]]
-# )  # Rotation matrix (identity matrix by default)
-# NUM_POINTS = 1000  # Number of points to generate
-
+"""
+CYLINDER_CENTER = np.array([-1.26, 0, 0])  # Center of the cylinder base in XYZ
+CYLINDER_HEIGHT = 0.5  # Height of the cylinder in meters
+CYLINDER_RADIUS = 0.1  # Radius of the cylinder in meters
+CYLINDER_ROTATION = np.array(
+    [[0, 0, 1], [0, 1, 0], [-1, 0, 0]]
+)  # Rotation matrix (identity matrix by default)
+NUM_POINTS = 1000  # Number of points to generate
+"""
 
 # Hyperparameters
 ALPHA = 100  # Scaling parameter for the cylinder
@@ -468,8 +469,8 @@ def plot_coefficients_semilogy(A, B, n_n, n_m):
             )
 
     # Scatter coefficients for A, B
-    scatter_coefficients(A, "A", colors["A"])
-    scatter_coefficients(B, "B", colors["B"])
+    scatter_coefficients(A, r"$A_{mn}$", colors["A"])
+    scatter_coefficients(B, r"$B_{mn}$", colors["B"])
 
     # Set y-axis to logarithmic scale
     plt.yscale("log")
@@ -713,6 +714,7 @@ plot_histogram_with_gaussian(percentage_error, title="Potential Error")
 # Call the function to plot the percentage error
 plot_error_on_cylinder(cylinder_points, percentage_error, title="Potential Error")
 
+plt.show()
 
 ## Compare Trajectories
 
@@ -960,12 +962,12 @@ def plot_differences_semilogy(t, y_poly, y_fitted):
     differences = np.abs(y_poly - y_fitted)
 
     labels = [
-        "$\delta x$",
-        "$ \delta y$",
-        "$\delta  z$",
-        "$ \delta v_x$",
-        "$\delta v_y$",
-        "$\delta v_z$",
+        "$\delta x$ (km)",
+        "$ \delta y$ (km)",
+        "$\delta  z$ (km)",
+        "$ \delta v_x$ (km/sec)",
+        "$\delta v_y$ (km/sec)",
+        "$\delta v_z$ (km/sec)",
     ]
     marker_styles = ["o", "s", "^", "D", "v", "<"]
 
@@ -978,12 +980,12 @@ def plot_differences_semilogy(t, y_poly, y_fitted):
             differences[i, 1:],
             color="black",
             marker=marker_styles[i],
-            label=f"Difference in {labels[i]}",
+            label=f"{labels[i]}",
             linestyle="-",
             markersize=4,
         )
         axs[i].set_xlabel("Time (s)", fontsize=14, labelpad=10)
-        axs[i].set_ylabel("Absolute Difference (km , km/sec)", fontsize=14, labelpad=10)
+        axs[i].set_ylabel("Absolute Difference (-)", fontsize=14, labelpad=10)
         axs[i].grid(True, which="both", linestyle="--", alpha=0.7)
         axs[i].legend(
             loc="best",
@@ -1040,7 +1042,7 @@ def plot_top_coefficients(top_coefficients):
         top_coefficients: List of tuples [(m, n, type, magnitude)].
     """
     # Extract data for plotting
-    labels = [f"${t}_{{{m},{n}}}$" for m, n, t, _ in top_coefficients]
+    labels = [f"${t}_{{{m}{n}}}$" for m, n, t, _ in top_coefficients]
     magnitudes = [abs(c[3]) for c in top_coefficients]
 
     # Plot
@@ -1053,7 +1055,7 @@ def plot_top_coefficients(top_coefficients):
         edgecolor="black",
     )
     plt.xticks(range(len(labels)), labels, rotation=45, ha="right")
-    plt.xlabel("Coefficient ($A_{m,n}$, $B_{m,n}$)", labelpad=10)
+    plt.xlabel("Coefficient ($A_{mn}$, $B_{mn}$)", labelpad=10)
     plt.ylabel("Magnitude (-)", labelpad=10)
     plt.grid(True, linestyle="--", axis="y", linewidth=0.7, alpha=0.8)
     plt.minorticks_on()  # Enable minor ticks
