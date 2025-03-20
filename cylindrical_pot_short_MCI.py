@@ -386,7 +386,7 @@ def monte_carlo_integration_surface(n_n, n_m, points, potentials):
     return A_mn, B_mn
 
 
-A_mn, B_mn = compute_coefficients_nquad(
+A_mn, B_mn = monte_carlo_integration(
     n_m,
     n_n,
     structured_results["points"],
