@@ -30,7 +30,6 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import matplotlib as mpl
 from scipy.integrate import solve_ivp
 from datetime import datetime
-from scipy.stats import lognorm
 
 
 # Use a colorblind-friendly color palette
@@ -305,7 +304,7 @@ A_pot, b_pot = prepare_linear_system_for_cylindrical_potential(
 # Define regularization parameters
 M = num_params  # Number of parameters
 alpha = 1e-3  # Regularization strength
-order_weights = np.zeros(M)
+order_weights = np.zeros(km)
 idx = 0
 for m in range(n_m):
     for n in range(1, n_n + 1):
@@ -314,7 +313,7 @@ for m in range(n_m):
         order_weights[idx : idx + 2] = alpha * weight  # Apply to each block of 4 terms
         idx += 2
 A_reg = np.diag(order_weights)
-b_reg = np.zeros(M)
+b_reg = np.zeros(km)
 
 # Define LSQ fitting
 aug_A = np.vstack([A_acc, A_pot])
@@ -331,6 +330,7 @@ sigma_squared = np.sum(residuals**2) / (len(aug_b) - len(fitted_params))
 cov_matrix = sigma_squared * np.linalg.pinv(aug_A.T @ aug_A)
 
 # To remove the B_0n coefficients (hard-coded)
+"""
 for n in range(n_n):
     fitted_params[2 * n] = fitted_params[2 * n]  # A_0n, keep
     fitted_params[2 * n + 1] = 0.0  # B_0n, zero out
@@ -342,6 +342,7 @@ for m in range(n_m):
             cov_matrix[B_idx, :] = 0.0
             cov_matrix[:, B_idx] = 0.0
         idx += 2
+"""
 
 print("Fitted parameters for cylindrical acceleration fitting:", fitted_params)
 
@@ -372,7 +373,7 @@ def compute_and_plot_covariance(cov_matrix, n_n, n_m):
         for n in range(1, n_n + 1):
             sigma_A[m, n - 1] = std_devs[idx]
             sigma_B[m, n - 1] = std_devs[idx + 1]
-            m_values.append(m)
+            m_values.append(km)
             sigma_values_A.append(std_devs[idx])
             sigma_values_B.append(std_devs[idx + 1])
             idx += 2
@@ -407,7 +408,7 @@ def compute_and_plot_covariance(cov_matrix, n_n, n_m):
         edgecolor="black",
         fontsize=14,
     )
-    plt.grid(True, linestyle="--", which="both", linewidth=0.7, alpha=0.8)
+    plt.grid(True, linestyle="--", linewidth=0.7, alpha=0.8)
     plt.minorticks_on()  # Enable minor ticks
     plt.grid(which="minor", linestyle=":", linewidth=0.5, alpha=0.5)
     plt.savefig("Images/covariances_plot.pdf", dpi=1200, bbox_inches="tight")
@@ -542,7 +543,7 @@ plot_coefficient_matrices(A, B)
 ## Plot percentage error
 
 
-def plot_histogram_with_lognormal(percentage_error, title="Percentage Error"):
+def plot_histogram_with_gaussian(percentage_error, title="Percentage Error"):
     plt.figure(figsize=(12, 8))
 
     # Plot histogram
@@ -553,31 +554,25 @@ def plot_histogram_with_lognormal(percentage_error, title="Percentage Error"):
         alpha=0.7,
         edgecolor="black",
         density=True,
-        label="Histogram (PDF Estimate)",
+        label="Percentage Error",
     )
 
-    # Fit and plot log-normal curve
-    shape, loc, scale = lognorm.fit(percentage_error)
+    # Fit and plot Gaussian curve
+    mu, std = norm.fit(percentage_error)
     x = np.linspace(min(percentage_error), max(percentage_error), 1000)
-    p = lognorm.pdf(x, shape, loc=loc, scale=scale)
-
-    # Compute mean and std in linear space
-    mu = lognorm.mean(shape, loc, scale)
-    std = lognorm.std(shape, loc, scale)
-
+    p = norm.pdf(x, mu, std)
     plt.plot(
         x,
         p,
         color=COLOR_PALETTE[0],
         linestyle="--",
         linewidth=2,
-        label=rf"Lognormal Fit: $\mu={mu:.6f},\ \sigma={std:.6f}$",
+        label=rf"Gaussian Fit: $\mu={mu:.6f}, \sigma={std:.6f}$",
     )
 
     # Add labels and title
-    plt.xlabel("Percentage Error (-)", labelpad=10)
-    plt.ylabel("Probability Density (-)", labelpad=10)
-    # plt.title(title, pad=15)
+    plt.xlabel("Relative Error (%)", labelpad=10)
+    plt.ylabel("Frequency Density (-)", labelpad=10)
     plt.legend(
         loc="best",
         frameon=True,
@@ -585,7 +580,7 @@ def plot_histogram_with_lognormal(percentage_error, title="Percentage Error"):
         edgecolor="black",
         fontsize=14,
     )
-    plt.grid(True, linestyle="--", which="both", linewidth=0.7, alpha=0.8)
+    plt.grid(True, linestyle="--", linewidth=0.7, alpha=0.8)
     plt.minorticks_on()  # Enable minor ticks
     plt.grid(which="minor", linestyle=":", linewidth=0.5, alpha=0.5)
     plt.savefig(
@@ -623,12 +618,12 @@ def plot_error_on_cylinder(cylinder_points, percentage_error, title="Percentage 
 
     # Add color bar
     cbar = plt.colorbar(scatter, ax=ax, shrink=0.5, aspect=10, pad=0.11)
-    cbar.set_label("Percentage Error (-)")
+    cbar.set_label("Relative Error (%)")
 
     # Set labels and title
-    ax.set_xlabel("$X$ (m)", labelpad=10)
-    ax.set_ylabel("$Y$ (m)", labelpad=10)
-    ax.set_zlabel("$Z$ (m)", labelpad=10)
+    ax.set_xlabel("$X$ (km)", labelpad=10)
+    ax.set_ylabel("$Y$ (km)", labelpad=10)
+    ax.set_zlabel("$Z$ (km)", labelpad=10)
     ax.set_aspect("equal")
     plt.savefig(
         f"Images/cylerror_plot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
@@ -711,7 +706,7 @@ percentage_acceleration_error = (
 )
 
 # Plot histogram of acceleration error
-plot_histogram_with_lognormal(percentage_acceleration_error, title="Acceleration Error")
+plot_histogram_with_gaussian(percentage_acceleration_error, title="Acceleration Error")
 
 
 # Plot error distribution in the cylinder
@@ -726,8 +721,8 @@ fitted_potentials = A_pot @ fitted_params
 percentage_error = 100 * np.abs((fitted_potentials - b_pot) / b_pot)
 print("Percentage Error:", percentage_error)
 
-# Call the function to plot the histogram with Chi Squared fit
-plot_histogram_with_lognormal(percentage_error, title="Potential Error")
+# Call the function to plot the histogram with Gaussian fit
+plot_histogram_with_gaussian(percentage_error, title="Potential Error")
 
 
 # Call the function to plot the percentage error
@@ -857,9 +852,9 @@ def plot_trajectories(t_poly, y_poly, t_fitted, y_fitted):
     )
 
     # Set labels and title
-    ax.set_xlabel("$X$ (m)", labelpad=10)
-    ax.set_ylabel("$Y$ (m)", labelpad=10)
-    ax.set_zlabel("$Z$ (m)", labelpad=10)
+    ax.set_xlabel("$X$ (km)", labelpad=10)
+    ax.set_ylabel("$Y$ (km)", labelpad=10)
+    ax.set_zlabel("$Z$ (km)", labelpad=10)
     plt.legend(
         loc="best",
         frameon=True,
@@ -951,155 +946,149 @@ initial_velocity = np.array(
 )  # Adjust as needed
 t_span = np.linspace(0, 55000, 100)
 
-# Add this to your script after defining `initial_position`, `initial_velocity`, `t_span`, etc.
-
-
-def fit_and_propagate_model(n_n, n_m, initial_position, initial_velocity, t_span):
-    A_acc, b_acc = prepare_linear_system_for_cylindrical_acceleration(
-        points, cylindrical_accelerations, n_n, n_m
-    )
-    A_pot, b_pot = prepare_linear_system_for_cylindrical_potential(
-        points, potentials, n_n, n_m
-    )
-
-    aug_A = np.vstack([A_acc, A_pot])
-    aug_b = np.hstack([b_acc, b_pot])
-
-    result = np.linalg.lstsq(aug_A, aug_b, rcond=None)
-    fitted_params = result[0]
-
-    # Force B_0n = 0
-    for n in range(n_n):
-        fitted_params[2 * n + 1] = 0.0
-
-    def acc_fitted(position):
-        a_rho, a_phi, a_z = compute_fitted_cylindrical_acceleration(
-            np.array([position]), fitted_params, n_n, n_m
-        )[0]
-        return cylindrical_to_cartesian_acceleration(
-            np.array([position]), np.array([[a_rho, a_phi, a_z]])
-        )[0]
-
-    t, y = propagate_trajectory(initial_position, initial_velocity, acc_fitted, t_span)
-    return t, y
-
-
-def plot_trajectories_multiple(t_poly, y_poly, traj_dict):
-    fig = plt.figure(figsize=(12, 8))
-    ax = fig.add_subplot(111, projection="3d")
-
-    ax.plot(
-        y_poly[0],
-        y_poly[1],
-        y_poly[2],
-        label="Constant Density Polyhedron",
-        linewidth=2,
-        color="black",
-    )
-
-    for label, traj in traj_dict.items():
-        ax.plot(traj[0], traj[1], traj[2], label=label, linewidth=2)
-
-    mesh = Poly3DCollection(
-        vertices[faces],
-        alpha=0.8,
-        edgecolor="k",
-        linewidths=0.3,
-        facecolor=COLOR_PALETTE[-1],
-    )
-    ax.add_collection3d(mesh)
-
-    # Cylinder surface (reused from previous plot_trajectories function)
-    theta = np.linspace(0, 2 * np.pi, 50)
-    z = np.linspace(0, CYLINDER_HEIGHT, 50)
-    theta, z = np.meshgrid(theta, z)
-    x = CYLINDER_RADIUS * np.cos(theta)
-    y = CYLINDER_RADIUS * np.sin(theta)
-    cylinder_points = np.column_stack([x.flatten(), y.flatten(), z.flatten()])
-    transformed_cylinder = cylinder_points @ CYLINDER_ROTATION.T + CYLINDER_CENTER
-    x_cyl = transformed_cylinder[:, 0].reshape(x.shape)
-    y_cyl = transformed_cylinder[:, 1].reshape(y.shape)
-    z_cyl = transformed_cylinder[:, 2].reshape(z.shape)
-    ax.plot_surface(
-        x_cyl, y_cyl, z_cyl, color="lightyellow", alpha=0.3, edgecolor="none"
-    )
-
-    ax.set_xlabel("$X$ (m)", labelpad=10)
-    ax.set_ylabel("$Y$ (m)", labelpad=10)
-    ax.set_zlabel("$Z$ (m)", labelpad=10)
-    ax.set_aspect("equal")
-    plt.legend(frameon=True, fancybox=True, edgecolor="black", fontsize=14)
-    plt.savefig("Images/trajectory_comparison.pdf", dpi=1200, bbox_inches="tight")
-    plt.show()
-
-
-def plot_trajectory_differences(t, y_poly, traj_dict):
-    fig, axs = plt.subplots(2, 3, figsize=(14, 8), sharex=True)
-    axs = axs.ravel()
-
-    labels = [
-        "$|\\delta x|$ (km)",
-        "$|\\delta y|$ (km)",
-        "$|\\delta z|$ (km)",
-        "$|\\delta v_x|$ (km/s)",
-        "$|\\delta v_y|$ (km/s)",
-        "$|\\delta v_z|$ (km/s)",
-    ]
-
-    markers = ["o", "<", "^", "D", "v", "s"]
-    line_styles = ["-", "--"]
-    t_hours = t / 3600.0
-
-    for j, (label, y_fit) in enumerate(traj_dict.items()):
-        diff = np.abs(y_poly - y_fit)
-        for i in range(6):
-            axs[i].semilogy(
-                t_hours[1:],
-                diff[i, 1:],
-                color="black",
-                marker=markers[j % len(markers)],
-                linestyle=line_styles[j % len(line_styles)],
-                markersize=4,
-                label=label if i == 0 else None,
-            )
-            axs[i].set_ylabel(labels[i], fontsize=12)
-            axs[i].grid(True, linestyle="--", which="both", linewidth=0.7, alpha=0.8)
-            axs[i].minorticks_on()  # Enable minor ticks
-            axs[i].grid(which="minor", linestyle=":", linewidth=0.5, alpha=0.5)
-
-    for ax in axs:
-        ax.set_xlabel("Time (hours)", fontsize=12)
-        ax.legend(fontsize=10, loc="best")
-
-    plt.tight_layout()
-    plt.savefig(
-        "Images/trajectory_differences_semilogy.pdf", dpi=1200, bbox_inches="tight"
-    )
-    plt.show()
-
-
-# === RUN BOTH MODELS ===
+# Propagate trajectories using SciPy's ODE solver
 print("Propagating trajectories...")
-print("  - Fitted 25x25 Model")
-t_fitted_25, y_fitted_25 = fit_and_propagate_model(
-    25, 25, initial_position, initial_velocity, t_span
+print("  - Fitted Model")
+t_fitted, y_fitted = propagate_trajectory(
+    initial_position, initial_velocity, acceleration_fitted, t_span
 )
-print("  - Fitted 5x5 Model")
-t_fitted_5, y_fitted_5 = fit_and_propagate_model(
-    5, 5, initial_position, initial_velocity, t_span
-)
+print(" Done with fitted model.")
 print("  - Poly Model")
 t_poly, y_poly = propagate_trajectory(
     initial_position, initial_velocity, acceleration_poly, t_span
 )
+print(" Done with constant-density polyhedron model.")
 
-plot_trajectories_multiple(
-    t_poly,
-    y_poly,
-    {
-        "Interior Cylindrical Harmonics (25x25)": y_fitted_25,
-        "Interior Cylindrical Harmonics (5x5)": y_fitted_5,
-    },
-)
+# Plot trajectories
+plot_trajectories(t_poly, y_poly, t_fitted, y_fitted)
 
-plot_trajectory_differences(t_poly, y_poly, {"25x25": y_fitted_25, "5x5": y_fitted_5})
+
+def plot_differences_semilogy(t, y_poly, y_fitted):
+    """
+    Plot semi-logarithmic differences between y_poly and y_fitted for each state variable.
+
+    Args:
+        t: Time array.
+        y_poly: State array for the constant-density polyhedron model (N, 6).
+        y_fitted: State array for the fitted model (N, 6).
+    """
+
+    differences = np.abs(y_poly - y_fitted)
+
+    labels = [
+        "$\delta x$ (km)",
+        "$ \delta y$ (km)",
+        "$\delta  z$ (km)",
+        "$ \delta v_x$ (km/sec)",
+        "$\delta v_y$ (km/sec)",
+        "$\delta v_z$ (km/sec)",
+    ]
+    marker_styles = ["o", "s", "^", "D", "v", "<"]
+
+    fig, axs = plt.subplots(2, 3, figsize=(12, 8), sharex=True, sharey=True)
+    axs = axs.ravel()  # Flatten the axes array for easier indexing
+
+    for i in range(6):
+        axs[i].semilogy(
+            t[1:],
+            differences[i, 1:],
+            color="black",
+            marker=marker_styles[i],
+            label=f"{labels[i]}",
+            linestyle="-",
+            markersize=4,
+        )
+        axs[i].set_xlabel("Time (s)", fontsize=14, labelpad=10)
+        axs[i].set_ylabel("Absolute Difference (-)", fontsize=14, labelpad=10)
+        axs[i].grid(True, which="both", linestyle="--", alpha=0.7)
+        axs[i].legend(
+            loc="best",
+            frameon=True,
+            fancybox=True,
+            edgecolor="black",
+            fontsize=14,
+        )
+
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(f"Images/trajectory_diff_plot.pdf", dpi=1200, bbox_inches="tight")
+
+
+# Plot differences in trajectories
+plot_differences_semilogy(t_poly, y_poly, y_fitted)
+
+## Analyze Contributions
+
+
+def extract_top_coefficients(fitted_params, n_n, n_m, top_n=20):
+    """
+    Extract the top N largest coefficients (A_mn, B_mn) sorted by magnitude.
+
+    Args:
+        fitted_params: Flattened array of fitted coefficients (1D array).
+        n_n: Number of terms in the n series (truncation parameter).
+        n_m: Number of terms in the m series.
+        top_n: Number of top coefficients to extract.
+
+    Returns:
+        top_coefficients: List of tuples [(m, n, type, magnitude)] sorted by magnitude.
+    """
+    coefficients = []
+    idx = 0
+    for m in range(n_m):
+        for n in range(1, n_n + 1):
+            # Extract A_mn and B_mn
+            A_mn = fitted_params[idx]
+            B_mn = fitted_params[idx + 1]
+            coefficients.append((m, n, "A", A_mn))
+            coefficients.append((m, n, "B", B_mn))
+            idx += 2
+
+    # Sort by magnitude
+    coefficients = sorted(coefficients, key=lambda x: abs(x[3]), reverse=True)
+    return coefficients[:top_n]
+
+
+def plot_top_coefficients(top_coefficients):
+    """
+    Plot the top coefficients with explicit labels.
+
+    Args:
+        top_coefficients: List of tuples [(m, n, type, magnitude)].
+    """
+    # Extract data for plotting
+    labels = [f"${t}_{{{m}{n}}}$" for m, n, t, _ in top_coefficients]
+    magnitudes = [abs(c[3]) for c in top_coefficients]
+
+    # Plot
+    plt.figure(figsize=(10, 6))
+    plt.bar(
+        range(len(magnitudes)),
+        magnitudes,
+        color=COLOR_PALETTE[-1],
+        alpha=0.8,
+        edgecolor="black",
+    )
+    plt.xticks(range(len(labels)), labels, rotation=45, ha="right")
+    plt.xlabel("Coefficient ($A_{mn}$, $B_{mn}$)", labelpad=10)
+    plt.ylabel("Magnitude (-)", labelpad=10)
+    plt.grid(True, linestyle="--", axis="y", linewidth=0.7, alpha=0.8)
+    plt.minorticks_on()  # Enable minor ticks
+    plt.grid(which="minor", linestyle=":", linewidth=0.5, alpha=0.5)
+    plt.tight_layout()
+    plt.savefig(f"Images/topcoeff_plot.pdf", dpi=1200, bbox_inches="tight")
+
+
+# Extract the top 20 coefficients
+top_coefficients = extract_top_coefficients(fitted_params, n_n, n_m, top_n=20)
+
+# Plot the top coefficients
+plot_top_coefficients(top_coefficients)
+
+# Print the top coefficients for inspection
+print("Top Coefficients:")
+for m, n, t, value in top_coefficients:
+    print(f"{t}_{m},{n}: {value:.6e}")
+
+
+# Plots
+plt.show()
