@@ -304,7 +304,7 @@ A_pot, b_pot = prepare_linear_system_for_cylindrical_potential(
 # Define regularization parameters
 M = num_params  # Number of parameters
 alpha = 1e-3  # Regularization strength
-order_weights = np.zeros(M)
+order_weights = np.zeros(km)
 idx = 0
 for m in range(n_m):
     for n in range(1, n_n + 1):
@@ -313,7 +313,7 @@ for m in range(n_m):
         order_weights[idx : idx + 2] = alpha * weight  # Apply to each block of 4 terms
         idx += 2
 A_reg = np.diag(order_weights)
-b_reg = np.zeros(M)
+b_reg = np.zeros(km)
 
 # Define LSQ fitting
 aug_A = np.vstack([A_acc, A_pot])
@@ -373,7 +373,7 @@ def compute_and_plot_covariance(cov_matrix, n_n, n_m):
         for n in range(1, n_n + 1):
             sigma_A[m, n - 1] = std_devs[idx]
             sigma_B[m, n - 1] = std_devs[idx + 1]
-            m_values.append(m)
+            m_values.append(km)
             sigma_values_A.append(std_devs[idx])
             sigma_values_B.append(std_devs[idx + 1])
             idx += 2
@@ -571,7 +571,7 @@ def plot_histogram_with_gaussian(percentage_error, title="Percentage Error"):
     )
 
     # Add labels and title
-    plt.xlabel("Percentage Error (-)", labelpad=10)
+    plt.xlabel("Relative Error (%)", labelpad=10)
     plt.ylabel("Frequency Density (-)", labelpad=10)
     plt.legend(
         loc="best",
@@ -618,12 +618,12 @@ def plot_error_on_cylinder(cylinder_points, percentage_error, title="Percentage 
 
     # Add color bar
     cbar = plt.colorbar(scatter, ax=ax, shrink=0.5, aspect=10, pad=0.11)
-    cbar.set_label("Percentage Error (-)")
+    cbar.set_label("Relative Error (%)")
 
     # Set labels and title
-    ax.set_xlabel("$X$ (m)", labelpad=10)
-    ax.set_ylabel("$Y$ (m)", labelpad=10)
-    ax.set_zlabel("$Z$ (m)", labelpad=10)
+    ax.set_xlabel("$X$ (km)", labelpad=10)
+    ax.set_ylabel("$Y$ (km)", labelpad=10)
+    ax.set_zlabel("$Z$ (km)", labelpad=10)
     ax.set_aspect("equal")
     plt.savefig(
         f"Images/cylerror_plot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
@@ -852,9 +852,9 @@ def plot_trajectories(t_poly, y_poly, t_fitted, y_fitted):
     )
 
     # Set labels and title
-    ax.set_xlabel("$X$ (m)", labelpad=10)
-    ax.set_ylabel("$Y$ (m)", labelpad=10)
-    ax.set_zlabel("$Z$ (m)", labelpad=10)
+    ax.set_xlabel("$X$ (km)", labelpad=10)
+    ax.set_ylabel("$Y$ (km)", labelpad=10)
+    ax.set_zlabel("$Z$ (km)", labelpad=10)
     plt.legend(
         loc="best",
         frameon=True,
