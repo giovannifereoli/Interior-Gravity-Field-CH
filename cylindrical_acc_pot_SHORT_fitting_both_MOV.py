@@ -383,7 +383,7 @@ def compute_and_plot_covariance(cov_matrix, n_n, n_m):
     plt.scatter(
         m_values,
         sigma_values_A,
-        label=r"$\sigma_{\mathscr{A}_{mn}}$",
+        label=r"$\sigma_{\mathscr{A}^i_{mn}}$",
         marker="o",
         alpha=0.7,
         color=COLOR_PALETTE[1],
@@ -392,7 +392,7 @@ def compute_and_plot_covariance(cov_matrix, n_n, n_m):
     plt.scatter(
         m_values,
         sigma_values_B,
-        label=r"$\sigma_{\mathscr{B}_{mn}}$",
+        label=r"$\sigma_{\mathscr{B}^i_{mn}}$",
         marker="o",
         alpha=0.7,
         color=COLOR_PALETTE[2],
@@ -483,8 +483,8 @@ def plot_coefficients_semilogy(A, B, n_n, n_m):
             )
 
     # Scatter coefficients for A, B
-    scatter_coefficients(A, r"$|\mathscr{A}_{mn}|$", colors["A"])
-    scatter_coefficients(B, r"$|\mathscr{B}_{mn}|$", colors["B"])
+    scatter_coefficients(A, r"$|\mathscr{A}^i_{mn}|$", colors["A"])
+    scatter_coefficients(B, r"$|\mathscr{B}^i_{mn}|$", colors["B"])
 
     # Set y-axis to logarithmic scale
     plt.yscale("log")
