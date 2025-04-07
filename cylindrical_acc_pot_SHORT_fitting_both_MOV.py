@@ -47,6 +47,7 @@ mpl.rcParams["axes.titlesize"] = 20
 mpl.rcParams["legend.fontsize"] = 14
 mpl.rcParams["xtick.labelsize"] = 14
 mpl.rcParams["ytick.labelsize"] = 14
+mpl.rcParams["text.latex.preamble"] = r"\usepackage{mathrsfs}"
 
 # Meshes from https://github.com/darioizzo/geodesyNets/tree/master/3dmeshes
 vertices, faces = mesh_utility.read_pk_file("3dmeshes/eros.pk")
@@ -382,7 +383,7 @@ def compute_and_plot_covariance(cov_matrix, n_n, n_m):
     plt.scatter(
         m_values,
         sigma_values_A,
-        label=r"$\sigma_{A_{mn}}$",
+        label=r"$\sigma_{\mathscr{A}_{mn}}$",
         marker="o",
         alpha=0.7,
         color=COLOR_PALETTE[1],
@@ -391,7 +392,7 @@ def compute_and_plot_covariance(cov_matrix, n_n, n_m):
     plt.scatter(
         m_values,
         sigma_values_B,
-        label=r"$\sigma_{B_{mn}}$",
+        label=r"$\sigma_{\mathscr{B}_{mn}}$",
         marker="o",
         alpha=0.7,
         color=COLOR_PALETTE[2],
@@ -482,8 +483,8 @@ def plot_coefficients_semilogy(A, B, n_n, n_m):
             )
 
     # Scatter coefficients for A, B
-    scatter_coefficients(A, r"$A_{mn}$", colors["A"])
-    scatter_coefficients(B, r"$B_{mn}$", colors["B"])
+    scatter_coefficients(A, r"$|\mathscr{A}_{mn}|$", colors["A"])
+    scatter_coefficients(B, r"$|\mathscr{B}_{mn}|$", colors["B"])
 
     # Set y-axis to logarithmic scale
     plt.yscale("log")
@@ -502,6 +503,52 @@ def plot_coefficients_semilogy(A, B, n_n, n_m):
         fontsize=14,
     )
     plt.savefig("Images/coefficients_plot.pdf", dpi=1200, bbox_inches="tight")
+
+
+# Function to plot power spectrum by order m
+def plot_power_spectrum_by_order(A, B, n_n, n_m):
+    """
+    Plot the power spectrum of coefficients A and B per order m in semilogarithmic scale.
+
+    Args:
+        A, B: Coefficient matrices of shape (n_m, n_n).
+        n_n: Number of terms in the n (degree) series.
+        n_m: Number of terms in the m (order) series.
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    plt.figure(figsize=(12, 8))
+
+    # Compute power per order m
+    power_by_m = np.zeros(n_m)
+    for m in range(n_m):
+        # Sum over n from m to n_n - 1
+        power_by_m[m] = np.sum(A[m, m:n_n] ** 2 + B[m, m:n_n] ** 2)
+
+    # Plot
+    plt.semilogy(
+        range(n_m),
+        power_by_m,
+        marker="o",
+        linestyle="-",
+        color=COLOR_PALETTE[0],
+        label=r"$\sum_n (A_{mn}^2 + B_{mn}^2)$",
+    )
+
+    plt.xlabel("Order $m$ (-)", labelpad=10)
+    plt.ylabel("Power per Order (log scale)", labelpad=10)
+    plt.grid(True, linestyle="--", which="both", linewidth=0.7, alpha=0.8)
+    plt.minorticks_on()
+    plt.legend(
+        loc="best",
+        frameon=True,
+        fancybox=True,
+        edgecolor="black",
+        fontsize=14,
+    )
+    plt.title("Spherical Harmonics Power Spectrum by Order", pad=12)
+    plt.savefig("Images/power_spectrum_by_order.pdf", dpi=1200, bbox_inches="tight")
 
 
 # Function to display coefficients in matrix form
@@ -538,6 +585,7 @@ def plot_coefficient_matrices(A, B):
 A, B = print_fitted_parameters(fitted_params, n_n, n_m)
 plot_coefficients_semilogy(A, B, n_n, n_m)
 plot_coefficient_matrices(A, B)
+# plot_power_spectrum_by_order(A, B, n_n, n_m)
 
 ## Plot percentage error
 
