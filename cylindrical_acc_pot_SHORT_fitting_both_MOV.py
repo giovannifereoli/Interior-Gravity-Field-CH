@@ -326,10 +326,26 @@ result = np.linalg.lstsq(aug_A, aug_b, rcond=None)
 fitted_params = result[0]
 
 # Compute residuals
-# NOTE: Since you're not adding noise, the sigma is almost epsilon.
 residuals = aug_b - aug_A @ fitted_params
 sigma_squared = np.sum(residuals**2) / (len(aug_b) - len(fitted_params))
 cov_matrix = sigma_squared * np.linalg.pinv(aug_A.T @ aug_A)
+
+# Reduced chi-squared
+# dof = len(aug_b) - len(fitted_params)  # degrees of freedom
+# chi_squared = np.sum((residuals / np.sqrt(sigma_squared)) ** 2)
+# chi_squared_reduced = chi_squared / dof
+# print(f"Chi-squared: {chi_squared:.6e}")
+# print(f"Reduced chi-squared (χ²/dof): {chi_squared_reduced:.6e}")
+
+# R-squared
+# rss = np.sum(residuals**2)
+# b_mean = np.mean(aug_b)
+# ss_tot = np.sum((aug_b - b_mean)**2)
+# r_squared = 1 - rss / ss_tot
+# print(f"Residual Sum of Squares (RSS): {rss:.6e}")
+# print(f"Total Sum of Squares (SStot): {ss_tot:.6e}")
+# print(f"R-squared: {r_squared:.6f}")
+
 
 # To remove the B_0n coefficients (hard-coded)
 for n in range(n_n):
