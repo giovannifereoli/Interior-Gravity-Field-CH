@@ -522,3 +522,32 @@ cbar = plt.colorbar()
 cbar.set_label("Potential (arbitrary units)")
 plt.tight_layout()
 plt.show()
+
+import cartopy.crs as ccrs
+import matplotlib.pyplot as plt
+
+# Mollweide projection plot of fitted potentials
+fig = plt.figure(figsize=(12, 6))
+ax = plt.axes(projection=ccrs.Mollweide())
+
+# Contour plot on global grid
+cf = ax.contourf(
+    grid_lon,
+    grid_lat,
+    grid_vals,
+    levels=60,
+    transform=ccrs.PlateCarree(),
+    cmap="viridis",
+)
+
+# Gridlines and styling
+ax.gridlines(draw_labels=True, linewidth=0.5, linestyle="--", alpha=0.5)
+ax.set_global()
+
+# Colorbar and labels
+cbar = plt.colorbar(cf, orientation="horizontal", pad=0.05)
+cbar.set_label("Potential (arbitrary units)")
+
+plt.title("Fitted Gravitational Potential on Asteroid Surface (Mollweide Projection)")
+plt.tight_layout()
+plt.show()
