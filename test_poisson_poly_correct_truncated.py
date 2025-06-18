@@ -11,7 +11,7 @@ import trimesh
 # vertices_lp, faces_lp = mesh_utility.read_pk_file("3dmeshes/bennu_lp.pk")
 # vertices, faces = np.array(vertices), np.array(faces)
 
-mesh = trimesh.load("3dmeshes/phobos_lowlowres.obj")
+mesh = trimesh.load("3dmeshes/phobos_lowres.obj")
 vertices = mesh.vertices
 faces = mesh.faces
 
@@ -209,7 +209,7 @@ sigma_squared = np.sum(residuals**2) / (len(b) - len(fitted_params))
 cov_matrix = sigma_squared * np.linalg.pinv(A.T @ A)
 
 # Compute percentage error
-percentage_error = 100 * np.abs((fitted_potentials - b) / np.maximum(np.abs(b), 1e-10))
+percentage_error = 100 * (fitted_potentials - b) / np.abs(b)
 
 # Plot histogram of percentage error
 plt.figure(figsize=(10, 6))
@@ -225,7 +225,7 @@ plt.plot(
     color="#d7191c",
     linestyle="--",
     linewidth=2,
-    label=rf"$\mu={mu:.2f}, \sigma={std:.2f}$",
+    label=rf"$\mu={mu:.4f}, \sigma={std:.4f}$",
 )
 plt.xlabel("Percentage Error (%)")
 plt.ylabel("Density")
@@ -253,7 +253,7 @@ ax.add_collection3d(mesh)
 
 # Plot scatter error
 sc = ax.scatter(
-    points[:, 0], points[:, 1], points[:, 2], c=percentage_error, cmap="viridis", s=10
+    points[:, 0], points[:, 1], points[:, 2], c=percentage_error, cmap="seismic", s=10
 )
 cbar = plt.colorbar(sc, ax=ax, shrink=0.5)
 cbar.set_label("Percentage Error (%)")
@@ -359,13 +359,11 @@ true_potentials = np.array(true_potentials)
 fitted_potentials = evaluate_potential_on_surface(
     shifted_vertices, center, fitted_params, l_max, n_max
 )
-vertex_errors = 100 * np.abs(
-    (fitted_potentials - true_potentials) / np.maximum(np.abs(true_potentials), 1e-10)
-)
+vertex_errors = 100 * (fitted_potentials - true_potentials) / np.abs(true_potentials)
 
 # Assign per-face error as mean of its 3 vertex errors
 face_errors = np.mean(vertex_errors[faces], axis=1)
-face_colors = plt.cm.viridis(face_errors / np.max(face_errors))
+face_colors = plt.cm.seismic(face_errors / np.max(face_errors))
 
 # Plot mesh with per-face error coloring
 fig = plt.figure(figsize=(12, 8))
@@ -389,7 +387,7 @@ ax.set_ylabel("Y (m)")
 ax.set_zlabel("Z (m)")
 
 # Add colorbar correctly
-mappable = plt.cm.ScalarMappable(cmap="viridis")
+mappable = plt.cm.ScalarMappable(cmap="seismic")
 mappable.set_array(face_errors)
 cbar = plt.colorbar(mappable, ax=ax, shrink=0.6)
 cbar.set_label("Percentage Error (%)")
@@ -426,13 +424,13 @@ def plot_spherical_coefficients(fitted_params, labels):
 
     # Plot heatmaps
     fig, axs = plt.subplots(1, 2, figsize=(14, 6))
-    im0 = axs[0].imshow(coeff_mag_a, origin="lower", aspect="auto", cmap="viridis")
+    im0 = axs[0].imshow(coeff_mag_a, origin="lower", aspect="auto", cmap="seismic")
     axs[0].set_title("Cosine Coefficient Magnitudes (aₗₘₙ)")
     axs[0].set_xlabel("Radial order n")
     axs[0].set_ylabel("Degree l")
     fig.colorbar(im0, ax=axs[0], label="|aₗₘₙ|")
 
-    im1 = axs[1].imshow(coeff_mag_b, origin="lower", aspect="auto", cmap="viridis")
+    im1 = axs[1].imshow(coeff_mag_b, origin="lower", aspect="auto", cmap="seismic")
     axs[1].set_title("Sine Coefficient Magnitudes (bₗₘₙ)")
     axs[1].set_xlabel("Radial order n")
     axs[1].set_ylabel("Degree l")
@@ -587,7 +585,7 @@ grid_vals = griddata(
 # Plot
 plt.figure(figsize=(12, 6))
 plt.imshow(
-    grid_vals, extent=(0, 360, -90, 90), origin="lower", cmap="viridis", aspect="auto"
+    grid_vals, extent=(0, 360, -90, 90), origin="lower", cmap="seismic", aspect="auto"
 )
 plt.xlabel("Longitude (°)")
 plt.ylabel("Latitude (°)")
@@ -611,7 +609,7 @@ cf = ax.contourf(
     grid_vals,
     levels=60,
     transform=ccrs.PlateCarree(),
-    cmap="viridis",
+    cmap="seismic",
 )
 
 # Gridlines and styling
