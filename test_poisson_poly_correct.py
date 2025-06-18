@@ -4,6 +4,8 @@ import mesh_utility
 from tqdm import tqdm
 import trimesh
 
+# TODO: what are the error distributions? it seems symmetric
+
 # Meshes from https://github.com/darioizzo/geodesyNets/tree/master/3dmeshes
 # vertices, faces = mesh_utility.read_pk_file("3dmeshes/churyumov-gerasimenko.pk")
 # vertices_lp, faces_lp = mesh_utility.read_pk_file("3dmeshes/bennu_lp.pk")
@@ -143,10 +145,12 @@ def prepare_spherical_poly_basis(points, center, l_max, n_max):
     for l in range(l_max + 1):
         for m in range(0, l + 1):
             Plm = lpmv(m, l, np.cos(theta))
-            cos_mphi = EPS * (1 / (2 * l + 1)) * np.cos(m * phi)
-            sin_mphi = EPS * (1 / (2 * l + 1)) * np.sin(m * phi)
             for n in range(n_max + 1):
-                r_pow = r ** (l + n)
+                if n >= l - 2:
+                    continue  # skip invalid terms
+                cos_mphi = EPS * (1 / ((2 * l + 1) * (n - l + 2))) * np.cos(m * phi)
+                sin_mphi = EPS * (1 / ((2 * l + 1) * (n - l + 2))) * np.sin(m * phi)
+                r_pow = r ** (n + 2)
                 A.append(r_pow * Plm * cos_mphi)
                 coeff_labels.append(f"a_{l}_{m}_{n}")
                 if m > 0:
@@ -158,7 +162,7 @@ def prepare_spherical_poly_basis(points, center, l_max, n_max):
 
 
 # Set model complexity
-l_max, n_max = 3, 3
+l_max, n_max = 10, 10
 
 # Build design matrix and perform least-squares fitting
 A, labels = prepare_spherical_poly_basis(points, center, l_max, n_max)
@@ -251,10 +255,12 @@ def evaluate_potential_on_surface(vertices, center, coeffs, l_max, n_max):
     for l in range(l_max + 1):
         for m in range(0, l + 1):
             Plm = lpmv(m, l, np.cos(theta))
-            cos_mphi = EPS * (1 / (2 * l + 1)) * np.cos(m * phi)
-            sin_mphi = EPS * (1 / (2 * l + 1)) * np.sin(m * phi)
             for n in range(n_max + 1):
-                r_pow = r ** (l + n)
+                if n >= l - 2:
+                    continue  # skip invalid terms
+                cos_mphi = EPS * (1 / ((2 * l + 1) * (n - l + 2))) * np.cos(m * phi)
+                sin_mphi = EPS * (1 / ((2 * l + 1) * (n - l + 2))) * np.sin(m * phi)
+                r_pow = r ** (n + 2)
                 Phi_eval += coeffs[idx] * r_pow * Plm * cos_mphi
                 idx += 1
                 if m > 0:

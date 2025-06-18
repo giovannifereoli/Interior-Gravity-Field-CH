@@ -4,6 +4,8 @@ import mesh_utility
 from tqdm import tqdm
 import trimesh
 
+# TODO: what are the error distributions? it seems symmetric
+
 # Meshes from https://github.com/darioizzo/geodesyNets/tree/master/3dmeshes
 # vertices, faces = mesh_utility.read_pk_file("3dmeshes/churyumov-gerasimenko.pk")
 # vertices_lp, faces_lp = mesh_utility.read_pk_file("3dmeshes/bennu_lp.pk")
@@ -17,6 +19,7 @@ faces = mesh.faces
 center = np.mean(vertices, axis=0)
 radii = np.linalg.norm(vertices - center, axis=1)
 bounding_radius = 1 * np.max(radii)
+R_REF = 2 * bounding_radius  # radius of bounding sphere
 
 # Define asteroid density
 DENSITY = 1.0  # arbitrary units
@@ -130,35 +133,68 @@ bounding_radius = data["bounding_radius"]
 
 
 # Define real spherical harmonics radial basis model
-def prepare_spherical_poly_basis(points, center, l_max, n_max):
-    transformed = points - center
-    x, y, z = transformed[:, 0], transformed[:, 1], transformed[:, 2]
-    r = np.linalg.norm(transformed, axis=1)
-    theta = np.arccos(np.clip(z / r, -1.0, 1.0))
-    phi = np.arctan2(y, x)
+def prepare_spherical_poly_basis(points, center, l_max, n_max, EPS=1.0):
+    """
+    Build a physically-consistent interior potential basis for Poisson's equation
+    with finite support at radius R.
 
-    A = []
+    Args:
+        points (ndarray): (N,3) evaluation points.
+        center (ndarray): (3,) center of the body.
+        R (float): support radius (max radius of density).
+        l_max (int): maximum spherical harmonic degree.
+        n_max (int): maximum radial polynomial order.
+        EPS (float): scaling factor (e.g., 1 + 4πG*0).
+
+    Returns:
+        A (ndarray): design matrix shape (N, num_coeffs).
+        coeff_labels (list): list of labels for each column in A.
+    """
+    # Shift to body-centered coords and spherical angles
+    v = points - center
+    r = np.linalg.norm(v, axis=1)
+    theta = np.arccos(np.clip(v[:, 2] / r, -1.0, 1.0))
+    phi = np.arctan2(v[:, 1], v[:, 0])
+    R = R_REF
+
+    columns = []
     coeff_labels = []
 
     for l in range(l_max + 1):
-        for m in range(0, l + 1):
-            Plm = lpmv(m, l, np.cos(theta))
-            cos_mphi = EPS * (1 / (2 * l + 1)) * np.cos(m * phi)
-            sin_mphi = EPS * (1 / (2 * l + 1)) * np.sin(m * phi)
+        # Precompute Legendre polynomials for this l
+        Plm_vals = [lpmv(m, l, np.cos(theta)) for m in range(l + 1)]
+
+        for m in range(l + 1):
+            Plm = Plm_vals[m]
+            cos_mphi = np.cos(m * phi)
+            sin_mphi = np.sin(m * phi) if m > 0 else None
+
             for n in range(n_max + 1):
-                r_pow = r ** (l + n)
-                A.append(r_pow * Plm * cos_mphi)
+                exp = n - l + 2
+                # Radial integral from r to R
+                if exp == 0:
+                    radial = np.log(R / r) / (2 * l + 1)
+                else:
+                    radial = (R**exp - r**exp) / (exp * (2 * l + 1))
+
+                # Cosine term
+                col_c = EPS * radial * Plm * cos_mphi
+                columns.append(col_c)
                 coeff_labels.append(f"a_{l}_{m}_{n}")
+
+                # Sine term if m > 0
                 if m > 0:
-                    A.append(r_pow * Plm * sin_mphi)
+                    col_s = EPS * radial * Plm * sin_mphi
+                    columns.append(col_s)
                     coeff_labels.append(f"b_{l}_{m}_{n}")
 
-    A = np.vstack(A).T
+    # Stack columns to form design matrix
+    A = np.vstack(columns).T
     return A, coeff_labels
 
 
 # Set model complexity
-l_max, n_max = 3, 3
+l_max, n_max = 6, 6
 
 # Build design matrix and perform least-squares fitting
 A, labels = prepare_spherical_poly_basis(points, center, l_max, n_max)
@@ -238,28 +274,66 @@ from scipy.special import lpmv
 
 
 # Evaluate the fitted potential on the asteroid surface
-def evaluate_potential_on_surface(vertices, center, coeffs, l_max, n_max):
-    rvec = vertices - center
-    x, y, z = rvec[:, 0], rvec[:, 1], rvec[:, 2]
-    r = np.linalg.norm(rvec, axis=1)
-    theta = np.arccos(np.clip(z / r, -1.0, 1.0))
-    phi = np.arctan2(y, x)
+def evaluate_potential_on_surface(
+    vertices,
+    center,
+    coeffs,
+    l_max,
+    n_max,
+    EPS=1.0,
+):
+    """
+    Evaluate the fitted potential at surface vertices using the
+    finite-support interior solution basis.
+
+    Args:
+      vertices (ndarray): (M,3) surface points.
+      center   (ndarray): (3,) body center.
+      coeffs   (ndarray): fitted rho-coeff vector.
+      l_max    (int): max degree.
+      n_max    (int): max radial order.
+      R        (float): support radius.
+      EPS      (float): scaling factor (e.g. 1+4πG*0).
+
+    Returns:
+      Phi_eval (ndarray): (M,) potentials at each vertex.
+    """
+    # spherical coords
+    v = vertices - center
+    r = np.linalg.norm(v, axis=1)
+    theta = np.arccos(np.clip(v[:, 2] / r, -1.0, 1.0))
+    phi = np.arctan2(v[:, 1], v[:, 0])
+    R = R_REF
 
     Phi_eval = np.zeros_like(r)
     idx = 0
 
+    # loop degrees/orders
     for l in range(l_max + 1):
-        for m in range(0, l + 1):
-            Plm = lpmv(m, l, np.cos(theta))
-            cos_mphi = EPS * (1 / (2 * l + 1)) * np.cos(m * phi)
-            sin_mphi = EPS * (1 / (2 * l + 1)) * np.sin(m * phi)
+        # precompute Plm for this l
+        Plm_vals = [lpmv(m, l, np.cos(theta)) for m in range(l + 1)]
+        for m in range(l + 1):
+            Plm = Plm_vals[m]
+            cos_mphi = np.cos(m * phi)
+            sin_mphi = np.sin(m * phi) if m > 0 else None
+
             for n in range(n_max + 1):
-                r_pow = r ** (l + n)
-                Phi_eval += coeffs[idx] * r_pow * Plm * cos_mphi
+                exp = n - l + 2
+                # finite-support radial integral
+                if exp == 0:
+                    radial = np.log(R / r) / (2 * l + 1)
+                else:
+                    radial = (R**exp - r**exp) / (exp * (2 * l + 1))
+
+                # cosine term
+                Phi_eval += coeffs[idx] * (EPS * radial * Plm * cos_mphi)
                 idx += 1
+
+                # sine term, if exists
                 if m > 0:
-                    Phi_eval += coeffs[idx] * r_pow * Plm * sin_mphi
+                    Phi_eval += coeffs[idx] * (EPS * radial * Plm * sin_mphi)
                     idx += 1
+
     return Phi_eval
 
 
