@@ -9,11 +9,11 @@ import trimesh
 # Meshes from https://github.com/darioizzo/geodesyNets/tree/master/3dmeshes
 # vertices, faces = mesh_utility.read_pk_file("3dmeshes/churyumov-gerasimenko.pk")
 # vertices_lp, faces_lp = mesh_utility.read_pk_file("3dmeshes/bennu_lp.pk")
-# vertices, faces = np.array(vertices), np.array(faces)
+vertices, faces = np.array(vertices), np.array(faces)
 
-mesh = trimesh.load("3dmeshes/phobos_lowres.obj")
-vertices = mesh.vertices
-faces = mesh.faces
+# mesh = trimesh.load("3dmeshes/phobos_lowlowres.obj")
+# vertices = mesh.vertices
+# faces = mesh.faces
 
 # Compute bounding sphere
 center = np.mean(vertices, axis=0)
