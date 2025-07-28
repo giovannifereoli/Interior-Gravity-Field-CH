@@ -6,8 +6,6 @@
 # Date: 2024-09-30
 #########################################################################################################################
 
-# TODO: prova commit
-
 ## Initialization
 
 # Import necessary libraries
@@ -360,6 +358,7 @@ for m in range(n_m):
             cov_matrix[:, B_idx] = 0.0
         idx += 2
 np.save("fitted_params_both.npy", fitted_params)
+np.save("covariance_matrix.npy", cov_matrix)
 print("Fitted parameters for cylindrical acceleration fitting:", fitted_params)
 
 
@@ -521,39 +520,35 @@ def plot_coefficients_semilogy(A, B, n_n, n_m):
     plt.savefig("Images/coefficients_plot.pdf", dpi=1200, bbox_inches="tight")
 
 
-# Function to plot power spectrum by order m
+# Function to plot power spectrum by order
 def plot_power_spectrum_by_order(A, B, n_n, n_m):
     """
-    Plot the power spectrum of coefficients A and B per order m in semilogarithmic scale.
+    Plot the RMS amplitude of coefficients A and B per order m in semilogarithmic scale.
 
     Args:
         A, B: Coefficient matrices of shape (n_m, n_n).
         n_n: Number of terms in the n (degree) series.
         n_m: Number of terms in the m (order) series.
     """
-    import numpy as np
-    import matplotlib.pyplot as plt
 
     plt.figure(figsize=(12, 8))
 
-    # Compute power per order m
-    power_by_m = np.zeros(n_m)
+    # Compute RMS amplitude per order m
+    rms_by_m = np.zeros(n_m)
     for m in range(n_m):
-        # Sum over n from m to n_n - 1
-        power_by_m[m] = np.sum(A[m, m:n_n] ** 2 + B[m, m:n_n] ** 2)
+        rms_by_m[m] = np.sqrt(np.sum(A[m, m:n_n] ** 2 + B[m, m:n_n] ** 2))
 
-    # Plot
     plt.semilogy(
         range(n_m),
-        power_by_m,
+        rms_by_m,
         marker="o",
         linestyle="-",
         color=COLOR_PALETTE[0],
-        label=r"$\sum_n (A_{mn}^2 + B_{mn}^2)$",
+        label=r"$\sqrt{\sum_n (A_{mn}^2 + B_{mn}^2)}$",
     )
 
     plt.xlabel("Order $m$ (-)", labelpad=10)
-    plt.ylabel("Power per Order (log scale)", labelpad=10)
+    plt.ylabel("RMS Amplitude per Order (log scale)", labelpad=10)
     plt.grid(True, linestyle="--", which="both", linewidth=0.7, alpha=0.8)
     plt.minorticks_on()
     plt.legend(
@@ -563,8 +558,58 @@ def plot_power_spectrum_by_order(A, B, n_n, n_m):
         edgecolor="black",
         fontsize=14,
     )
-    plt.title("Spherical Harmonics Power Spectrum by Order", pad=12)
-    plt.savefig("Images/power_spectrum_by_order.pdf", dpi=1200, bbox_inches="tight")
+    plt.title("RMS Coefficient Spectrum by Order", pad=12)
+    plt.savefig("Images/rms_spectrum_by_order.pdf", dpi=1200, bbox_inches="tight")
+
+
+# Function to plot RMS uncertainty per order m using the covariance matrix
+def plot_uncertainty_power_spectrum(cov_matrix, n_n, n_m):
+    """
+    Plot the RMS uncertainty per order m using the covariance matrix.
+
+    Args:
+        cov_matrix: Covariance matrix of fitted parameters.
+        n_n: Number of degree terms.
+        n_m: Number of order terms.
+    """
+    std_devs = np.sqrt(np.diag(cov_matrix))
+    sigma_A = np.zeros((n_m, n_n))
+    sigma_B = np.zeros((n_m, n_n))
+
+    idx = 0
+    for m in range(n_m):
+        for n in range(1, n_n + 1):
+            sigma_A[m, n - 1] = std_devs[idx]
+            sigma_B[m, n - 1] = std_devs[idx + 1]
+            idx += 2
+
+    rms_uncertainty_by_m = np.sqrt(np.sum(sigma_A**2 + sigma_B**2, axis=1))
+
+    plt.figure(figsize=(12, 8))
+    plt.semilogy(
+        range(n_m),
+        rms_uncertainty_by_m,
+        marker="o",
+        linestyle="-",
+        color=COLOR_PALETTE[3],
+        label=r"$\sqrt{\sum_n (\sigma_{A_{mn}}^2 + \sigma_{B_{mn}}^2)}$",
+    )
+    plt.xlabel("Order $m$ (-)", labelpad=10)
+    plt.ylabel("RMS Uncertainty per Order (log scale)", labelpad=10)
+    plt.title("RMS Uncertainty Spectrum by Order", pad=12)
+    plt.grid(True, linestyle="--", which="both", linewidth=0.7, alpha=0.8)
+    plt.minorticks_on()
+    plt.legend(
+        loc="best",
+        frameon=True,
+        fancybox=True,
+        edgecolor="black",
+        fontsize=14,
+    )
+    plt.savefig(
+        "Images/rms_uncertainty_spectrum_by_order.pdf", dpi=1200, bbox_inches="tight"
+    )
+    plt.show()
 
 
 # Function to display coefficients in matrix form
@@ -602,6 +647,8 @@ A, B = print_fitted_parameters(fitted_params, n_n, n_m)
 plot_coefficients_semilogy(A, B, n_n, n_m)
 plot_coefficient_matrices(A, B)
 # plot_power_spectrum_by_order(A, B, n_n, n_m)
+# plot_uncertainty_power_spectrum(cov_matrix, n_n, n_m)
+
 
 ## Plot percentage error
 

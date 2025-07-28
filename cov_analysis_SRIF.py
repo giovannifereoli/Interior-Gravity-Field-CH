@@ -13,6 +13,9 @@ CYLINDER_ROTATION = np.eye(3)
 ALPHA = 100
 rotation_inv = np.linalg.inv(CYLINDER_ROTATION)
 
+# NOTE: Your trajectory may not break azimuthal symmetry enough — e.g., it may favor odd
+# m harmonics if your path spirals or moves more in rho than phi.
+
 
 def compute_A_and_sensitivities(
     rho, phi, z, m_vals, j_mn, A_coeff, B_coeff, alpha, Rstar
@@ -66,9 +69,9 @@ def compute_A_and_sensitivities(
         [
             [d2_drho2, d2_dphi_drho, d2_dz_drho],
             [
-                -dPhi_dphi / (rho**2 + 1e-14) + d2_dphi_drho / (rho + 1e-14),
-                d2_dphi2 / (rho + 1e-14),
-                d2_dz_dphi / (rho + 1e-14),
+                -dPhi_dphi / (rho**2) + d2_dphi_drho / (rho),
+                d2_dphi2 / (rho),
+                d2_dz_dphi / (rho),
             ],
             [d2_dz_drho, d2_dz_dphi, d2_dz2],
         ]
@@ -77,8 +80,8 @@ def compute_A_and_sensitivities(
     sens = {
         "a_rho_A": exp_term * (j_mn / fac) * Jm_p * cos_mphi,
         "a_rho_B": exp_term * (j_mn / fac) * Jm_p * sin_mphi,
-        "a_phi_A": -(1 / (rho + 1e-14)) * exp_term * Jm * m_vals * sin_mphi,
-        "a_phi_B": (1 / (rho + 1e-14)) * exp_term * Jm * m_vals * cos_mphi,
+        "a_phi_A": -(1 / (rho)) * exp_term * Jm * m_vals * sin_mphi,
+        "a_phi_B": (1 / (rho)) * exp_term * Jm * m_vals * cos_mphi,
         "a_z_A": -(j_mn / fac) * exp_term * Jm * cos_mphi,
         "a_z_B": -(j_mn / fac) * exp_term * Jm * sin_mphi,
     }
@@ -138,7 +141,7 @@ def compute_acceleration(position, fitted_params, n_n, n_m, j_mn_cache):
         exp_term * (j_mn / fac) * Jm_p * (A_coeff * cos_mphi + B_coeff * sin_mphi)
     )
     a_cyl[1] = np.sum(
-        (1 / (rho + 1e-14))
+        (1 / (rho))
         * exp_term
         * Jm
         * m_vals
@@ -183,7 +186,7 @@ def compute_dynamical_matrix(position, fitted_params, n_n, n_m, j_mn_cache):
         exp_term * (j_mn / fac) * Jm_p * (A_coeff * cos_mphi + B_coeff * sin_mphi)
     )
     a_cyl[1] = np.sum(
-        (1 / (rho + 1e-14))
+        (1 / (rho))
         * exp_term
         * Jm
         * m_vals
@@ -217,7 +220,58 @@ def compute_dynamical_matrix(position, fitted_params, n_n, n_m, j_mn_cache):
     return A
 
 
-def compute_measurement_partials(position, n_state):
+def compute_measurement_partials(position, n_state, fx=1000, fy=1000):
+    """
+    Compute the measurement model Jacobian H and noise covariance R
+    for range + optical navigation (pixel, line) measurements of CYLINDER_CENTER.
+
+    Args:
+        position: Camera position in inertial frame [x, y, z].
+        n_state: State dimension (6 + params).
+        fx, fy: Focal lengths in pixels.
+
+    Returns:
+        H: 3xN Jacobian matrix [drange/dstate, dpixel/dstate, dline/dstate]
+        R: 3x3 measurement noise covariance matrix.
+    """
+    # Vector from camera to landmark (center of cylinder)
+    dx, dy, dz = CYLINDER_CENTER - position
+    rho_sq = dx**2 + dy**2 + dz**2
+    rho = np.sqrt(rho_sq)
+
+    # Projected pixel and line in image plane
+    xp = fx * dx / dz
+    yp = fy * dy / dz
+
+    # Initialize measurement Jacobian
+    H = np.zeros((3, n_state))
+
+    # Range partials
+    H[0, 0] = -dx / rho
+    H[0, 1] = -dy / rho
+    H[0, 2] = -dz / rho
+
+    # Pixel partials (dxp/dx)
+    H[1, 0] = -fx / dz
+    H[1, 2] = fx * dx / dz**2
+
+    # Line partials (dyp/dx)
+    H[2, 1] = -fy / dz
+    H[2, 2] = fy * dy / dz**2
+
+    # Measurement noise covariance
+    R = np.diag(
+        [
+            (1e-4) ** 2,  # Range [km^2]
+            (0.2) ** 2,  # Pixel noise [pixels^2]
+            (0.2) ** 2,  # Line noise [pixels^2]
+        ]
+    )
+
+    return H, R
+
+
+def compute_measurement_partials2(position, n_state):
     """
     Compute the measurement model Jacobian H and noise covariance R for range and angular measurements.
 
@@ -254,7 +308,7 @@ def compute_measurement_partials(position, n_state):
     H[2, 2] = (r**2 - dz**2) / (r**3 * cos_phi)  # dphi/dz
 
     # Measurement noise covariance
-    R = np.diag([(1e-3) ** 2, 0.001**2, 0.001**2])  # [km^2, rad^2, rad^2]
+    R = np.diag([(1e-4) ** 2, 0.001**2, 0.001**2])  # [km^2, rad^2, rad^2]
 
     return H, R
 
@@ -334,6 +388,8 @@ def _dynamics_full(t, y, n_state, fitted_params, n_n, n_m, j_mn_cache):
 if __name__ == "__main__":
     # Load fitted parameters
     fitted_params = np.load("fitted_params_both.npy")
+    full_cov_params = np.load("covariance_matrix.npy")
+    full_cov_params[full_cov_params < 1e-30] = 1e-128  # For B_0n coefficients
     print("Loaded fitted parameters from 'fitted_params_both.npy'")
 
     n_n, n_m = 5, 5
@@ -349,10 +405,11 @@ if __name__ == "__main__":
     n_state = 6 + 2 * n_n * n_m
     P0 = np.zeros((n_state, n_state))
     P0[:3, :3] = np.eye(3) * (1e-3) ** 2  # Position variance: 1e-3 km
-    P0[3:6, 3:6] = np.eye(3) * (1e-6) ** 2  # Velocity variance: 1e-6 km/s
-    P0[6:, 6:] = np.eye(2 * n_n * n_m) * 1e-8  # Coefficient variance: 1e-8
+    P0[3:6, 3:6] = np.eye(3) * (1e-3) ** 2  # Velocity variance: 1e-3 km/s
+    P0[6:, 6:] = np.diag(np.diag(full_cov_params))
 
-    t_span = np.linspace(0, 55000, 100)
+    stop_at_percent = 0.985
+    t_span = np.linspace(0, stop_at_percent * 55000, 1000)
 
     t, state, stm = propagate_state_and_stm(
         initial_state, fitted_params, n_n, n_m, t_span
@@ -407,7 +464,7 @@ if __name__ == "__main__":
     print("Propagation and update completed.")
 
     # Plotting
-    fig = plt.figure(figsize=(15, 12))
+    fig = plt.figure(figsize=(12, 8))
 
     # 3D Trajectory Plot
     ax1 = fig.add_subplot(231, projection="3d")
@@ -510,5 +567,48 @@ if __name__ == "__main__":
     ax6.legend(fontsize=6)
     ax6.grid(True, which="both")
 
+    plt.tight_layout()
+    plt.show()
+
+    # Compute the RMS of signal and noise by spectral order m and plot signal-to-noise ratio
+    # Final covariance
+    final_P = P[:, :, -1]
+
+    # Standard deviation of the estimated parameters (uncertainties)
+    coeff_std = np.sqrt(np.diag(final_P)[6:])  # 6+ onward are cylindrical coeffs
+
+    # Fitted values
+    fitted_params = fitted_params[: 2 * n_n * n_m]
+
+    # RMS signal and uncertainty grouped by spectral order m
+    signal_rms_by_m = []
+    noise_rms_by_m = []
+    snr_by_m = []
+
+    for m in range(n_m):
+        idx_start = m * 2 * n_n
+        idx_end = idx_start + 2 * n_n
+        coeffs_m = fitted_params[idx_start:idx_end]
+        stds_m = coeff_std[idx_start:idx_end]
+
+        signal_rms = np.sqrt(np.sum(coeffs_m**2))
+        noise_rms = np.sqrt(np.sum(stds_m**2))
+        snr = signal_rms / noise_rms if noise_rms > 0 else np.nan
+
+        signal_rms_by_m.append(signal_rms)
+        noise_rms_by_m.append(noise_rms)
+        snr_by_m.append(snr)
+
+    # Plotting
+    plt.figure(figsize=(10, 5))
+    plt.plot(range(n_m), signal_rms_by_m, marker="o", label="Signal RMS")
+    plt.plot(range(n_m), noise_rms_by_m, marker="x", label="Noise RMS")
+    plt.plot(range(n_m), snr_by_m, marker="s", label="Signal-to-Noise Ratio")
+    plt.yscale("log")
+    plt.xlabel("Spectral Order $m$")
+    plt.ylabel("RMS / SNR (log scale)")
+    plt.title("Signal, Noise, and Signal-to-Noise Ratio by Spectral Order $m$")
+    plt.legend()
+    plt.grid(True, which="both")
     plt.tight_layout()
     plt.show()
