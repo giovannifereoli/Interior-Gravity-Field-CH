@@ -409,7 +409,7 @@ if __name__ == "__main__":
     P0[6:, 6:] = np.diag(np.diag(full_cov_params))
 
     stop_at_percent = 0.985
-    t_span = np.linspace(0, stop_at_percent * 55000, 1000)
+    t_span = np.linspace(0, stop_at_percent * 55000, 10 * 55000)
 
     t, state, stm = propagate_state_and_stm(
         initial_state, fitted_params, n_n, n_m, t_span
