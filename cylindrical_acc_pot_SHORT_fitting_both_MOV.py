@@ -284,7 +284,7 @@ def prepare_linear_system_for_cylindrical_potential(points, potentials, n_n, n_m
 
 
 # Generate the matrix A and vector b
-n_n, n_m = 25, 25  # Truncation parameters
+n_n, n_m = 5, 5  # Truncation parameters
 num_params = 2 * n_n * n_m  # Updated for two coefficients per term (A and B)
 points = structured_results["points"]
 accelerations = structured_results["acceleration"]
@@ -359,7 +359,7 @@ for m in range(n_m):
             cov_matrix[B_idx, :] = 0.0
             cov_matrix[:, B_idx] = 0.0
         idx += 2
-
+np.save("fitted_params_both.npy", fitted_params)
 print("Fitted parameters for cylindrical acceleration fitting:", fitted_params)
 
 
