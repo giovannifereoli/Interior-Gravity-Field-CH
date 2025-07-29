@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from numpy.linalg import cholesky, solve, qr
 import matplotlib as mpl
+from datetime import datetime
 
 # Set plotting style
 COLOR_PALETTE = [
@@ -432,7 +433,7 @@ if __name__ == "__main__":
     P0[6:, 6:] = np.diag(np.diag(full_cov_params))
 
     stop_at_percent = 0.985
-    t_span = np.linspace(0, stop_at_percent * 55000, 100)
+    t_span = np.linspace(0, stop_at_percent * 55000, 10 * 55000 + 1)  # 10 Hz sampling
 
     t, state, stm = propagate_state_and_stm(
         initial_state, fitted_params, n_n, n_m, t_span
@@ -540,7 +541,9 @@ if __name__ == "__main__":
     ax3.grid(True)
     plt.tight_layout()
     fig1.savefig(
-        "Images/fig_trajectory_position_velocity.pdf", dpi=1200, bbox_inches="tight"
+        f"Images/fig_trajectory_position_velocity_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+        dpi=1200,
+        bbox_inches="tight",
     )
 
     # Plot covariance results
@@ -623,7 +626,11 @@ if __name__ == "__main__":
     ax6.legend(fontsize=10, ncol=3)
     ax6.grid(True, which="both")
     plt.tight_layout()
-    fig2.savefig("Images/fig_uncertainty_rmsr.pdf", dpi=1200, bbox_inches="tight")
+    fig2.savefig(
+        f"Images/fig_uncertainty_rmsr_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+        dpi=1200,
+        bbox_inches="tight",
+    )
     plt.show()
 
     # Compute the RMS of signal and noise by spectral order m and plot signal-to-noise ratio
@@ -671,5 +678,9 @@ if __name__ == "__main__":
     plt.legend(fontsize=10)
     plt.grid(True, which="both")
     plt.tight_layout()
-    plt.savefig("Images/fig_signal_noise_snr.pdf", dpi=1200, bbox_inches="tight")
+    plt.savefig(
+        f"Images/fig_signal_noise_snr_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+        dpi=1200,
+        bbox_inches="tight",
+    )
     plt.show()
