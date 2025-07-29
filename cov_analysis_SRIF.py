@@ -5,6 +5,26 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from numpy.linalg import cholesky, solve, qr
+import matplotlib as mpl
+
+# Set plotting style
+COLOR_PALETTE = [
+    "#d7191c",  # red
+    "#fdae61",  # orange
+    "#2c7bb6",  # dark blue
+    "#abd9e9",  # light blue
+    "#66c2a5",  # teal green
+    "#3288bd",  # ocean blue
+    "#9e0142",  # dark red
+    "#fee08b",  # pale yellow
+    "#5e4fa2",  # purple
+    "#a6d96a",  # green
+    "#1b7837",  # deep forest green
+]
+mpl.rcParams["axes.prop_cycle"] = mpl.cycler(color=COLOR_PALETTE)
+mpl.rcParams["text.usetex"] = True
+mpl.rcParams["font.family"] = "serif"
+
 
 # Define constants
 CYLINDER_CENTER = np.array([0.0, 0.0, 0.28])
@@ -15,6 +35,9 @@ rotation_inv = np.linalg.inv(CYLINDER_ROTATION)
 
 # NOTE: Your trajectory may not break azimuthal symmetry enough — e.g., it may favor odd
 # m harmonics if your path spirals or moves more in rho than phi.
+
+# TODO: why improves at m=0 with frequency smaller?
+# TODO: batch? it doesn't make sense...
 
 
 def compute_A_and_sensitivities(
@@ -409,7 +432,7 @@ if __name__ == "__main__":
     P0[6:, 6:] = np.diag(np.diag(full_cov_params))
 
     stop_at_percent = 0.985
-    t_span = np.linspace(0, stop_at_percent * 55000, 10 * 55000)
+    t_span = np.linspace(0, stop_at_percent * 55000, 100)
 
     t, state, stm = propagate_state_and_stm(
         initial_state, fitted_params, n_n, n_m, t_span
@@ -463,90 +486,117 @@ if __name__ == "__main__":
 
     print("Propagation and update completed.")
 
-    # Plotting
-    fig = plt.figure(figsize=(12, 8))
+    # Plotting results
+    fig1 = plt.figure(figsize=(14, 5))
 
-    # 3D Trajectory Plot
-    ax1 = fig.add_subplot(231, projection="3d")
-    ax1.plot(state[0, :], state[1, :], state[2, :], label="Trajectory", color="b")
+    # Trajectory
+    ax1 = fig1.add_subplot(131, projection="3d")
+    ax1.plot(
+        state[0, :],
+        state[1, :],
+        state[2, :],
+        color=COLOR_PALETTE[0],
+        label="Trajectory",
+    )
     ax1.scatter(
-        [0], [0], [CYLINDER_CENTER[2]], color="r", s=100, label="Cylinder Center"
+        [0],
+        [0],
+        [CYLINDER_CENTER[2]],
+        color=COLOR_PALETTE[1],
+        s=100,
+        label="Cylinder Center",
     )
     theta = np.linspace(0, 2 * np.pi, 50)
-    z_cyl = np.linspace(CYLINDER_CENTER[2] - 0.1, CYLINDER_CENTER[2] + 0.1, 10)
+    z_cyl = np.linspace(CYLINDER_CENTER[2], initial_position[2], 10)
     theta, z_cyl = np.meshgrid(theta, z_cyl)
     x_cyl = CYLINDER_RADIUS * np.cos(theta)
     y_cyl = CYLINDER_RADIUS * np.sin(theta)
-    ax1.plot_wireframe(x_cyl, y_cyl, z_cyl, color="r", alpha=0.3, label="Cylinder")
-    ax1.set_xlabel("X (m)")
-    ax1.set_ylabel("Y (m)")
-    ax1.set_zlabel("Z (m)")
-    ax1.set_title("3D Trajectory")
-    ax1.legend()
+    ax1.plot_wireframe(x_cyl, y_cyl, z_cyl, color=COLOR_PALETTE[1], alpha=0.3)
+    ax1.set_xlabel(r"$X$ (km)", fontsize=12)
+    ax1.set_ylabel(r"$Y$ (km)", fontsize=12)
+    ax1.set_zlabel(r"$Z$ (km)", fontsize=12)
+    ax1.legend(fontsize=10)
     ax1.grid(True)
+    ax1.set_aspect("equal")
 
-    # Position vs. Time
-    ax2 = fig.add_subplot(232)
-    ax2.plot(t, state[0, :], label="X", color="r")
-    ax2.plot(t, state[1, :], label="Y", color="g")
-    ax2.plot(t, state[2, :], label="Z", color="b")
-    ax2.set_xlabel("Time (s)")
-    ax2.set_ylabel("Position (m)")
-    ax2.set_title("Position vs. Time")
-    ax2.legend()
+    # Position vs Time
+    ax2 = fig1.add_subplot(132)
+    ax2.plot(t / 3600, state[0, :], label=r"$x$", color=COLOR_PALETTE[0])
+    ax2.plot(t / 3600, state[1, :], label=r"$y$", color=COLOR_PALETTE[1])
+    ax2.plot(t / 3600, state[2, :], label=r"$z$", color=COLOR_PALETTE[2])
+    ax2.set_xlabel(r"Time (hr)", fontsize=12)
+    ax2.set_ylabel(r"Position (km)", fontsize=12)
+    ax2.legend(fontsize=10)
     ax2.grid(True)
 
-    # Velocity vs. Time
-    ax3 = fig.add_subplot(233)
-    ax3.plot(t, state[3, :], label="Vx", color="r")
-    ax3.plot(t, state[4, :], label="Vy", color="g")
-    ax3.plot(t, state[5, :], label="Vz", color="b")
-    ax3.set_xlabel("Time (s)")
-    ax3.set_ylabel("Velocity (m/s)")
-    ax3.set_title("Velocity vs. Time")
-    ax3.legend()
+    # Velocity vs Time
+    ax3 = fig1.add_subplot(133)
+    ax3.plot(t / 3600, state[3, :], label=r"$v_x$", color=COLOR_PALETTE[0])
+    ax3.plot(t / 3600, state[4, :], label=r"$v_y$", color=COLOR_PALETTE[1])
+    ax3.plot(t / 3600, state[5, :], label=r"$v_z$", color=COLOR_PALETTE[2])
+    ax3.set_xlabel(r"Time (hr)", fontsize=12)
+    ax3.set_ylabel(r"Velocity (km/s)", fontsize=12)
+    ax3.legend(fontsize=10)
     ax3.grid(True)
-
-    # STM Diagonal Elements (first 6)
-    ax4 = fig.add_subplot(234)
-    pos_std = np.vstack(
-        [
-            np.sqrt(P[0, 0, :]),
-            np.sqrt(P[1, 1, :]),
-            np.sqrt(P[2, 2, :]),
-        ]
+    plt.tight_layout()
+    fig1.savefig(
+        "Images/fig_trajectory_position_velocity.pdf", dpi=1200, bbox_inches="tight"
     )
-    ax4.scatter(t, pos_std[0, :], label="σ_x", color="r", s=8)
-    ax4.scatter(t, pos_std[1, :], label="σ_y", color="g", s=8)
-    ax4.scatter(t, pos_std[2, :], label="σ_z", color="b", s=8)
+
+    # Plot covariance results
+    fig2 = plt.figure(figsize=(14, 5))
+
+    # Position Uncertainty
+    ax4 = fig2.add_subplot(131)
+    ax4.scatter(
+        t / 3600, np.sqrt(P[0, 0, :]), label=r"$\sigma_x$", s=8, color=COLOR_PALETTE[0]
+    )
+    ax4.scatter(
+        t / 3600, np.sqrt(P[1, 1, :]), label=r"$\sigma_y$", s=8, color=COLOR_PALETTE[1]
+    )
+    ax4.scatter(
+        t / 3600, np.sqrt(P[2, 2, :]), label=r"$\sigma_z$", s=8, color=COLOR_PALETTE[2]
+    )
     ax4.set_yscale("log")
-    ax4.set_xlabel("Time (s)")
-    ax4.set_ylabel("Standard Deviation (km)")
-    ax4.set_title("Position Uncertainty")
-    ax4.legend()
+    ax4.set_xlabel(r"Time (hr)", fontsize=12)
+    ax4.set_ylabel(r"Std. Dev. (km)", fontsize=12)
+    ax4.legend(fontsize=10)
     ax4.grid(True, which="both")
 
-    # Position and Velocity Uncertainty
-    ax5 = fig.add_subplot(235)
-    vel_std = np.vstack(
-        [
-            np.sqrt(P[3, 3, :]),
-            np.sqrt(P[4, 4, :]),
-            np.sqrt(P[5, 5, :]),
-        ]
+    # Velocity Uncertainty
+    ax5 = fig2.add_subplot(132)
+    ax5.scatter(
+        t / 3600,
+        np.sqrt(P[3, 3, :]),
+        label=r"$\sigma_{v_x}$",
+        s=8,
+        marker="x",
+        color=COLOR_PALETTE[0],
     )
-    ax5.scatter(t, vel_std[0, :], label="σ_vx", color="r", s=8, marker="x")
-    ax5.scatter(t, vel_std[1, :], label="σ_vy", color="g", s=8, marker="x")
-    ax5.scatter(t, vel_std[2, :], label="σ_vz", color="b", s=8, marker="x")
+    ax5.scatter(
+        t / 3600,
+        np.sqrt(P[4, 4, :]),
+        label=r"$\sigma_{v_y}$",
+        s=8,
+        marker="x",
+        color=COLOR_PALETTE[1],
+    )
+    ax5.scatter(
+        t / 3600,
+        np.sqrt(P[5, 5, :]),
+        label=r"$\sigma_{v_z}$",
+        s=8,
+        marker="x",
+        color=COLOR_PALETTE[2],
+    )
     ax5.set_yscale("log")
-    ax5.set_xlabel("Time (s)")
-    ax5.set_ylabel("Standard Deviation (km/s)")
-    ax5.set_title("Velocity Uncertainty")
-    ax5.legend()
+    ax5.set_xlabel(r"Time (hr)", fontsize=12)
+    ax5.set_ylabel(r"Std. Dev. (km/s)", fontsize=12)
+    ax5.legend(fontsize=10)
     ax5.grid(True, which="both")
 
-    # Coefficient Uncertainty (RMS by Spectral Order m)
-    ax6 = fig.add_subplot(236)
+    # Coefficient RMS by m
+    ax6 = fig2.add_subplot(133)
     coeff_std = np.zeros((2 * n_n * n_m, len(t)))
     for i in range(2 * n_n * n_m):
         coeff_std[i, :] = np.sqrt(P[6 + i, 6 + i, :])
@@ -559,28 +609,27 @@ if __name__ == "__main__":
         rms_by_m.append(rms_m)
     rms_by_m = np.array(rms_by_m)  # shape: (n_m, len(t))
     for m in range(n_m):
-        ax6.scatter(t, rms_by_m[m], label=f"$m={m}$", s=8, marker="o")
+        ax6.plot(
+            t / 3600,  # Convert time to hours
+            rms_by_m[m],
+            marker="o",
+            markersize=2,
+            linestyle="None",
+            label=rf"$m={m}$",
+        )
     ax6.set_yscale("log")
-    ax6.set_xlabel("Time (s)")
-    ax6.set_ylabel("RMS Std. Dev.")
-    ax6.set_title("Coefficient RMS Uncertainty by $m$")
-    ax6.legend(fontsize=6)
+    ax6.set_xlabel(r"Time (hr)", fontsize=12)
+    ax6.set_ylabel(r"RMS Std. Dev. (-)", fontsize=12)
+    ax6.legend(fontsize=10, ncol=3)
     ax6.grid(True, which="both")
-
     plt.tight_layout()
+    fig2.savefig("Images/fig_uncertainty_rmsr.pdf", dpi=1200, bbox_inches="tight")
     plt.show()
 
     # Compute the RMS of signal and noise by spectral order m and plot signal-to-noise ratio
-    # Final covariance
     final_P = P[:, :, -1]
-
-    # Standard deviation of the estimated parameters (uncertainties)
     coeff_std = np.sqrt(np.diag(final_P)[6:])  # 6+ onward are cylindrical coeffs
-
-    # Fitted values
     fitted_params = fitted_params[: 2 * n_n * n_m]
-
-    # RMS signal and uncertainty grouped by spectral order m
     signal_rms_by_m = []
     noise_rms_by_m = []
     snr_by_m = []
@@ -601,14 +650,26 @@ if __name__ == "__main__":
 
     # Plotting
     plt.figure(figsize=(10, 5))
-    plt.plot(range(n_m), signal_rms_by_m, marker="o", label="Signal RMS")
-    plt.plot(range(n_m), noise_rms_by_m, marker="x", label="Noise RMS")
-    plt.plot(range(n_m), snr_by_m, marker="s", label="Signal-to-Noise Ratio")
+    plt.plot(
+        range(n_m),
+        signal_rms_by_m,
+        marker="o",
+        label="Signal RMS",
+        color=COLOR_PALETTE[0],
+    )
+    plt.plot(
+        range(n_m),
+        noise_rms_by_m,
+        marker="x",
+        label="Noise RMS",
+        color=COLOR_PALETTE[1],
+    )
+    plt.plot(range(n_m), snr_by_m, marker="s", label="SNR", color=COLOR_PALETTE[2])
     plt.yscale("log")
-    plt.xlabel("Spectral Order $m$")
-    plt.ylabel("RMS / SNR (log scale)")
-    plt.title("Signal, Noise, and Signal-to-Noise Ratio by Spectral Order $m$")
-    plt.legend()
+    plt.xlabel(r"Spectral Order $m$ (-)", fontsize=12)
+    plt.ylabel(r"RMS / SNR (-)", fontsize=12)
+    plt.legend(fontsize=10)
     plt.grid(True, which="both")
     plt.tight_layout()
+    plt.savefig("Images/fig_signal_noise_snr.pdf", dpi=1200, bbox_inches="tight")
     plt.show()
