@@ -37,8 +37,10 @@ rotation_inv = np.linalg.inv(CYLINDER_ROTATION)
 # NOTE: Your trajectory may not break azimuthal symmetry enough — e.g., it may favor odd
 # m harmonics if your path spirals or moves more in rho than phi.
 
-# TODO: why improves at m=0 with frequency smaller?
-# TODO: batch? it doesn't make sense...
+# TODO: Why m=0 SNR improves after high-order and with higher measurement cadence?
+# TODO: pick realistic and good sensor suite, implement realistic models, cadence and noise, minimum height, etc.
+# TODO: add consider covariance or empirical accelerations for covariance realism
+# TODO: Check A and rotations, math in general, pipeline, etc.
 
 
 def compute_A_and_sensitivities(
