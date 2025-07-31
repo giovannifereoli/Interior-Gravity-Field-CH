@@ -4,7 +4,7 @@ from scipy.integrate import solve_ivp
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
-from numpy.linalg import cholesky, solve, qr
+from scipy.linalg import cholesky, qr
 import matplotlib as mpl
 from datetime import datetime
 
@@ -435,7 +435,7 @@ if __name__ == "__main__":
     P0[6:, 6:] = np.diag(np.diag(full_cov_params))
 
     stop_at_percent = 0.985
-    t_span = np.linspace(0, stop_at_percent * 55000, 10 * 55000 + 1)  # 10 Hz sampling
+    t_span = np.linspace(0, stop_at_percent * 55000, 100)  # 10 Hz sampling
 
     t, state, stm = propagate_state_and_stm(
         initial_state, fitted_params, n_n, n_m, t_span
@@ -443,49 +443,48 @@ if __name__ == "__main__":
 
     # Initialize square root information matrix using solve, not inv
     print("Propagating and updating SRIF covariance matrix...")
-    R_sqrt = cholesky(solve(P0, np.eye(n_state)))  # Upper triangular by default
-    info_vec = R_sqrt @ np.zeros(n_state)
 
-    R_hist = np.zeros((n_state, n_state, len(t)))
+    # Initialize SRIF variables
+    n_state = P0.shape[0]
+    n_steps = len(t)
+
+    # Initialize square root information matrix
+    R_sqrt = cholesky(np.linalg.inv(P0), lower=False)
+
+    R_hist = np.empty((n_state, n_state, n_steps))
     R_hist[:, :, 0] = R_sqrt
 
     STM_tm = np.eye(n_state)
-    P = np.zeros((n_state, n_state, len(t)))
+    P = np.empty((n_state, n_state, n_steps))
     P[:, :, 0] = P0
+
+    # Precompute identity matrix
     I_n = np.eye(n_state)
 
+    # Precompute measurement whitening matrix
     _, R_meas = compute_measurement_partials(state[:3, 1], n_state)
-    SRI = cholesky(solve(R_meas, np.eye(3)))  # Upper-triangular whitening
+    SRI = cholesky(np.linalg.inv(R_meas), lower=False)
 
-    for i in tqdm(range(1, len(t)), desc="SRIF", ncols=80):
-        Phi = stm[:, :, i] @ solve(STM_tm, I_n)
+    for i in tqdm(range(1, n_steps), desc="SRIF", ncols=80):
+        # Compute the STM for the current step
+        Phi = stm[:, :, i] @ np.linalg.inv(STM_tm)
         STM_tm = stm[:, :, i]
 
-        # Prediction step: re-triangularize
-        pred_matrix = np.hstack([R_sqrt @ solve(Phi, I_n), info_vec.reshape(-1, 1)])
-        _, RQ = qr(pred_matrix)
+        # Prediction step
+        pred_matrix = R_sqrt @ np.linalg.inv(Phi)
+        _, RQ = qr(pred_matrix, mode="economic")
         R_sqrt = RQ[:n_state, :n_state]
-        info_vec = RQ[:n_state, -1]
 
         # Measurement update
         H, _ = compute_measurement_partials(state[:3, i], n_state)
         H_w = SRI @ H
-        r_w = SRI @ np.zeros(H.shape[0])  # still 0 for covariance-only run
+        update_matrix = np.vstack([R_sqrt, H_w])
+        Q, R_combined = qr(update_matrix, mode="economic", pivoting=False)
+        R_sqrt = R_combined[:n_state, :n_state]
 
-        update_matrix = np.vstack(
-            [
-                np.hstack([R_sqrt, info_vec.reshape(-1, 1)]),
-                np.hstack([H_w, r_w.reshape(-1, 1)]),
-            ]
-        )
-        _, RQ = qr(update_matrix)
-        R_sqrt = RQ[:n_state, :n_state]
-        info_vec = RQ[:n_state, -1]
-
-        R_hist[:, :, i] = R_sqrt
-
-        # P reconstruction
-        P[:, :, i] = solve(R_sqrt.T, solve(R_sqrt, I_n))
+        # Covariance reconstruction
+        RtR = R_sqrt.T @ R_sqrt
+        P[:, :, i] = np.linalg.inv(RtR)
 
     print("Propagation and update completed.")
 
