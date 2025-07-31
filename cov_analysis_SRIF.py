@@ -37,10 +37,11 @@ rotation_inv = np.linalg.inv(CYLINDER_ROTATION)
 # NOTE: Your trajectory may not break azimuthal symmetry enough — e.g., it may favor odd
 # m harmonics if your path spirals or moves more in rho than phi.
 
-# TODO: Why m=0 SNR improves after high-order and with higher measurement cadence?
+# TODO: Why m=2,4 doesnt improve? Is the trajectory?
 # TODO: pick realistic and good sensor suite, implement realistic models, cadence and noise, minimum height, etc.
-# TODO: add consider covariance or empirical accelerations for covariance realism
+# TODO: Covariance realism isn't the aim here (consider convariance or SNC), it's just to see how those parameters estimation evolve. Does Jay agree?
 # TODO: Check A and rotations, math in general, pipeline, etc.
+# TODO: optical flow exploitation?
 
 
 def compute_A_and_sensitivities(
@@ -435,7 +436,7 @@ if __name__ == "__main__":
     P0[6:, 6:] = np.diag(np.diag(full_cov_params))
 
     stop_at_percent = 0.985
-    t_span = np.linspace(0, stop_at_percent * 55000, 100)  # 10 Hz sampling
+    t_span = np.linspace(0, stop_at_percent * 55000, 100)  # 1 Hz sampling
 
     t, state, stm = propagate_state_and_stm(
         initial_state, fitted_params, n_n, n_m, t_span
@@ -450,9 +451,6 @@ if __name__ == "__main__":
 
     # Initialize square root information matrix
     R_sqrt = cholesky(np.linalg.inv(P0), lower=False)
-
-    R_hist = np.empty((n_state, n_state, n_steps))
-    R_hist[:, :, 0] = R_sqrt
 
     STM_tm = np.eye(n_state)
     P = np.empty((n_state, n_state, n_steps))
@@ -479,7 +477,7 @@ if __name__ == "__main__":
         H, _ = compute_measurement_partials(state[:3, i], n_state)
         H_w = SRI @ H
         update_matrix = np.vstack([R_sqrt, H_w])
-        Q, R_combined = qr(update_matrix, mode="economic", pivoting=False)
+        Q, R_combined = qr(update_matrix, mode="economic")
         R_sqrt = R_combined[:n_state, :n_state]
 
         # Covariance reconstruction
