@@ -295,7 +295,7 @@ def plot_cov_ellipses(fig, mean, cov, color, nsig=1.0):
             vals, vecs = vals[order], vecs[:, order]
             angle = np.degrees(np.arctan2(*vecs[:, 0][::-1]))
 
-            width, height = 6 * nsig * np.sqrt(vals)
+            width, height = 4 * nsig * np.sqrt(vals)
 
             ell = patches.Ellipse(
                 xy=sub_mean,
@@ -552,7 +552,8 @@ if __name__ == "__main__":
         bins=30,
         hist_kwargs={"linewidth": 1.5},
         data_kwargs={"alpha": 0.6},
-        plot_density=False,
+        plot_contours=True,
+        fill_contours=True,
         max_n_ticks=5,
         space=0.15,
     )
@@ -578,9 +579,9 @@ if __name__ == "__main__":
             color=COLOR_PALETTE[2],
             lw=2,
             linestyle="--",
-            label=r"LinCov $3\sigma$",
+            label=r"LinCov $2\sigma$",
         ),
-        Line2D([0], [0], color="k", lw=2, linestyle="--", label=r"MC $3\sigma$"),
+        Line2D([0], [0], color="k", lw=2, linestyle="--", label=r"MC $2\sigma$"),
     ]
 
     fig.legend(
