@@ -34,6 +34,17 @@ CYLINDER_ROTATION = np.eye(3)
 ALPHA = 100
 rotation_inv = np.linalg.inv(CYLINDER_ROTATION)
 
+# NOTE: For J1, perform pure covariance propagation using Monte Carlo.
+# It is going to be a paper on dynamics.  Perhaps CMDA.  Then you will
+# write a paper on JGCD or something related to engineering applications,
+# complete with cases.  There, you can run multiple cases while also
+# implementing the actual variable density (i.e., increase priori P for sure).
+# Perhaps the first is about pinpoint landing with OpNav and altimeter,
+# and the second is about using a transponder and stationkeeping to better
+# fit those coefficients in order to estimate a mascon beneath the surface.
+# You can also collaborate and use MCMC or optical flow to complete the circle.
+# I really like this!
+
 # NOTE: Your trajectory may not break azimuthal symmetry enough — e.g., it may favor odd
 # m harmonics if your path spirals or moves more in rho than phi.
 

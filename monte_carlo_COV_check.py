@@ -390,7 +390,7 @@ if __name__ == "__main__":
     print("Propagation covariance completed.")
 
     # Parameters
-    N_samples = 1000  # Monte Carlo sample count
+    N_samples = 10000  # Monte Carlo sample count
     MC_w_polyhedral = True
     rng = np.random.default_rng(42)
     n_state = initial_state.shape[0]
@@ -558,32 +558,41 @@ if __name__ == "__main__":
         space=0.15,
     )
 
-    # Add SRIF mean and ellipse (colored)
-    corner.overplot_lines(fig, srif_mean_plot, color=COLOR_PALETTE[2], lw=1.5)
-    plot_cov_ellipses(fig, srif_mean_plot, srif_cov_plot, COLOR_PALETTE[2])
-
     # Add MC mean and ellipse (black)
     mc_mean_plot = final_mean_mc[compare_idx]
     mc_cov_plot = final_cov_mc[np.ix_(compare_idx, compare_idx)]
     corner.overplot_lines(fig, mc_mean_plot, color="k", lw=1.5)
     plot_cov_ellipses(fig, mc_mean_plot, mc_cov_plot, "k")
 
-    # Legend
+    # Add SRIF mean and ellipse (colored)
+    corner.overplot_lines(fig, srif_mean_plot, color=COLOR_PALETTE[2], lw=1.5)
+    plot_cov_ellipses(fig, srif_mean_plot, srif_cov_plot, COLOR_PALETTE[2])
+
+    # Add title and legend
     legend_elements = [
-        Line2D([0], [0], color=COLOR_PALETTE[0], lw=2, label="Monte Carlo Samples"),
-        Line2D([0], [0], color=COLOR_PALETTE[2], lw=2, label="LinCov Mean"),
-        Line2D([0], [0], color="k", lw=2, label="MC Mean"),
+        Line2D(
+            [0],
+            [0],
+            color=COLOR_PALETTE[0],
+            lw=2,
+            label="Polyhedral (Const. Density) MC Samples",
+        ),
+        Line2D([0], [0], color="k", lw=2, label="Polyhedral MC Mean"),
+        Line2D(
+            [0], [0], color="k", lw=2, linestyle="--", label=r"Polyhedral MC $2\sigma$"
+        ),
+        Line2D(
+            [0], [0], color=COLOR_PALETTE[2], lw=2, label="Cylindrical Harmonics Mean"
+        ),
         Line2D(
             [0],
             [0],
             color=COLOR_PALETTE[2],
             lw=2,
             linestyle="--",
-            label=r"LinCov $2\sigma$",
+            label=r"Cylindrical Harmonics $2\sigma$",
         ),
-        Line2D([0], [0], color="k", lw=2, linestyle="--", label=r"MC $2\sigma$"),
     ]
-
     fig.legend(
         handles=legend_elements,
         loc="upper center",
@@ -593,4 +602,9 @@ if __name__ == "__main__":
         frameon=True,
     )
     plt.tight_layout(rect=[0, 0, 1, 0.96])
+    fig.savefig(
+        f"Images/fig_corner_MC_vs_LinCov_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+        dpi=1200,
+        bbox_inches="tight",
+    )
     plt.show()
