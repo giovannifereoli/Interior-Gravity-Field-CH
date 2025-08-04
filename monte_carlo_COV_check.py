@@ -3,12 +3,18 @@ from scipy.special import jv as BesselJ, jvp as BesselJp, jn_zeros
 from scipy.integrate import solve_ivp
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 from scipy.linalg import cholesky, qr
 import matplotlib as mpl
 from datetime import datetime
 import corner
 import matplotlib.patches as patches
+from matplotlib.lines import Line2D
+import numpy as np
+from polyhedral_gravity import Polyhedron, PolyhedronIntegrity, GravityEvaluable
+import mesh_utility
+from joblib import Parallel, delayed
+from tqdm import tqdm
+from scipy.integrate import solve_ivp
 
 
 # Set plotting style
@@ -37,14 +43,11 @@ CYLINDER_ROTATION = np.eye(3)
 ALPHA = 100
 rotation_inv = np.linalg.inv(CYLINDER_ROTATION)
 
-# NOTE: Your trajectory may not break azimuthal symmetry enough — e.g., it may favor odd
-# m harmonics if your path spirals or moves more in rho than phi.
+# NOTE: Clearly monte carlo with polyhedral gives biased results, using 25x25 makes it look better
+# NOTE: Clearly be aware of not putting P0 such that LinCov estimates goes outside the cylinder.
+# In order to put decent P0, let's stop trajectory at half period.
 
-# TODO: Why m=2,4 doesnt improve? Is the trajectory?
-# TODO: pick realistic and good sensor suite, implement realistic models, cadence and noise, minimum height, etc.
-# TODO: Covariance realism isn't the aim here (consider convariance or SNC), it's just to see how those parameters estimation evolve. Does Jay agree?
 # TODO: Check A and rotations, math in general, pipeline, etc.
-# TODO: optical flow exploitation?
 
 
 def compute_A_and_sensitivities(
@@ -252,59 +255,30 @@ def compute_dynamical_matrix(position, fitted_params, n_n, n_m, j_mn_cache):
 
 def propagate_state_and_stm(initial_state, fitted_params, n_n, n_m, t_span):
     """
-    Propagate the state and STM using solve_ivp, with a tqdm progress bar.
+    Propagate the state and STM using a single call to solve_ivp.
     """
     n_state = 6 + 2 * n_n * n_m
     stm0 = np.eye(n_state).ravel()
     y0 = np.hstack((initial_state, stm0))
 
-    Ts = [t_span[0]]
-    states = [initial_state.copy()]
-    stms = [np.eye(n_state)]
+    sol = solve_ivp(
+        fun=lambda t, y: _dynamics_full(
+            t, y, n_state, fitted_params, n_n, n_m, j_mn_cache
+        ),
+        t_span=(t_span[0], t_span[-1]),
+        y0=y0,
+        t_eval=t_span,
+        method="RK45",
+        rtol=1e-10,
+        atol=1e-10,
+    )
 
-    t0, tf = float(t_span[0]), float(t_span[-1])
-    total_dt = tf - t0
+    # Extract results
+    Y = sol.y
+    states = Y[:n_state, :]
+    stms = Y[n_state:, :].reshape((n_state, n_state, len(t_span)))
 
-    with tqdm(
-        total=total_dt,
-        desc="Propagating",
-        unit="s",
-        ncols=80,
-        bar_format="{l_bar}{bar}| {n:.1f}/{total:.1f}{unit} [{elapsed}<{remaining}]",
-    ) as pbar:
-        t_current = t0
-        y_current = y0
-
-        for t_next in t_span[1:]:
-            sol = solve_ivp(
-                fun=lambda t, y: _dynamics_full(
-                    t, y, n_state, fitted_params, n_n, n_m, j_mn_cache
-                ),
-                t_span=(t_current, t_next),
-                y0=y_current,
-                method="RK45",
-                rtol=1e-10,
-                atol=1e-10,
-            )
-
-            y_end = sol.y[:, -1]
-            state_end = y_end[:n_state]
-            stm_end = y_end[n_state:].reshape((n_state, n_state))
-
-            Ts.append(t_next)
-            states.append(state_end)
-            stms.append(stm_end)
-
-            dt = t_next - t_current
-            pbar.update(dt)
-            t_current = t_next
-            y_current = y_end
-
-    t = np.array(Ts)
-    state = np.stack(states, axis=1)
-    stm = np.stack(stms, axis=2)
-
-    return t, state, stm
+    return sol.t, states, stms
 
 
 def plot_cov_ellipses(fig, mean, cov, color, nsig=1.0):
@@ -321,7 +295,7 @@ def plot_cov_ellipses(fig, mean, cov, color, nsig=1.0):
             vals, vecs = vals[order], vecs[:, order]
             angle = np.degrees(np.arctan2(*vecs[:, 0][::-1]))
 
-            width, height = 2 * nsig * np.sqrt(vals)
+            width, height = 6 * nsig * np.sqrt(vals)
 
             ell = patches.Ellipse(
                 xy=sub_mean,
@@ -359,7 +333,7 @@ if __name__ == "__main__":
     full_cov_params[full_cov_params < 1e-30] = 1e-128  # For B_0n coefficients
     print("Loaded fitted parameters from 'fitted_params_both.npy'")
 
-    n_n, n_m = 5, 5
+    n_n, n_m = 25, 25
     j_mn_cache = np.array(
         [jn_zeros(m, n + 1)[-1] for m in range(n_m) for n in range(n_n)]
     )
@@ -372,10 +346,10 @@ if __name__ == "__main__":
     n_state = 6 + 2 * n_n * n_m
     P0 = np.zeros((n_state, n_state))
     P0[:3, :3] = np.eye(3) * (1e-6) ** 2  # Position variance: 1e-6 km
-    P0[3:6, 3:6] = np.eye(3) * (1e-9) ** 2  # Velocity variance: 1e-9 km/s
+    P0[3:6, 3:6] = np.eye(3) * (1e-6) ** 2  # Velocity variance: 1e-6 km/s
     P0[6:, 6:] = np.diag(np.diag(full_cov_params))
 
-    stop_at_percent = 0.985
+    stop_at_percent = 0.5
     t_span = np.linspace(0, stop_at_percent * 55000, 100)  # 1 Hz sampling
 
     t, state, stm = propagate_state_and_stm(
@@ -413,10 +387,11 @@ if __name__ == "__main__":
         RtR = R_sqrt.T @ R_sqrt
         P[:, :, i] = np.linalg.inv(RtR)
 
-    print("Propagation and update completed.")
+    print("Propagation covariance completed.")
 
     # Parameters
     N_samples = 1000  # Monte Carlo sample count
+    MC_w_polyhedral = True
     rng = np.random.default_rng(42)
     n_state = initial_state.shape[0]
 
@@ -426,15 +401,106 @@ if __name__ == "__main__":
     # Allocate array for final states
     final_states = np.zeros((N_samples, n_state))
 
-    # Propagate each sample independently
-    print("Running Monte Carlo propagation...")
-    for i in tqdm(range(N_samples), desc="Monte Carlo"):
-        sample_state = initial_samples[i]
-        t_mc, state_mc, _ = propagate_state_and_stm(
-            sample_state, fitted_params, n_n, n_m, t_span
+    if MC_w_polyhedral == True:
+        # Polyhedral Model Initialization
+        # Meshes from https://github.com/darioizzo/geodesyNets/tree/master/3dmeshes
+        vertices, faces = mesh_utility.read_pk_file("3dmeshes/eros.pk")
+        vertices, faces = np.array(vertices), np.array(faces)
+
+        # Define asteroid density
+        DENSITY = 1.0
+
+        # Initialize the polyhedron object
+        eros = Polyhedron(
+            polyhedral_source=(vertices, faces),
+            density=DENSITY,
+            integrity_check=PolyhedronIntegrity.DISABLE,
         )
-        final_states[i] = state_mc[:, -1]
-    print()
+
+        # Create an evaluable object for gravity calculations
+        evaluable_eros = GravityEvaluable(eros)
+
+        # Polyhedral Acceleration Function
+        def acceleration_poly(position):
+            _, acceleration, _ = evaluable_eros(
+                computation_points=position, parallel=False
+            )
+            return acceleration
+
+        # Trajectory Propagation Function
+        def propagate_trajectory(
+            initial_position, initial_velocity, acceleration_func, t_span, method="RK45"
+        ):
+            def dynamics(t, state):
+                position = state[:3]
+                velocity = state[3:]
+                acceleration = acceleration_func(position)
+                if np.any(np.isnan(acceleration)):
+                    return np.full(6, np.nan)  # Return NaN for invalid acceleration
+                return np.hstack((velocity, acceleration))
+
+            initial_state = np.hstack((initial_position, initial_velocity))
+
+            sol = solve_ivp(
+                dynamics,
+                t_span=(t_span[0], t_span[-1]),
+                y0=initial_state,
+                method=method,
+                t_eval=t_span,
+                rtol=1e-10,
+                atol=1e-10,
+            )
+            return sol.t, sol.y
+
+        # Monte Carlo Propagation
+        def propagate_single_sample(i, sample_state, t_span):
+            # Extract position and velocity (first 6 components)
+            initial_state = sample_state[:6]
+            initial_position = initial_state[:3]
+            initial_velocity = initial_state[3:6]
+
+            # Propagate trajectory
+            _, state_mc = propagate_trajectory(
+                initial_position=initial_position,
+                initial_velocity=initial_velocity,
+                acceleration_func=acceleration_poly,
+                t_span=t_span,
+                method="RK45",
+            )
+
+            return state_mc[:, -1]  # Return final state (6D)
+
+        # Propagate each sample in parallel
+        print("Running Monte Carlo propagation with polyhedral gravity model...")
+        n_state_mc = 6  # State size for polyhedral model (position and velocity only)
+        final_states = np.zeros((N_samples, n_state_mc))
+        results = Parallel(n_jobs=-1, backend="loky")(
+            delayed(propagate_single_sample)(i, initial_samples[i], t_span)
+            for i in tqdm(range(N_samples), desc="Monte Carlo (Polyhedral)")
+        )
+        for i, result in enumerate(results):
+            final_states[i] = result
+
+    else:
+        # Function to propagate a single Monte Carlo sample
+        def propagate_single_sample(i, sample_state, fitted_params, n_n, n_m, t_span):
+            t_mc, state_mc, _ = propagate_state_and_stm(
+                sample_state, fitted_params, n_n, n_m, t_span
+            )
+            return state_mc[:, -1]
+
+        # Propagate each sample in parallel
+        print("Running Monte Carlo propagation with cylindrical harmonics...")
+        final_states = np.zeros((N_samples, n_state))
+        results = Parallel(n_jobs=-1, backend="loky")(
+            delayed(propagate_single_sample)(
+                i, initial_samples[i], fitted_params, n_n, n_m, t_span
+            )
+            for i in tqdm(range(N_samples), desc="Monte Carlo (Cylindrical Harmonics)")
+        )
+        for i, result in enumerate(results):
+            final_states[i] = result
+    print("Monte Carlo propagation completed.")
 
     # Compute empirical mean and covariance
     final_mean_mc = np.mean(final_states, axis=0)
@@ -446,7 +512,14 @@ if __name__ == "__main__":
 
     # Plotting results
     compare_idx = np.arange(6)
-    labels = [r"$x$", r"$y$", r"$z$", r"$v_x$", r"$v_y$", r"$v_z$"]
+    labels = [
+        r"$x (km)$",
+        r"$y (km)$",
+        r"$z (km)$",
+        r"$v_x (km/s)$",
+        r"$v_y (km/s)$",
+        r"$v_z (km/s)$",
+    ]
     print("\n===== Final State Statistics Comparison =====")
     print(f"{'State':6}  |  {'Mean MC':>15}  |  {'Mean SRIF':>15}")
     print("-" * 45)
@@ -467,17 +540,56 @@ if __name__ == "__main__":
     srif_mean_plot = final_mean_srif[compare_idx]
     srif_cov_plot = final_cov_srif[np.ix_(compare_idx, compare_idx)]
 
+    # Plot the Monte Carlo samples
     fig = corner.corner(
         final_mc_samples,
         labels=labels,
-        show_titles=True,
+        show_titles=False,
         color=COLOR_PALETTE[0],
-        title_fmt=".2e",
+        title_fmt=".4e",
         label_kwargs={"fontsize": 12},
+        fig=plt.figure(figsize=(14, 14)),
+        bins=30,
+        hist_kwargs={"linewidth": 1.5},
+        data_kwargs={"alpha": 0.6},
+        plot_density=False,
+        max_n_ticks=5,
+        space=0.15,
     )
 
-    corner.overplot_lines(fig, srif_mean_plot, color=COLOR_PALETTE[2])
+    # Add SRIF mean and ellipse (colored)
+    corner.overplot_lines(fig, srif_mean_plot, color=COLOR_PALETTE[2], lw=1.5)
     plot_cov_ellipses(fig, srif_mean_plot, srif_cov_plot, COLOR_PALETTE[2])
 
-    plt.suptitle("Monte Carlo vs SRIF Final State Covariance", fontsize=14)
+    # Add MC mean and ellipse (black)
+    mc_mean_plot = final_mean_mc[compare_idx]
+    mc_cov_plot = final_cov_mc[np.ix_(compare_idx, compare_idx)]
+    corner.overplot_lines(fig, mc_mean_plot, color="k", lw=1.5)
+    plot_cov_ellipses(fig, mc_mean_plot, mc_cov_plot, "k")
+
+    # Legend
+    legend_elements = [
+        Line2D([0], [0], color=COLOR_PALETTE[0], lw=2, label="Monte Carlo Samples"),
+        Line2D([0], [0], color=COLOR_PALETTE[2], lw=2, label="LinCov Mean"),
+        Line2D([0], [0], color="k", lw=2, label="MC Mean"),
+        Line2D(
+            [0],
+            [0],
+            color=COLOR_PALETTE[2],
+            lw=2,
+            linestyle="--",
+            label=r"LinCov $3\sigma$",
+        ),
+        Line2D([0], [0], color="k", lw=2, linestyle="--", label=r"MC $3\sigma$"),
+    ]
+
+    fig.legend(
+        handles=legend_elements,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1),
+        ncol=3,
+        fontsize=12,
+        frameon=True,
+    )
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.show()

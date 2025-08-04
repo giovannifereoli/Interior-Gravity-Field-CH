@@ -282,7 +282,7 @@ def prepare_linear_system_for_cylindrical_potential(points, potentials, n_n, n_m
 
 
 # Generate the matrix A and vector b
-n_n, n_m = 5, 5  # Truncation parameters
+n_n, n_m = 25, 25  # Truncation parameters
 num_params = 2 * n_n * n_m  # Updated for two coefficients per term (A and B)
 points = structured_results["points"]
 accelerations = structured_results["acceleration"]
