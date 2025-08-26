@@ -162,7 +162,7 @@ def prepare_spherical_poly_basis(points, center, l_max, n_max):
 
 
 # Set model complexity
-l_max, n_max = 10, 10
+l_max, n_max = 5, 5
 
 # Build design matrix and perform least-squares fitting
 A, labels = prepare_spherical_poly_basis(points, center, l_max, n_max)

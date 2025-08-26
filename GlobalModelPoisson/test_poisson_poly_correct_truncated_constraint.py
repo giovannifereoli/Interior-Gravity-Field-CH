@@ -3,6 +3,8 @@ from polyhedral_gravity import Polyhedron, PolyhedronIntegrity, GravityEvaluable
 import mesh_utility
 from tqdm import tqdm
 import trimesh
+from scipy.optimize import minimize, LinearConstraint
+from scipy.linalg import null_space
 
 # TODO: what are the error distributions? it seems symmetric
 
@@ -194,24 +196,244 @@ def prepare_spherical_poly_basis(points, center, l_max, n_max, EPS=1.0):
 
 
 # Set model complexity
-l_max, n_max = 6, 6
+l_max, n_max = 4, 4
 
-# Build design matrix and perform least-squares fitting
+
+def prepare_density_constraint_matrix(points, center, l_max, n_max):
+    """
+    Build the constraint matrix C for enforcing rho >= 0 at given points.
+
+    Args:
+        points (ndarray): (N, 3) array of constraint points.
+        center (ndarray): (3,) center of the body.
+        l_max (int): Maximum spherical harmonic degree.
+        n_max (int): Maximum radial polynomial order.
+
+    Returns:
+        C (ndarray): Constraint matrix of shape (N, num_coeffs).
+        coeff_labels (list): Labels for each column in C (e.g., 'a_l_m_n', 'b_l_m_n').
+    """
+    v = points - center
+    r = np.linalg.norm(v, axis=1)
+    theta = np.arccos(np.clip(v[:, 2] / r, -1.0, 1.0))
+    phi = np.arctan2(v[:, 1], v[:, 0])
+
+    columns = []
+    coeff_labels = []
+
+    for l in range(l_max + 1):
+        Plm_vals = [lpmv(m, l, np.cos(theta)) for m in range(l + 1)]
+        for m in range(l + 1):
+            Plm = Plm_vals[m]
+            cos_mphi = np.cos(m * phi)
+            sin_mphi = np.sin(m * phi) if m > 0 else None
+
+            for n in range(n_max + 1):
+                radial = r**n  # Density basis: r^n
+                col_c = radial * Plm * cos_mphi
+                columns.append(col_c)
+                coeff_labels.append(f"a_{l}_{m}_{n}")
+
+                if m > 0:
+                    col_s = radial * Plm * sin_mphi
+                    columns.append(col_s)
+                    coeff_labels.append(f"b_{l}_{m}_{n}")
+
+    C = np.vstack(columns).T
+    return C, coeff_labels
+
+
+def evaluate_density(points, center, coeffs, labels, l_max, n_max):
+    """
+    Evaluate the density rho(r, theta, phi) at given points using the
+    spherical harmonic and polynomial expansion.
+
+    Args:
+        points (ndarray): (N, 3) array of evaluation points.
+        center (ndarray): (3,) center of the body.
+        coeffs (ndarray): Fitted coefficients (rho_lmn).
+        labels (list): Coefficient labels (e.g., 'a_l_m_n', 'b_l_m_n').
+        l_max (int): Maximum spherical harmonic degree.
+        n_max (int): Maximum radial polynomial order.
+
+    Returns:
+        rho (ndarray): (N,) array of density values.
+    """
+    # Convert to spherical coordinates
+    v = points - center
+    r = np.linalg.norm(v, axis=1)
+    theta = np.arccos(np.clip(v[:, 2] / r, -1.0, 1.0))
+    phi = np.arctan2(v[:, 1], v[:, 0])
+
+    rho = np.zeros_like(r)
+    idx = 0
+
+    for l in tqdm(range(l_max + 1), desc="Evaluating density (l loop)"):
+        # Precompute Legendre polynomials
+        Plm_vals = [lpmv(m, l, np.cos(theta)) for m in range(l + 1)]
+        for m in range(l + 1):
+            Plm = Plm_vals[m]
+            cos_mphi = np.cos(m * phi)
+            sin_mphi = np.sin(m * phi) if m > 0 else None
+
+            for n in range(n_max + 1):
+                # Radial polynomial term: r^n
+                radial = r**n
+
+                # Cosine term (a_l_m_n)
+                rho += coeffs[idx] * radial * Plm * cos_mphi
+                idx += 1
+
+                # Sine term (b_l_m_n) if m > 0
+                if m > 0:
+                    rho += coeffs[idx] * radial * Plm * sin_mphi
+                    idx += 1
+
+    return rho
+
+
+# Generate constraint points (e.g., subset of grid_points or new random points)
+def generate_constraint_points(center, radius, num_points, mesh):
+    """
+    Generate random points inside the mesh for density constraints.
+
+    Args:
+        center (ndarray): (3,) center of the body.
+        radius (float): Bounding sphere radius.
+        num_points (int): Number of constraint points.
+        mesh (trimesh.Trimesh): Asteroid mesh for inside/outside check.
+
+    Returns:
+        points (ndarray): (N, 3) array of points inside the mesh.
+    """
+    np.random.seed(42)  # For reproducibility
+    points = []
+    batch_size = num_points * 2  # Oversample to account for rejections
+
+    with tqdm(total=num_points, desc="Generating constraint points") as pbar:
+        while len(points) < num_points:
+            u = np.random.uniform(0, 1, batch_size)
+            costheta = np.random.uniform(-1, 1, batch_size)
+            phi = np.random.uniform(0, 2 * np.pi, batch_size)
+
+            theta = np.arccos(costheta)
+            r = radius * np.cbrt(u)
+            x = r * np.sin(theta) * np.cos(phi)
+            y = r * np.sin(theta) * np.sin(phi)
+            z = r * np.cos(theta)
+            batch_points = np.stack((x, y, z), axis=-1) + center
+
+            inside = mesh.contains(batch_points)
+            points.extend(batch_points[inside])
+            pbar.update(sum(inside))
+
+    return np.array(points[:num_points])
+
+
+# Parameters
+NUM_CONSTRAINT_POINTS = 100  # Adjust based on computational resources
+constraint_points = generate_constraint_points(
+    center, bounding_radius, NUM_CONSTRAINT_POINTS, mesh
+)
+
+# Build design matrix for potential (from original script)
 A, labels = prepare_spherical_poly_basis(points, center, l_max, n_max)
 b = potentials
-result = np.linalg.lstsq(A, b, rcond=None)
-fitted_params = result[0]  # result.x
-fitted_potentials = A @ fitted_params
 
-# Compute residuals
+# Build constraint matrix for density
+C, _ = prepare_density_constraint_matrix(constraint_points, center, l_max, n_max)
+
+# --- Build design/constraint matrices as you already do ---
+# A, labels = prepare_spherical_poly_basis(points, center, l_max, n_max)
+# b = potentials
+# C, _ = prepare_density_constraint_matrix(constraint_points, center, l_max, n_max)
+
+
+# Objective: 0.5 * ||A x - b||^2
+def obj(x, A, b):
+    r = A @ x - b
+    return 0.5 * np.dot(r, r)
+
+
+# Gradient: A^T(A x - b)
+def grad(x, A, b):
+    return A.T @ (A @ x - b)
+
+
+# Optional Hessian: A^T A (constant). Helps trust-constr.
+def hess(x, A, b):
+    return A.T @ A
+
+
+# Linear inequality: C x >= 0  → lower=0, upper=+inf
+lin_con = LinearConstraint(C, lb=0.0, ub=2 * DENSITY)
+
+# Initial guess (zeros or normal equations solution if feasible)
+x0 = np.zeros(A.shape[1])
+
+progress = []
+
+
+def callback(xk, state=None):
+    # Store or print progress
+    fval = obj(xk, A, b)
+    cval = np.min(C @ xk)  # min constraint margin
+    print(f"Iter: {len(progress)}, f={fval:.6e}, min(Cx)={cval:.3e}")
+    progress.append((fval, cval, xk.copy()))
+
+
+res = minimize(
+    fun=obj,
+    x0=x0,
+    args=(A, b),
+    method="trust-constr",  # robust for linear constraints
+    jac=grad,
+    hess=hess,
+    constraints=[lin_con],
+    options=dict(verbose=1, xtol=1e-10, gtol=1e-10, maxiter=1000),
+    callback=callback,
+)
+
+if not res.success:
+    print("WARNING: optimizer did not converge:", res.message)
+
+fitted_params = res.x
+fitted_potentials = A @ fitted_params
 residuals = b - fitted_potentials
-sigma_squared = np.sum(residuals**2) / (len(b) - len(fitted_params))
-cov_matrix = sigma_squared * np.linalg.pinv(A.T @ A)
+
+# Compute fitted potentials and residuals
+dof = max(len(b) - np.linalg.matrix_rank(A), 1)
+sigma_squared = float((residuals @ residuals) / dof)
+
+# --- Covariance approximation under active-set KKT (optional but useful) ---
+# Treat currently-active inequalities (Cx ≈ 0) as equalities and compute
+# covariance on the subspace tangent to those constraints:
+AATA = A.T @ A
+
+# Detect active constraints (tight at solution). Tolerance can be tuned.
+active = np.isclose(C @ fitted_params, 0.0, atol=1e-10)
+C_active = C[active, :]
+
+if C_active.shape[0] == 0:
+    # No active constraints → standard OLS covariance
+    cov_matrix = sigma_squared * np.linalg.pinv(AATA)
+else:
+    # Nullspace Z of active constraints: C_active @ Z = 0
+    Z = null_space(C_active)
+    if Z.size == 0:
+        # All directions constrained → fallback tiny covariance
+        cov_matrix = np.zeros((A.shape[1], A.shape[1]))
+    else:
+        # Cov in reduced coordinates, then lift back: Cov ≈ σ² * Z (Zᵀ AᵀA Z)^(-1) Zᵀ
+        ATA_red = Z.T @ AATA @ Z
+        cov_red = np.linalg.pinv(ATA_red)
+        cov_matrix = sigma_squared * (Z @ cov_red @ Z.T)
 
 # Compute percentage error
 percentage_error = 100 * (fitted_potentials - b) / np.abs(b)
 
 # Plot histogram of percentage error
+"""
 plt.figure(figsize=(10, 6))
 n, bins, patches = plt.hist(
     percentage_error, bins=50, color="#2c7bb6", alpha=0.7, edgecolor="k", density=True
@@ -233,7 +455,7 @@ plt.title("Histogram of Percentage Error in Potential Fit")
 plt.grid(True, linestyle="--", alpha=0.6)
 plt.legend()
 plt.tight_layout()
-plt.show()
+plt.show()"""
 
 """
 # Scatter error on sphere
@@ -628,55 +850,6 @@ plt.show()
 
 # Load the mesh for inside/outside checks
 mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
-
-
-def evaluate_density(points, center, coeffs, labels, l_max, n_max):
-    """
-    Evaluate the density rho(r, theta, phi) at given points using the
-    spherical harmonic and polynomial expansion.
-
-    Args:
-        points (ndarray): (N, 3) array of evaluation points.
-        center (ndarray): (3,) center of the body.
-        coeffs (ndarray): Fitted coefficients (rho_lmn).
-        labels (list): Coefficient labels (e.g., 'a_l_m_n', 'b_l_m_n').
-        l_max (int): Maximum spherical harmonic degree.
-        n_max (int): Maximum radial polynomial order.
-
-    Returns:
-        rho (ndarray): (N,) array of density values.
-    """
-    # Convert to spherical coordinates
-    v = points - center
-    r = np.linalg.norm(v, axis=1)
-    theta = np.arccos(np.clip(v[:, 2] / r, -1.0, 1.0))
-    phi = np.arctan2(v[:, 1], v[:, 0])
-
-    rho = np.zeros_like(r)
-    idx = 0
-
-    for l in tqdm(range(l_max + 1), desc="Evaluating density (l loop)"):
-        # Precompute Legendre polynomials
-        Plm_vals = [lpmv(m, l, np.cos(theta)) for m in range(l + 1)]
-        for m in range(l + 1):
-            Plm = Plm_vals[m]
-            cos_mphi = np.cos(m * phi)
-            sin_mphi = np.sin(m * phi) if m > 0 else None
-
-            for n in range(n_max + 1):
-                # Radial polynomial term: r^n
-                radial = r**n
-
-                # Cosine term (a_l_m_n)
-                rho += coeffs[idx] * radial * Plm * cos_mphi
-                idx += 1
-
-                # Sine term (b_l_m_n) if m > 0
-                if m > 0:
-                    rho += coeffs[idx] * radial * Plm * sin_mphi
-                    idx += 1
-
-    return rho / (4 * np.pi * G)
 
 
 def generate_grid_points(center, radius, num_points_per_axis):
