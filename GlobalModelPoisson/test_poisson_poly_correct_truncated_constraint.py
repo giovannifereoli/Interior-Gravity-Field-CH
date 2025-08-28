@@ -96,39 +96,8 @@ def generate_points_in_sphere(center, radius, num_points):
     return points
 
 
-def generate_points_outside_mesh(center, radius, num_points, mesh):
-    np.random.seed(0)
-    accepted_points = []
-    batch_size = num_points * 2  # Oversample to avoid too many rejections
-
-    while len(accepted_points) < num_points:
-        # Generate batch of points
-        u = np.random.uniform(0, 1, batch_size)
-        costheta = np.random.uniform(-1, 1, batch_size)
-        phi = np.random.uniform(0, 2 * np.pi, batch_size)
-
-        theta = np.arccos(costheta)
-        r = radius * np.cbrt(u)
-
-        x = r * np.sin(theta) * np.cos(phi)
-        y = r * np.sin(theta) * np.sin(phi)
-        z = r * np.cos(theta)
-        points = np.stack((x, y, z), axis=-1) + center
-
-        # Check which points are outside the mesh
-        inside = mesh.contains(points)
-        outside_points = points[~inside]
-
-        accepted_points.extend(outside_points.tolist())
-        print(f"Generated {len(accepted_points)} accepted points so far.")
-
-    return np.array(accepted_points[:num_points])
-
-
 NUM_POINTS = 10000
 sample_points = generate_points_in_sphere(center, bounding_radius, NUM_POINTS)
-# sample_points = generate_points_outside_mesh(center, bounding_radius, NUM_POINTS, mesh)
-
 
 # Evaluate gravity potentials at each point
 results = []
@@ -398,12 +367,8 @@ res = minimize(
     callback=callback,
 )
 
-if not res.success:
-    print("WARNING: optimizer did not converge:", res.message)
-
 # Rescale the solution back to original space
 fitted_params = res.x
-
 
 """
 # pip install cvxpy osqp

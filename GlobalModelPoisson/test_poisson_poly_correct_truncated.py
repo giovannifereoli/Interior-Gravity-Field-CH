@@ -9,6 +9,7 @@ from scipy.linalg import qr
 # TODO: Clean code base
 # TODO: re-think through math
 # TODO: play with R, points, LSQ, algorithm fitting etc
+# TODO: try normalize cvxpy
 
 # Meshes from https://github.com/darioizzo/geodesyNets/tree/master/3dmeshes
 # vertices, faces = mesh_utility.read_pk_file("3dmeshes/churyumov-gerasimenko.pk")
