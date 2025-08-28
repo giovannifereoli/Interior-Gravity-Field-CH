@@ -17,13 +17,13 @@ bounding_radius = 1 * np.max(radii)
 R_REF = 2 * bounding_radius  # radius of bounding sphere
 
 # Define two-layer model parameters
-SCALE_FACTOR = 0.7  # Inner layer is 70% of the local radius
+SCALE_FACTOR = 0.5  # Inner layer is 50% of the local radius
 layers = [
     {
-        "density": 2.0,
+        "density": 1.0,
         "scale": SCALE_FACTOR,
     },  # Inner layer (higher density, scaled mesh)
-    {"density": 1.0, "scale": 1.0},  # Outer layer (original mesh)
+    {"density": 20.0, "scale": 1.0},  # Outer layer (original mesh)
 ]
 
 # Create scaled vertices for the inner layer
@@ -231,9 +231,10 @@ def prepare_spherical_poly_basis(points, center, l_max, n_max, EPS=1.0):
                 exp = n - l + 2
                 # Radial integral from r to R
                 if exp == 0:
-                    radial = np.log(R / r) / (2 * l + 1)
+                    radial = r**l * np.log(R / r) / (2 * l + 1)
                 else:
-                    radial = (R**exp - r**exp) / (exp * (2 * l + 1))
+                    radial = r**l * (R**exp - r**exp) / (exp * (2 * l + 1))
+                radial += r ** (n + l + 3) / ((l + n + 3) * (2 * l + 1)) / r ** (l + 1)
 
                 # Cosine term
                 col_c = EPS * radial * Plm * cos_mphi
@@ -377,11 +378,12 @@ def evaluate_potential_on_surface(
 
             for n in range(n_max + 1):
                 exp = n - l + 2
-                # finite-support radial integral
+                # Radial integral from r to R
                 if exp == 0:
-                    radial = np.log(R / r) / (2 * l + 1)
+                    radial = r**l * np.log(R / r) / (2 * l + 1)
                 else:
-                    radial = (R**exp - r**exp) / (exp * (2 * l + 1))
+                    radial = r**l * (R**exp - r**exp) / (exp * (2 * l + 1))
+                radial += r ** (n + l + 3) / ((l + n + 3) * (2 * l + 1)) / r ** (l + 1)
 
                 # cosine term
                 Phi_eval += coeffs[idx] * (EPS * radial * Plm * cos_mphi)
