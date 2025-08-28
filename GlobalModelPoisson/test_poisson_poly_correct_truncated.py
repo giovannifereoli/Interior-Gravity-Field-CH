@@ -1,10 +1,14 @@
 import numpy as np
 from polyhedral_gravity import Polyhedron, PolyhedronIntegrity, GravityEvaluable
+import scipy
 import mesh_utility
 from tqdm import tqdm
 import trimesh
+from scipy.linalg import qr
 
-# TODO: what are the error distributions? it seems symmetric
+# TODO: Clean code base
+# TODO: re-think through math
+# TODO: play with R, points, LSQ, algorithm fitting etc
 
 # Meshes from https://github.com/darioizzo/geodesyNets/tree/master/3dmeshes
 # vertices, faces = mesh_utility.read_pk_file("3dmeshes/churyumov-gerasimenko.pk")
@@ -173,9 +177,10 @@ def prepare_spherical_poly_basis(points, center, l_max, n_max, EPS=1.0):
                 exp = n - l + 2
                 # Radial integral from r to R
                 if exp == 0:
-                    radial = np.log(R / r) / (2 * l + 1)
+                    radial = r**l * np.log(R / r) / (2 * l + 1)
                 else:
-                    radial = (R**exp - r**exp) / (exp * (2 * l + 1))
+                    radial = r**l * (R**exp - r**exp) / (exp * (2 * l + 1))
+                radial += r ** (n + l + 3) / ((l + n + 3) * (2 * l + 1)) / r ** (l + 1)
 
                 # Cosine term
                 col_c = EPS * radial * Plm * cos_mphi
@@ -194,13 +199,14 @@ def prepare_spherical_poly_basis(points, center, l_max, n_max, EPS=1.0):
 
 
 # Set model complexity
-l_max, n_max = 6, 6
+l_max, n_max = 4, 4
 
 # Build design matrix and perform least-squares fitting
+# NOTE: use QR or normalize matrix!
 A, labels = prepare_spherical_poly_basis(points, center, l_max, n_max)
 b = potentials
-result = np.linalg.lstsq(A, b, rcond=None)
-fitted_params = result[0]  # result.x
+Q, R = qr(A, mode="economic")
+fitted_params = np.linalg.solve(R, Q.T @ b)
 fitted_potentials = A @ fitted_params
 
 # Compute residuals
@@ -319,11 +325,12 @@ def evaluate_potential_on_surface(
 
             for n in range(n_max + 1):
                 exp = n - l + 2
-                # finite-support radial integral
+                # Radial integral from r to R
                 if exp == 0:
-                    radial = np.log(R / r) / (2 * l + 1)
+                    radial = r**l * np.log(R / r) / (2 * l + 1)
                 else:
-                    radial = (R**exp - r**exp) / (exp * (2 * l + 1))
+                    radial = r**l * (R**exp - r**exp) / (exp * (2 * l + 1))
+                radial += r ** (n + l + 3) / ((l + n + 3) * (2 * l + 1)) / r ** (l + 1)
 
                 # cosine term
                 Phi_eval += coeffs[idx] * (EPS * radial * Plm * cos_mphi)

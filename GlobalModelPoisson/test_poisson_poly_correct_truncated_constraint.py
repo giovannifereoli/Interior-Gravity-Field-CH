@@ -5,12 +5,17 @@ from tqdm import tqdm
 import trimesh
 from scipy.optimize import minimize, LinearConstraint
 from scipy.linalg import null_space
-
-# TODO: what are the error distributions? it seems symmetric
+import cartopy.crs as ccrs
+import matplotlib.pyplot as plt
+from scipy.special import lpmv, gammaln
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+import scipy
+from scipy.interpolate import griddata
+from trimesh.intersections import mesh_plane
 
 # Meshes from https://github.com/darioizzo/geodesyNets/tree/master/3dmeshes
-# vertices, faces = mesh_utility.read_pk_file("3dmeshes/churyumov-gerasimenko.pk")
-vertices, faces = mesh_utility.read_pk_file("3dmeshes/bennu_lp.pk")
+vertices, faces = mesh_utility.read_pk_file("3dmeshes/bennu.pk")
+# vertices, faces = mesh_utility.read_pk_file("3dmeshes/bennu_lp.pk")
 # vertices, faces = np.array(vertices), np.array(faces)
 
 # Load the mesh for inside/outside checks
@@ -29,7 +34,6 @@ R_REF = 2 * bounding_radius  # radius of bounding sphere
 # Define asteroid density
 DENSITY = 1.0  # arbitrary units
 G = 6.67430 * 1e-11  # m^3 kg^-1 s^-2, gravitational constant
-EPS = 1 + 0 * 4 * np.pi * G  # constant factor for potential
 
 # Initialize polyhedron model
 polyhedron = Polyhedron(
@@ -43,6 +47,38 @@ gravity_model = GravityEvaluable(polyhedron)
 
 
 # Generate random points inside the bounding sphere
+def generate_grid_points(center, radius, num_points_per_axis):
+    """
+    Generate a 3D grid of points within the bounding sphere, filtered to include
+    only points inside the mesh.
+
+    Args:
+        center (ndarray): (3,) center of the body.
+        radius (float): Bounding sphere radius.
+        num_points_per_axis (int): Number of points per axis in the grid.
+
+    Returns:
+        points (ndarray): (N, 3) array of points inside the mesh.
+    """
+    # Create a 3D grid
+    x = np.linspace(-radius, radius, num_points_per_axis)
+    y = np.linspace(-radius, radius, num_points_per_axis)
+    z = np.linspace(-radius, radius, num_points_per_axis)
+    X, Y, Z = np.meshgrid(x, y, z)
+    points = np.vstack([X.ravel(), Y.ravel(), Z.ravel()]).T
+
+    # Filter points within the bounding sphere
+    distances = np.linalg.norm(points - center, axis=1)
+    mask_sphere = distances <= radius
+    points = points[mask_sphere]
+
+    # Filter points inside the mesh
+    inside = mesh.contains(points)
+    points_inside = points[inside]
+
+    return points_inside
+
+
 def generate_points_in_sphere(center, radius, num_points):
     np.random.seed(0)
     u = np.random.uniform(0, 1, num_points)
@@ -122,13 +158,6 @@ dataset = {
 np.savez("spherical_gravity_dataset.npz", **dataset)
 
 
-import numpy as np
-import matplotlib.pyplot as plt
-from scipy.special import lpmv
-from scipy.optimize import lsq_linear
-from scipy.stats import norm
-from tqdm import tqdm
-
 # Load the spherical dataset
 data = np.load("spherical_gravity_dataset.npz")
 points = data["points"]
@@ -138,7 +167,19 @@ bounding_radius = data["bounding_radius"]
 
 
 # Define real spherical harmonics radial basis model
-def prepare_spherical_poly_basis(points, center, l_max, n_max, EPS=1.0):
+
+
+def sh_norm(l, m):
+    # N_{l0} and N_{lm} (m>0) with Condon–Shortley phase in lpmv
+    base = (2 * l + 1) / (4 * np.pi)
+    # factorial ratio via gammaln for stability
+    fr = np.exp(gammaln(l - m + 1) - gammaln(l + m + 1))
+    if m == 0:
+        return np.sqrt(base)
+    return np.sqrt(2.0 * base * fr)
+
+
+def prepare_spherical_poly_basis(points, center, l_max, n_max):
     """
     Build a physically-consistent interior potential basis for Poisson's equation
     with finite support at radius R.
@@ -149,7 +190,6 @@ def prepare_spherical_poly_basis(points, center, l_max, n_max, EPS=1.0):
         R (float): support radius (max radius of density).
         l_max (int): maximum spherical harmonic degree.
         n_max (int): maximum radial polynomial order.
-        EPS (float): scaling factor (e.g., 1 + 4πG*0).
 
     Returns:
         A (ndarray): design matrix shape (N, num_coeffs).
@@ -157,7 +197,7 @@ def prepare_spherical_poly_basis(points, center, l_max, n_max, EPS=1.0):
     """
     # Shift to body-centered coords and spherical angles
     v = points - center
-    r = np.linalg.norm(v, axis=1)
+    r = np.maximum(np.finfo(float).tiny, np.linalg.norm(v, axis=1))
     theta = np.arccos(np.clip(v[:, 2] / r, -1.0, 1.0))
     phi = np.arctan2(v[:, 1], v[:, 0])
     R = R_REF
@@ -173,23 +213,25 @@ def prepare_spherical_poly_basis(points, center, l_max, n_max, EPS=1.0):
             Plm = Plm_vals[m]
             cos_mphi = np.cos(m * phi)
             sin_mphi = np.sin(m * phi) if m > 0 else None
+            Nlm = sh_norm(l, m)
 
             for n in range(n_max + 1):
                 exp = n - l + 2
                 # Radial integral from r to R
                 if exp == 0:
-                    radial = np.log(R / r) / (2 * l + 1)
+                    radial = r**l * np.log(R / r) / (2 * l + 1)
                 else:
-                    radial = (R**exp - r**exp) / (exp * (2 * l + 1))
+                    radial = r**l * (R**exp - r**exp) / (exp * (2 * l + 1))
+                radial += r ** (n + l + 3) / ((l + n + 3) * (2 * l + 1)) / r ** (l + 1)
 
                 # Cosine term
-                col_c = EPS * radial * Plm * cos_mphi
+                col_c = Nlm * radial * Plm * cos_mphi
                 columns.append(col_c)
                 coeff_labels.append(f"a_{l}_{m}_{n}")
 
                 # Sine term if m > 0
                 if m > 0:
-                    col_s = EPS * radial * Plm * sin_mphi
+                    col_s = Nlm * radial * Plm * sin_mphi
                     columns.append(col_s)
                     coeff_labels.append(f"b_{l}_{m}_{n}")
 
@@ -199,7 +241,7 @@ def prepare_spherical_poly_basis(points, center, l_max, n_max, EPS=1.0):
 
 
 # Set model complexity
-l_max, n_max = 4, 4
+l_max, n_max = 6, 6
 
 
 def prepare_density_constraint_matrix(points, center, l_max, n_max):
@@ -217,7 +259,7 @@ def prepare_density_constraint_matrix(points, center, l_max, n_max):
         coeff_labels (list): Labels for each column in C (e.g., 'a_l_m_n', 'b_l_m_n').
     """
     v = points - center
-    r = np.linalg.norm(v, axis=1)
+    r = np.maximum(np.finfo(float).tiny, np.linalg.norm(v, axis=1))
     theta = np.arccos(np.clip(v[:, 2] / r, -1.0, 1.0))
     phi = np.arctan2(v[:, 1], v[:, 0])
 
@@ -230,19 +272,20 @@ def prepare_density_constraint_matrix(points, center, l_max, n_max):
             Plm = Plm_vals[m]
             cos_mphi = np.cos(m * phi)
             sin_mphi = np.sin(m * phi) if m > 0 else None
+            Nlm = sh_norm(l, m)
 
             for n in range(n_max + 1):
                 radial = r**n  # Density basis: r^n
-                col_c = radial * Plm * cos_mphi
+                col_c = radial * Nlm * Plm * cos_mphi
                 columns.append(col_c)
                 coeff_labels.append(f"a_{l}_{m}_{n}")
 
                 if m > 0:
-                    col_s = radial * Plm * sin_mphi
+                    col_s = radial * Nlm * Plm * sin_mphi
                     columns.append(col_s)
                     coeff_labels.append(f"b_{l}_{m}_{n}")
 
-    C = np.vstack(columns).T
+    C = np.vstack(columns).T / (4 * np.pi * G)
     return C, coeff_labels
 
 
@@ -264,7 +307,7 @@ def evaluate_density(points, center, coeffs, labels, l_max, n_max):
     """
     # Convert to spherical coordinates
     v = points - center
-    r = np.linalg.norm(v, axis=1)
+    r = np.maximum(np.finfo(float).tiny, np.linalg.norm(v, axis=1))
     theta = np.arccos(np.clip(v[:, 2] / r, -1.0, 1.0))
     phi = np.arctan2(v[:, 1], v[:, 0])
 
@@ -278,66 +321,28 @@ def evaluate_density(points, center, coeffs, labels, l_max, n_max):
             Plm = Plm_vals[m]
             cos_mphi = np.cos(m * phi)
             sin_mphi = np.sin(m * phi) if m > 0 else None
+            Nlm = sh_norm(l, m)
 
             for n in range(n_max + 1):
                 # Radial polynomial term: r^n
                 radial = r**n
 
                 # Cosine term (a_l_m_n)
-                rho += coeffs[idx] * radial * Plm * cos_mphi
+                rho += coeffs[idx] * radial * Nlm * Plm * cos_mphi
                 idx += 1
 
                 # Sine term (b_l_m_n) if m > 0
                 if m > 0:
-                    rho += coeffs[idx] * radial * Plm * sin_mphi
+                    rho += coeffs[idx] * radial * Nlm * Plm * sin_mphi
                     idx += 1
 
-    return rho
-
-
-# Generate constraint points (e.g., subset of grid_points or new random points)
-def generate_constraint_points(center, radius, num_points, mesh):
-    """
-    Generate random points inside the mesh for density constraints.
-
-    Args:
-        center (ndarray): (3,) center of the body.
-        radius (float): Bounding sphere radius.
-        num_points (int): Number of constraint points.
-        mesh (trimesh.Trimesh): Asteroid mesh for inside/outside check.
-
-    Returns:
-        points (ndarray): (N, 3) array of points inside the mesh.
-    """
-    np.random.seed(42)  # For reproducibility
-    points = []
-    batch_size = num_points * 2  # Oversample to account for rejections
-
-    with tqdm(total=num_points, desc="Generating constraint points") as pbar:
-        while len(points) < num_points:
-            u = np.random.uniform(0, 1, batch_size)
-            costheta = np.random.uniform(-1, 1, batch_size)
-            phi = np.random.uniform(0, 2 * np.pi, batch_size)
-
-            theta = np.arccos(costheta)
-            r = radius * np.cbrt(u)
-            x = r * np.sin(theta) * np.cos(phi)
-            y = r * np.sin(theta) * np.sin(phi)
-            z = r * np.cos(theta)
-            batch_points = np.stack((x, y, z), axis=-1) + center
-
-            inside = mesh.contains(batch_points)
-            points.extend(batch_points[inside])
-            pbar.update(sum(inside))
-
-    return np.array(points[:num_points])
+    return rho / (4 * np.pi * G)
 
 
 # Parameters
-NUM_CONSTRAINT_POINTS = 100  # Adjust based on computational resources
-constraint_points = generate_constraint_points(
-    center, bounding_radius, NUM_CONSTRAINT_POINTS, mesh
-)
+NUM_POINTS_PER_AXIS = 50  # Adjust for resolution vs. speed
+grid_points = generate_grid_points(center, bounding_radius, NUM_POINTS_PER_AXIS)
+constraint_points = grid_points
 
 # Build design matrix for potential (from original script)
 A, labels = prepare_spherical_poly_basis(points, center, l_max, n_max)
@@ -346,11 +351,6 @@ b = potentials
 # Build constraint matrix for density
 C, _ = prepare_density_constraint_matrix(constraint_points, center, l_max, n_max)
 
-# --- Build design/constraint matrices as you already do ---
-# A, labels = prepare_spherical_poly_basis(points, center, l_max, n_max)
-# b = potentials
-# C, _ = prepare_density_constraint_matrix(constraint_points, center, l_max, n_max)
-
 
 # Objective: 0.5 * ||A x - b||^2
 def obj(x, A, b):
@@ -358,53 +358,87 @@ def obj(x, A, b):
     return 0.5 * np.dot(r, r)
 
 
-# Gradient: A^T(A x - b)
+# Gradient: A^T (A x - b)
 def grad(x, A, b):
     return A.T @ (A @ x - b)
 
 
-# Optional Hessian: A^T A (constant). Helps trust-constr.
+# Hessian: A^T A
 def hess(x, A, b):
     return A.T @ A
 
 
-# Linear inequality: C x >= 0  → lower=0, upper=+inf
-lin_con = LinearConstraint(C, lb=0.0, ub=2 * DENSITY)
+# Linear inequality: C x >= 0 → lower=0, upper=+inf
+lin_con = LinearConstraint(C, lb=0, ub=np.inf)
 
 # Initial guess (zeros or normal equations solution if feasible)
-x0 = np.zeros(A.shape[1])
-
+Q, R = scipy.linalg.qr(A, mode="economic")
+x0 = np.linalg.solve(R, Q.T @ b)
 progress = []
 
 
 def callback(xk, state=None):
-    # Store or print progress
+    # Store or print progress in normalized space
     fval = obj(xk, A, b)
-    cval = np.min(C @ xk)  # min constraint margin
+    cval = np.min(C @ xk)  # Min constraint margin
     print(f"Iter: {len(progress)}, f={fval:.6e}, min(Cx)={cval:.3e}")
     progress.append((fval, cval, xk.copy()))
 
 
+# Run optimization with normalized A and b
 res = minimize(
     fun=obj,
-    x0=x0,
+    x0=x0,  # Use least-squares solution as initial guess
     args=(A, b),
-    method="trust-constr",  # robust for linear constraints
+    method="SLSQP",  # Changed to SLSQP for potentially better convergence on this problem
     jac=grad,
-    hess=hess,
+    # hess=hess,  # Commented out: SLSQP does not use the Hessian
     constraints=[lin_con],
-    options=dict(verbose=1, xtol=1e-10, gtol=1e-10, maxiter=1000),
+    options=dict(maxiter=1000, ftol=1e-14, disp=True),
     callback=callback,
 )
 
 if not res.success:
     print("WARNING: optimizer did not converge:", res.message)
 
+# Rescale the solution back to original space
 fitted_params = res.x
-fitted_potentials = A @ fitted_params
+
+
+"""
+# pip install cvxpy osqp
+import numpy as np
+import cvxpy as cp
+
+# Given
+# A: (m,n), b: (m,), C: (p,n), d: (p,)
+# Example shapes:
+# A = np.random.randn(200, 50)
+# b = np.random.randn(200)
+# C = np.random.randn(20, 50)
+# d = np.random.randn(20)
+
+n = A.shape[1]
+x = cp.Variable(n)
+
+# Objective: 1/2 ||A x - b||^2
+obj = 0.5 * cp.sum_squares(A @ x - b)
+
+# Constraints: Cx >= d  (CVXPY uses elementwise >=)
+cons = [C @ x >= 0]
+
+prob = cp.Problem(cp.Minimize(obj), cons)
+
+# Choose a fast QP solver (OSQP is solid for large LSQ)
+prob.solve(solver=cp.OSQP, eps_abs=1e-8, eps_rel=1e-8, verbose=True)
+fitted_params = x.value
+"""
+
+# Compute fitted potentials and residuals in original space
+fitted_potentials = A @ fitted_params  # Use original A
 residuals = b - fitted_potentials
 
-# Compute fitted potentials and residuals
+# Compute variance of residuals
 dof = max(len(b) - np.linalg.matrix_rank(A), 1)
 sigma_squared = float((residuals @ residuals) / dof)
 
@@ -435,68 +469,6 @@ else:
 # Compute percentage error
 percentage_error = 100 * (fitted_potentials - b) / np.abs(b)
 
-# Plot histogram of percentage error
-"""
-plt.figure(figsize=(10, 6))
-n, bins, patches = plt.hist(
-    percentage_error, bins=50, color="#2c7bb6", alpha=0.7, edgecolor="k", density=True
-)
-mu, std = norm.fit(percentage_error)
-x = np.linspace(min(percentage_error), max(percentage_error), 1000)
-p = norm.pdf(x, mu, std)
-plt.plot(
-    x,
-    p,
-    color="#d7191c",
-    linestyle="--",
-    linewidth=2,
-    label=rf"$\mu={mu:.4f}, \sigma={std:.4f}$",
-)
-plt.xlabel("Percentage Error (%)")
-plt.ylabel("Density")
-plt.title("Histogram of Percentage Error in Potential Fit")
-plt.grid(True, linestyle="--", alpha=0.6)
-plt.legend()
-plt.tight_layout()
-plt.show()"""
-
-"""
-# Scatter error on sphere
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-import mesh_utility
-
-# Plot percentage error and asteroid mesh
-fig = plt.figure(figsize=(12, 8))
-ax = fig.add_subplot(111, projection="3d")
-
-# Plot asteroid surface
-mesh = Poly3DCollection(
-    vertices[faces], alpha=0.4, facecolor="lightgrey", edgecolor="k", linewidths=0.2
-)
-ax.add_collection3d(mesh)
-
-# Plot scatter error
-sc = ax.scatter(
-    points[:, 0], points[:, 1], points[:, 2], c=percentage_error, cmap="seismic", s=10
-)
-cbar = plt.colorbar(sc, ax=ax, shrink=0.5)
-cbar.set_label("Percentage Error (%)")
-
-# Axis labels and layout
-ax.set_xlabel("X (m)")
-ax.set_ylabel("Y (m)")
-ax.set_zlabel("Z (m)")
-ax.set_title("Spatial Distribution of Percentage Error with Asteroid Mesh")
-ax.set_box_aspect([1, 1, 1])  # Equal aspect ratio
-plt.tight_layout()
-plt.show()
-"""
-
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-from scipy.special import lpmv
-
 
 # Evaluate the fitted potential on the asteroid surface
 def evaluate_potential_on_surface(
@@ -505,7 +477,6 @@ def evaluate_potential_on_surface(
     coeffs,
     l_max,
     n_max,
-    EPS=1.0,
 ):
     """
     Evaluate the fitted potential at surface vertices using the
@@ -518,14 +489,13 @@ def evaluate_potential_on_surface(
       l_max    (int): max degree.
       n_max    (int): max radial order.
       R        (float): support radius.
-      EPS      (float): scaling factor (e.g. 1+4πG*0).
 
     Returns:
       Phi_eval (ndarray): (M,) potentials at each vertex.
     """
     # spherical coords
     v = vertices - center
-    r = np.linalg.norm(v, axis=1)
+    r = np.maximum(np.finfo(float).tiny, np.linalg.norm(v, axis=1))
     theta = np.arccos(np.clip(v[:, 2] / r, -1.0, 1.0))
     phi = np.arctan2(v[:, 1], v[:, 0])
     R = R_REF
@@ -541,22 +511,24 @@ def evaluate_potential_on_surface(
             Plm = Plm_vals[m]
             cos_mphi = np.cos(m * phi)
             sin_mphi = np.sin(m * phi) if m > 0 else None
+            Nlm = sh_norm(l, m)
 
             for n in range(n_max + 1):
                 exp = n - l + 2
-                # finite-support radial integral
+                # Radial integral from r to R
                 if exp == 0:
-                    radial = np.log(R / r) / (2 * l + 1)
+                    radial = r**l * np.log(R / r) / (2 * l + 1)
                 else:
-                    radial = (R**exp - r**exp) / (exp * (2 * l + 1))
+                    radial = r**l * (R**exp - r**exp) / (exp * (2 * l + 1))
+                radial += r ** (n + l + 3) / ((l + n + 3) * (2 * l + 1)) / r ** (l + 1)
 
                 # cosine term
-                Phi_eval += coeffs[idx] * (EPS * radial * Plm * cos_mphi)
+                Phi_eval += coeffs[idx] * (radial * Nlm * Plm * cos_mphi)
                 idx += 1
 
                 # sine term, if exists
                 if m > 0:
-                    Phi_eval += coeffs[idx] * (EPS * radial * Plm * sin_mphi)
+                    Phi_eval += coeffs[idx] * (radial * Nlm * Plm * sin_mphi)
                     idx += 1
 
     return Phi_eval
@@ -616,104 +588,11 @@ mappable = plt.cm.ScalarMappable(cmap="seismic")
 mappable.set_array(face_errors)
 cbar = plt.colorbar(mappable, ax=ax, shrink=0.6)
 cbar.set_label("Percentage Error (%)")
-
 plt.tight_layout()
 plt.show()
 
-"""'
-# Plot spherical harmonic coefficient magnitudes by (l, n)
-def plot_spherical_coefficients(fitted_params, labels):
-    # Parse labels and store (l, m, n, type)
-    parsed = []
-    for label in labels:
-        parts = label.split("_")
-        if len(parts) == 4:
-            typ = parts[0]  # 'a' or 'b'
-            l, m, n = map(int, parts[1:])
-        else:  # fallback for malformed label
-            continue
-        parsed.append((l, m, n, typ))
-
-    # Build a grid of coefficient magnitudes
-    max_l = max(p[0] for p in parsed)
-    max_n = max(p[2] for p in parsed)
-    coeff_mag_a = np.zeros((max_l + 1, max_n + 1))
-    coeff_mag_b = np.zeros((max_l + 1, max_n + 1))
-
-    for idx, (l, m, n, typ) in enumerate(parsed):
-        mag = np.abs(fitted_params[idx])
-        if typ == "a":
-            coeff_mag_a[l, n] += mag  # accumulate across m
-        elif typ == "b":
-            coeff_mag_b[l, n] += mag
-
-    # Plot heatmaps
-    fig, axs = plt.subplots(1, 2, figsize=(14, 6))
-    im0 = axs[0].imshow(coeff_mag_a, origin="lower", aspect="auto", cmap="seismic")
-    axs[0].set_title("Cosine Coefficient Magnitudes (aₗₘₙ)")
-    axs[0].set_xlabel("Radial order n")
-    axs[0].set_ylabel("Degree l")
-    fig.colorbar(im0, ax=axs[0], label="|aₗₘₙ|")
-
-    im1 = axs[1].imshow(coeff_mag_b, origin="lower", aspect="auto", cmap="seismic")
-    axs[1].set_title("Sine Coefficient Magnitudes (bₗₘₙ)")
-    axs[1].set_xlabel("Radial order n")
-    axs[1].set_ylabel("Degree l")
-    fig.colorbar(im1, ax=axs[1], label="|bₗₘₙ|")
-
-    plt.tight_layout()
-    plt.show()
-
-
-# Call the function
-plot_spherical_coefficients(fitted_params, labels)
-
-
-# Plot spherical harmonic coefficient spectrum as a power spectrum
-def plot_spherical_power_spectrum(fitted_params, labels):
-    parsed = []
-    for label in labels:
-        parts = label.split("_")
-        if len(parts) == 4:
-            typ = parts[0]  # 'a' or 'b'
-            l, m, n = map(int, parts[1:])
-        else:
-            continue
-        parsed.append((l, m, n, typ))
-
-    max_l = max(p[0] for p in parsed)
-    max_n = max(p[2] for p in parsed)
-
-    # Power spectrum: sum of squared coefficients grouped by (l+n)
-    max_ln = max_l + max_n + 1
-    power_ln = np.zeros(max_ln)
-
-    for idx, (l, m, n, typ) in enumerate(parsed):
-        ln = l + n
-        power_ln[ln] += fitted_params[idx] ** 2
-
-    ln_indices = np.arange(max_ln)
-
-    # Plot
-    plt.figure(figsize=(10, 6))
-    plt.semilogy(ln_indices, power_ln, marker="o", linestyle="-", color="#2c7bb6")
-    plt.xlabel(r"Total order $l+n$")
-    plt.ylabel(r"Power $\sum |a_{lmn}|^2 + |b_{lmn}|^2$")
-    plt.title("Spherical Harmonic Radial Power Spectrum")
-    plt.grid(True, which="both", linestyle="--", alpha=0.6)
-    plt.tight_layout()
-    plt.show()
-
-
-# Call the function
-plot_spherical_power_spectrum(fitted_params, labels)
-"""
-
 
 def plot_spherical_power_spectrum_with_uncertainty(fitted_params, labels, covariance):
-    import matplotlib.pyplot as plt
-    import numpy as np
-
     # Parse labels into (l, m, n, type)
     parsed = []
     for label in labels:
@@ -778,10 +657,6 @@ def plot_spherical_power_spectrum_with_uncertainty(fitted_params, labels, covari
 plot_spherical_power_spectrum_with_uncertainty(fitted_params, labels, cov_matrix)
 
 
-# Convert fitted potentials to latitude-longitude grid for visualization
-from scipy.interpolate import griddata
-from trimesh.intersections import mesh_plane
-
 # Convert vertices to spherical coordinates
 rvec = shifted_vertices - center
 x, y, z = rvec[:, 0], rvec[:, 1], rvec[:, 2]
@@ -821,14 +696,10 @@ cbar.set_label("Potential (arbitrary units)")
 plt.tight_layout()
 plt.show()
 
-import cartopy.crs as ccrs
-import matplotlib.pyplot as plt
 
 # Mollweide projection plot of fitted potentials
 fig = plt.figure(figsize=(12, 6))
 ax = plt.axes(projection=ccrs.Mollweide())
-
-# Contour plot on global grid
 cf = ax.contourf(
     grid_lon,
     grid_lat,
@@ -837,15 +708,10 @@ cf = ax.contourf(
     transform=ccrs.PlateCarree(),
     cmap="seismic",
 )
-
-# Gridlines and styling
 ax.gridlines(draw_labels=True, linewidth=0.5, linestyle="--", alpha=0.5)
 ax.set_global()
-
-# Colorbar and labels
 cbar = plt.colorbar(cf, orientation="horizontal", pad=0.05)
 cbar.set_label("Potential (arbitrary units)")
-
 plt.title("Fitted Gravitational Potential on Asteroid Surface (Mollweide Projection)")
 plt.tight_layout()
 plt.show()
@@ -855,49 +721,10 @@ plt.show()
 mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
 
 
-def generate_grid_points(center, radius, num_points_per_axis):
-    """
-    Generate a 3D grid of points within the bounding sphere, filtered to include
-    only points inside the mesh.
-
-    Args:
-        center (ndarray): (3,) center of the body.
-        radius (float): Bounding sphere radius.
-        num_points_per_axis (int): Number of points per axis in the grid.
-
-    Returns:
-        points (ndarray): (N, 3) array of points inside the mesh.
-    """
-    # Create a 3D grid
-    x = np.linspace(-radius, radius, num_points_per_axis)
-    y = np.linspace(-radius, radius, num_points_per_axis)
-    z = np.linspace(-radius, radius, num_points_per_axis)
-    X, Y, Z = np.meshgrid(x, y, z)
-    points = np.vstack([X.ravel(), Y.ravel(), Z.ravel()]).T
-
-    # Filter points within the bounding sphere
-    distances = np.linalg.norm(points - center, axis=1)
-    mask_sphere = distances <= radius
-    points = points[mask_sphere]
-
-    # Filter points inside the mesh
-    inside = mesh.contains(points)
-    points_inside = points[inside]
-
-    return points_inside
-
-
-# Parameters for the grid
-NUM_POINTS_PER_AXIS = 50  # Adjust for resolution vs. speed
-grid_points = generate_grid_points(center, bounding_radius, NUM_POINTS_PER_AXIS)
-
 # Evaluate density at grid points
 density_values = evaluate_density(
     grid_points, center, fitted_params, labels, l_max, n_max
 )
-
-# Clip density to non-negative values (optional, as physical density should be >= 0)
-# density_values = np.clip(density_values, 0, None)
 
 
 def plot_density_slices(points, values, center, radius, mesh, num_points_per_axis=60):
