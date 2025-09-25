@@ -6,8 +6,6 @@
 # Date: 2024-09-30
 #########################################################################################################################
 
-## Initialization
-
 # Import necessary libraries
 import numpy as np
 from polyhedral_gravity import (
@@ -17,13 +15,15 @@ from polyhedral_gravity import (
 )
 import mesh_utility
 from tqdm import tqdm
+from scipy.stats import norm
 import matplotlib.pyplot as plt
 from scipy.special import (
     jv as BesselJ,
+    jvp as BesselJp,
     jn_zeros,
 )
-import matplotlib as mpl
 from scipy.optimize import minimize_scalar
+import matplotlib as mpl
 
 
 # Use a colorblind-friendly color palette
@@ -56,6 +56,28 @@ CYLINDER_HEIGHT = 0.5  # Height of the cylinder in meters
 CYLINDER_RADIUS = 0.1  # Radius of the cylinder in meters
 CYLINDER_ROTATION = np.eye(3)  # Rotation matrix (identity matrix by default)
 NUM_POINTS = 1000  # Number of points to generate
+
+# 2) as before,Rotation x-axis
+"""'
+CYLINDER_CENTER = np.array([-0.1, -0.28, 0])  # Center of the cylinder base in XYZ
+CYLINDER_HEIGHT = 0.5  # Height of the cylinder in meters
+CYLINDER_RADIUS = 0.1  # Radius of the cylinder in meters
+CYLINDER_ROTATION = np.array(
+    [[1, 0, 0], [0, 0, -1], [0, 1, 0]]
+)  # Rotation matrix (identity matrix by default)
+NUM_POINTS = 1000  # Number of points to generate
+"""
+
+# 3) as before,Rotation x-axis
+"""
+CYLINDER_CENTER = np.array([-1.26, 0, 0])  # Center of the cylinder base in XYZ
+CYLINDER_HEIGHT = 0.5  # Height of the cylinder in meters
+CYLINDER_RADIUS = 0.1  # Radius of the cylinder in meters
+CYLINDER_ROTATION = np.array(
+    [[0, 0, 1], [0, 1, 0], [-1, 0, 0]]
+)  # Rotation matrix (identity matrix by default)
+NUM_POINTS = 1000  # Number of points to generate
+"""
 
 # Initialize the polyhedron object
 eros = Polyhedron(
@@ -115,6 +137,104 @@ def compute_error_for_alpha(alpha):
     # Hyperparameters
     ALPHA = alpha  # Scaling parameter for the cylinder
 
+    # Convert Cartesian acceleration components to cylindrical coordinates
+    def cartesian_to_cylindrical_acceleration(points, accelerations):
+        """
+        Convert Cartesian acceleration components to cylindrical coordinates.
+
+        Args:
+            points: Cartesian points (N, 3).
+            accelerations: Cartesian accelerations (N, 3).
+
+        Returns:
+            Cylindrical accelerations (N, 3): [a_rho, a_phi, a_z].
+        """
+        transformed_points = (points - CYLINDER_CENTER) @ CYLINDER_ROTATION.T
+        rho = np.sqrt(transformed_points[:, 0] ** 2 + transformed_points[:, 1] ** 2)
+        phi = np.arctan2(transformed_points[:, 1], transformed_points[:, 0])
+
+        transformed_accelerations = accelerations @ CYLINDER_ROTATION.T
+
+        a_x, a_y, a_z = (
+            transformed_accelerations[:, 0],
+            transformed_accelerations[:, 1],
+            transformed_accelerations[:, 2],
+        )
+        a_rho = a_x * np.cos(phi) + a_y * np.sin(phi)
+        a_phi = -a_x * np.sin(phi) + a_y * np.cos(phi)
+        a_z = a_z  # Axial acceleration remains the same
+
+        return np.column_stack((a_rho, a_phi, a_z))
+
+    # Fit cylindrical acceleration components using least squares
+    def prepare_linear_system_for_cylindrical_acceleration(
+        points, accelerations, n_n, n_m
+    ):
+        """
+        Prepare the matrix A and vector b for fitting cylindrical acceleration components.
+
+        Args:
+            points: Cartesian points (N, 3).
+            accelerations: Cylindrical accelerations (N, 3).
+            n_n, n_m: Truncation parameters.
+
+        Returns:
+            A: Design matrix for least squares fitting.
+            b: Flattened vector of acceleration components.
+        """
+        R, L = CYLINDER_RADIUS, CYLINDER_HEIGHT
+        transformed_points = (points - CYLINDER_CENTER) @ CYLINDER_ROTATION.T
+        rho = np.sqrt(transformed_points[:, 0] ** 2 + transformed_points[:, 1] ** 2)
+        phi = np.arctan2(transformed_points[:, 1], transformed_points[:, 0])
+        z = transformed_points[:, 2]
+
+        num_points = len(points)
+        num_params = 2 * n_n * n_m  # Updated for A and B coefficients
+        A = np.zeros((3 * num_points, num_params))
+        b = accelerations.flatten(
+            order="C"
+        )  # Ensure row-major flattening for consistency
+
+        k = lambda m, n: jn_zeros(m, n)[-1]
+        R_alpha = ALPHA * CYLINDER_RADIUS
+
+        idx = 0
+        for m in range(n_m):
+            for n in range(1, n_n + 1):
+                # Useful coefficients
+                k_mn = k(m, n)
+                bessel_j = BesselJ(m, k_mn / R_alpha * rho)
+                bessel_j_derivative = BesselJp(m, k_mn / R_alpha * rho)
+                exp_term = np.exp(-k_mn / R_alpha * z)
+                cos_m_phi = np.cos(m * phi)
+                sin_m_phi = np.sin(m * phi)
+
+                # Radial (rho) component
+                dV_drho = (k_mn / R_alpha) * exp_term * bessel_j_derivative
+
+                # Angular (phi) component
+                dV_dphi = exp_term * bessel_j * (m / (rho + 1e-14))
+
+                # Axial (z) component
+                dV_dz = (-k_mn / R_alpha) * exp_term * bessel_j
+
+                for i in range(num_points):
+                    # Radial (rho)
+                    A[3 * i, idx] = dV_drho[i] * cos_m_phi[i]
+                    A[3 * i, idx + 1] = dV_drho[i] * sin_m_phi[i]
+
+                    # Angular (phi)
+                    A[3 * i + 1, idx] = dV_dphi[i] * -sin_m_phi[i]
+                    A[3 * i + 1, idx + 1] = dV_dphi[i] * cos_m_phi[i]
+
+                    # Axial (z)
+                    A[3 * i + 2, idx] = dV_dz[i] * cos_m_phi[i]
+                    A[3 * i + 2, idx + 1] = dV_dz[i] * sin_m_phi[i]
+
+                idx += 2
+
+        return A, b
+
     # Fit cylindrical potential using least squares
     def prepare_linear_system_for_cylindrical_potential(points, potentials, n_n, n_m):
         R, L = CYLINDER_RADIUS, CYLINDER_HEIGHT
@@ -148,9 +268,21 @@ def compute_error_for_alpha(alpha):
         return A, b
 
     # Generate the matrix A and vector b
-    n_n, n_m = 5, 5  # Truncation parameters
+    n_n, n_m = 25, 25  # Truncation parameters
+    num_params = 2 * n_n * n_m  # Updated for two coefficients per term (A and B)
     points = structured_results["points"]
+    accelerations = structured_results["acceleration"]
     potentials = structured_results["potential"]
+
+    # Transform Cartesian accelerations to cylindrical
+    cylindrical_accelerations = cartesian_to_cylindrical_acceleration(
+        points, accelerations
+    )
+
+    # Prepare the system for cylindrical acceleration fitting
+    A_acc, b_acc = prepare_linear_system_for_cylindrical_acceleration(
+        points, cylindrical_accelerations, n_n, n_m
+    )
 
     # Prepare the system for cylindrical potential fitting
     A_pot, b_pot = prepare_linear_system_for_cylindrical_potential(
@@ -158,17 +290,18 @@ def compute_error_for_alpha(alpha):
     )
 
     # Define LSQ fitting
-    aug_A = A_pot
-    aug_b = b_pot
+    aug_A = np.vstack([A_acc, A_pot])
+    aug_b = np.hstack([b_acc, b_pot])
 
     # Numpy's lstsq
     result = np.linalg.lstsq(aug_A, aug_b, rcond=None)
     fitted_params = result[0]
 
-    # Calculate percentage error
-    fitted_potentials = A_pot @ fitted_params
-    percentage_error = 100 * np.abs((fitted_potentials - b_pot) / b_pot)
-    return np.max(percentage_error)
+    # Compute LSQ error for the potential part only
+    fitted_potentials = aug_A @ fitted_params
+    lsq_error = np.sum((fitted_potentials - aug_b) ** 2)
+
+    return lsq_error
 
 
 error_function = lambda alpha: compute_error_for_alpha(alpha)

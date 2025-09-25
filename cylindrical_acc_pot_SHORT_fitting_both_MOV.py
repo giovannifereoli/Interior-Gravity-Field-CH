@@ -57,16 +57,16 @@ DENSITY = 1.0
 
 # 1) No rotation
 CYLINDER_CENTER = np.array([0.0, 0.0, 0.28])  # Center of the cylinder base in XYZ
-CYLINDER_HEIGHT = 0.5  # Height of the cylinder in meters
-CYLINDER_RADIUS = 0.1  # Radius of the cylinder in meters
+CYLINDER_HEIGHT = 0.5  # Height of the cylinder in km
+CYLINDER_RADIUS = 0.1  # Radius of the cylinder in km
 CYLINDER_ROTATION = np.eye(3)  # Rotation matrix (identity matrix by default)
 NUM_POINTS = 1000  # Number of points to generate
 
 # 2) as before,Rotation x-axis
 """'
 CYLINDER_CENTER = np.array([-0.1, -0.28, 0])  # Center of the cylinder base in XYZ
-CYLINDER_HEIGHT = 0.5  # Height of the cylinder in meters
-CYLINDER_RADIUS = 0.1  # Radius of the cylinder in meters
+CYLINDER_HEIGHT = 0.5  # Height of the cylinder in km
+CYLINDER_RADIUS = 0.1  # Radius of the cylinder in km
 CYLINDER_ROTATION = np.array(
     [[1, 0, 0], [0, 0, -1], [0, 1, 0]]
 )  # Rotation matrix (identity matrix by default)
@@ -76,8 +76,8 @@ NUM_POINTS = 1000  # Number of points to generate
 # 3) as before,Rotation x-axis
 """
 CYLINDER_CENTER = np.array([-1.26, 0, 0])  # Center of the cylinder base in XYZ
-CYLINDER_HEIGHT = 0.5  # Height of the cylinder in meters
-CYLINDER_RADIUS = 0.1  # Radius of the cylinder in meters
+CYLINDER_HEIGHT = 0.5  # Height of the cylinder in km
+CYLINDER_RADIUS = 0.1  # Radius of the cylinder in km
 CYLINDER_ROTATION = np.array(
     [[0, 0, 1], [0, 1, 0], [-1, 0, 0]]
 )  # Rotation matrix (identity matrix by default)
@@ -327,6 +327,7 @@ fitted_params = result[0]
 residuals = aug_b - aug_A @ fitted_params
 sigma_squared = np.sum(residuals**2) / (len(aug_b) - len(fitted_params))
 cov_matrix = sigma_squared * np.linalg.pinv(aug_A.T @ aug_A)
+cov_matrix_formal = np.linalg.pinv(aug_A.T @ aug_A)
 
 # Reduced chi-squared
 # dof = len(aug_b) - len(fitted_params)  # degrees of freedom
@@ -354,7 +355,9 @@ for m in range(n_m):
     for n in range(1, n_n + 1):
         if m == 0:
             B_idx = idx + 1  # B_0n index
+            cov_matrix_formal[B_idx, :] = 0.0
             cov_matrix[B_idx, :] = 0.0
+            cov_matrix_formal[:, B_idx] = 0.0
             cov_matrix[:, B_idx] = 0.0
         idx += 2
 np.save("fitted_params_both.npy", fitted_params)
@@ -430,7 +433,7 @@ def compute_and_plot_covariance(cov_matrix, n_n, n_m):
 
 
 # Call the function to compute and plot standard deviations
-compute_and_plot_covariance(cov_matrix, n_n, n_m)
+# compute_and_plot_covariance(cov_matrix, n_n, n_m)
 
 
 # Function to print fitted parameters in scientific notation
@@ -642,10 +645,91 @@ def plot_coefficient_matrices(A, B):
     plt.tight_layout(rect=[0, 0, 1, 0.95])
 
 
+def plot_power_spectrum_with_empirical_cov(A, B, cov_matrix_empirical, n_n, n_m):
+    """
+    Compute and plot RMS of coefficients, RMS of empirical uncertainty,
+    and SNR per order m. SNR is plotted on a logarithmic scale (not in dB).
+
+    Args:
+        A, B: Fitted coefficient matrices (n_m x n_n)
+        cov_matrix_empirical: Empirical covariance matrix from residuals
+        n_n: Number of degree terms
+        n_m: Number of order terms
+    """
+    # Compute RMS of coefficients with proper normalization
+    rms_coeffs = np.zeros(n_m)
+    for m in range(n_m):
+        K_m = n_n if m == 0 else 2 * n_n  # number of coefficients at order m
+        rms_coeffs[m] = np.sqrt(np.sum(A[m, :] ** 2 + B[m, :] ** 2) / K_m)
+
+    # Unpack variances from covariance matrix
+    std_devs_empirical = np.sqrt(
+        np.clip(np.diag(cov_matrix_empirical), a_min=0, a_max=None)
+    )
+    sigma_A_empirical = np.zeros((n_m, n_n))
+    sigma_B_empirical = np.zeros((n_m, n_n))
+    idx = 0
+    for m in range(n_m):
+        for n in range(n_n):
+            sigma_A_empirical[m, n] = std_devs_empirical[idx]
+            sigma_B_empirical[m, n] = std_devs_empirical[idx + 1]
+            idx += 2
+
+    # RMS of empirical uncertainty with normalization
+    rms_empirical = np.zeros(n_m)
+    for m in range(n_m):
+        K_m = n_n if m == 0 else 2 * n_n
+        rms_empirical[m] = np.sqrt(
+            np.sum(sigma_A_empirical[m, :] ** 2 + sigma_B_empirical[m, :] ** 2) / K_m
+        )
+
+    # SNR (linear ratio, plotted on log axis)
+    snr = rms_coeffs / rms_empirical
+
+    # Plotting
+    _, ax1 = plt.subplots(figsize=(12, 8))
+
+    (l1,) = ax1.semilogy(
+        range(n_m), rms_coeffs, marker="o", linestyle="-", color=COLOR_PALETTE[0]
+    )
+    (l2,) = ax1.semilogy(
+        range(n_m), rms_empirical, marker="s", linestyle="--", color=COLOR_PALETTE[2]
+    )
+    ax1.set_xlabel("Order $m$ (-)", labelpad=10)
+    ax1.set_ylabel("RMS Amplitude (-)", labelpad=10)
+    ax1.grid(True, linestyle="--", which="both", linewidth=0.7, alpha=0.8)
+    ax1.minorticks_on()
+    ax1.grid(which="minor", linestyle=":", linewidth=0.5, alpha=0.5)
+
+    ax2 = ax1.twinx()
+    (l3,) = ax2.plot(
+        range(n_m), snr, marker="d", linestyle="-.", color=COLOR_PALETTE[1]
+    )
+    ax2.set_yscale("log")
+    ax2.set_ylabel("SNR (-, log scale)", labelpad=10)
+
+    ax1.legend(
+        [l1, l2, l3],
+        ["RMS Coefficients", "RMS Empirical Uncertainty", "SNR"],
+        loc="lower right",
+        frameon=True,
+        fancybox=True,
+        edgecolor="black",
+        fontsize=14,
+    )
+
+    plt.savefig(
+        "Images/power_spectrum_empirical_snr_logscale.pdf",
+        dpi=1200,
+        bbox_inches="tight",
+    )
+
+
 # Call the functions
 A, B = print_fitted_parameters(fitted_params, n_n, n_m)
-plot_coefficients_semilogy(A, B, n_n, n_m)
-plot_coefficient_matrices(A, B)
+plot_power_spectrum_with_empirical_cov(A, B, cov_matrix, n_n, n_m)
+# plot_coefficients_semilogy(A, B, n_n, n_m)
+# plot_coefficient_matrices(A, B)
 # plot_power_spectrum_by_order(A, B, n_n, n_m)
 # plot_uncertainty_power_spectrum(cov_matrix, n_n, n_m)
 

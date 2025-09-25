@@ -15,9 +15,10 @@ import mesh_utility
 from joblib import Parallel, delayed
 from tqdm import tqdm
 from scipy.integrate import solve_ivp
+from scipy.stats import chi2
+from datetime import datetime
 
-
-# Set plotting style
+# Set LaTeX formatting
 COLOR_PALETTE = [
     "#d7191c",  # red
     "#fdae61",  # orange
@@ -34,6 +35,13 @@ COLOR_PALETTE = [
 mpl.rcParams["axes.prop_cycle"] = mpl.cycler(color=COLOR_PALETTE)
 mpl.rcParams["text.usetex"] = True
 mpl.rcParams["font.family"] = "serif"
+mpl.rcParams["font.size"] = 16  # Increase font size for better readability in papers
+mpl.rcParams["axes.labelsize"] = 18
+mpl.rcParams["axes.titlesize"] = 20
+mpl.rcParams["legend.fontsize"] = 14
+mpl.rcParams["xtick.labelsize"] = 14
+mpl.rcParams["ytick.labelsize"] = 14
+mpl.rcParams["text.latex.preamble"] = r"\usepackage{mathrsfs}"
 
 
 # Define constants
@@ -42,6 +50,7 @@ CYLINDER_RADIUS = 0.1
 CYLINDER_ROTATION = np.eye(3)
 ALPHA = 100
 rotation_inv = np.linalg.inv(CYLINDER_ROTATION)
+np.random.seed(1)  # Set seed for reproducibility
 
 # NOTE: Clearly monte carlo with polyhedral gives biased results, using 25x25 makes it look better
 # NOTE: Clearly be aware of not putting P0 such that LinCov estimates goes outside the cylinder.
@@ -345,8 +354,8 @@ if __name__ == "__main__":
     # Initialize covariance matrix
     n_state = 6 + 2 * n_n * n_m
     P0 = np.zeros((n_state, n_state))
-    P0[:3, :3] = np.eye(3) * (1e-6) ** 2  # Position variance: 1e-6 km
-    P0[3:6, 3:6] = np.eye(3) * (1e-6) ** 2  # Velocity variance: 1e-6 km/s
+    P0[:3, :3] = np.eye(3) * (1e-3) ** 2  # Position variance: 1e-3 km
+    P0[3:6, 3:6] = np.eye(3) * (1e-4) ** 2  # Velocity variance: 1e-4 km/s
     P0[6:, 6:] = np.diag(np.diag(full_cov_params))
 
     stop_at_percent = 0.5
@@ -390,7 +399,7 @@ if __name__ == "__main__":
     print("Propagation covariance completed.")
 
     # Parameters
-    N_samples = 10000  # Monte Carlo sample count
+    N_samples = 1000  # Monte Carlo sample count
     MC_w_polyhedral = True
     rng = np.random.default_rng(42)
     n_state = initial_state.shape[0]
@@ -604,6 +613,106 @@ if __name__ == "__main__":
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     fig.savefig(
         f"Images/fig_corner_MC_vs_LinCov_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+        dpi=1200,
+        bbox_inches="tight",
+    )
+    plt.show()
+
+    # Extract 6D state (position + velocity) at final time
+    mc_final_6d = final_states[:, :6]  # shape: (N_samples, 6)
+    srif_mean_6d = state[:6, -1]  # shape: (6,)
+    srif_cov_6d = P[:6, :6, -1]  # shape: (6,6)
+
+    # Compute NEES
+    inv_cov = np.linalg.pinv(srif_cov_6d)
+    diffs = mc_final_6d - srif_mean_6d[None, :]
+    nees_values = np.einsum("ij,jk,ik->i", diffs, inv_cov, diffs)
+
+    # Print NEES statistics
+    print("\n===== NEES Statistics =====")
+    print(f"Mean NEES: {np.mean(nees_values):.3f}")
+    print(f"Median NEES: {np.median(nees_values):.3f}")
+    print(f"Min NEES: {np.min(nees_values):.3f}")
+    print(f"Max NEES: {np.max(nees_values):.3f}")
+    print(f"Standard Deviation: {np.std(nees_values):.3f}")
+
+    # Chi-square 95% confidence bounds for 6 DOF
+    alpha = 0.05
+    dof = 6
+    chi2_lower = chi2.ppf(alpha / 2, dof)
+    chi2_upper = chi2.ppf(1 - alpha / 2, dof)
+    print(
+        f"95% confidence bounds (chi2, DOF={dof}): {chi2_lower:.3f} - {chi2_upper:.3f}"
+    )
+
+    # NEES test
+    mean_nees = np.mean(nees_values)
+    if chi2_lower <= mean_nees <= chi2_upper:
+        print(
+            f"NEES test PASSED: mean NEES = {mean_nees:.3f} within 95% chi2 bounds ({chi2_lower:.3f}, {chi2_upper:.3f})"
+        )
+    else:
+        print(
+            f"NEES test FAILED: mean NEES = {mean_nees:.3f} outside 95% chi2 bounds ({chi2_lower:.3f}, {chi2_upper:.3f})"
+        )
+
+    # Plot NEES histogram in the improved style
+    plt.figure(figsize=(12, 8))
+
+    # Histogram
+    n, bins, patches = plt.hist(
+        nees_values,
+        bins=50,
+        color=COLOR_PALETTE[2],
+        alpha=0.7,
+        edgecolor="black",
+        density=True,
+        label="NEES samples",
+    )
+
+    # 95% chi-square bounds
+    plt.axvline(
+        chi2_lower,
+        color="k",
+        linestyle="-.",
+        linewidth=2,
+        label=rf"Lower {alpha/2*100:.1f}\% $\chi^2$ = {chi2_lower:.3f}",
+    )
+    plt.axvline(
+        chi2_upper,
+        color="k",
+        linestyle="--",
+        linewidth=2,
+        label=rf"Upper {(1-alpha/2)*100:.1f}\% $\chi^2$ = {chi2_upper:.3f}",
+    )
+
+    # Plot mean NEES
+    mean_nees = np.mean(nees_values)
+    plt.axvline(
+        mean_nees,
+        color=COLOR_PALETTE[0],
+        linestyle="-",
+        linewidth=2,
+        label=f"Mean NEES={mean_nees:.2f}",
+    )
+
+    # Labels and title
+    plt.xlabel("NEES (-)", labelpad=10)
+    plt.ylabel("Probability Density (-)", labelpad=10)
+    plt.legend(
+        loc="upper right",
+        frameon=True,
+        fancybox=True,
+        edgecolor="black",
+        fontsize=14,
+    )
+    plt.grid(True, linestyle="--", which="both", linewidth=0.7, alpha=0.8)
+    plt.minorticks_on()
+    plt.grid(which="minor", linestyle=":", linewidth=0.5, alpha=0.5)
+
+    # Save figure
+    plt.savefig(
+        f"Images/NEES_histogram_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
         dpi=1200,
         bbox_inches="tight",
     )

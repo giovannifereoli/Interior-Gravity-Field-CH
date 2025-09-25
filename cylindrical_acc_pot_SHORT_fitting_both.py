@@ -51,8 +51,8 @@ DENSITY = 1.0
 
 # Define cylinder parameters
 CYLINDER_CENTER = np.array([0.0, 0.0, 0.28])  # Center of the cylinder base in XYZ
-CYLINDER_HEIGHT = 0.5  # Height of the cylinder in meters
-CYLINDER_RADIUS = 0.1  # Radius of the cylinder in meters
+CYLINDER_HEIGHT = 0.5  # Height of the cylinder in km
+CYLINDER_RADIUS = 0.1  # Radius of the cylinder in km
 CYLINDER_ROTATION = np.eye(3)  # Rotation matrix (identity matrix by default)
 NUM_POINTS = 1000  # Number of points to generate
 ALPHA = 100  # Scaling parameter for the cylinder
@@ -60,8 +60,8 @@ ALPHA = 100  # Scaling parameter for the cylinder
 # Define cylinder parameters (2)
 """
 CYLINDER_CENTER = np.array([0.0, -0.3, 0])  # Center of the cylinder base in XYZ
-CYLINDER_HEIGHT = 0.5  # Height of the cylinder in meters
-CYLINDER_RADIUS = 0.08  # Radius of the cylinder in meters
+CYLINDER_HEIGHT = 0.5  # Height of the cylinder in km
+CYLINDER_RADIUS = 0.08  # Radius of the cylinder in km
 CYLINDER_ROTATION = np.array(
     [[1, 0, 0], [0, 0, -1], [0, 1, 0]]
 )  # Rotation matrix (identity matrix by default)

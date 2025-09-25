@@ -59,16 +59,16 @@ DENSITY = 1.0
 
 # 1) No rotation
 CYLINDER_CENTER = np.array([0.0, 0.0, 0.28])  # Center of the cylinder base in XYZ
-CYLINDER_HEIGHT = 0.5  # Height of the cylinder in meters
-CYLINDER_RADIUS = 0.1  # Radius of the cylinder in meters
+CYLINDER_HEIGHT = 0.5  # Height of the cylinder in km
+CYLINDER_RADIUS = 0.1  # Radius of the cylinder in km
 CYLINDER_ROTATION = np.eye(3)  # Rotation matrix (identity matrix by default)
 NUM_POINTS = 1000  # Number of points to generate
 
 # 2) as before,Rotation x-axis
 """'
 CYLINDER_CENTER = np.array([-0.1, -0.28, 0])  # Center of the cylinder base in XYZ
-CYLINDER_HEIGHT = 0.5  # Height of the cylinder in meters
-CYLINDER_RADIUS = 0.1  # Radius of the cylinder in meters
+CYLINDER_HEIGHT = 0.5  # Height of the cylinder in km
+CYLINDER_RADIUS = 0.1  # Radius of the cylinder in km
 CYLINDER_ROTATION = np.array(
     [[1, 0, 0], [0, 0, -1], [0, 1, 0]]
 )  # Rotation matrix (identity matrix by default)
@@ -78,8 +78,8 @@ NUM_POINTS = 1000  # Number of points to generate
 # 3) as before,Rotation x-axis
 """
 CYLINDER_CENTER = np.array([-1.26, 0, 0])  # Center of the cylinder base in XYZ
-CYLINDER_HEIGHT = 0.5  # Height of the cylinder in meters
-CYLINDER_RADIUS = 0.1  # Radius of the cylinder in meters
+CYLINDER_HEIGHT = 0.5  # Height of the cylinder in km
+CYLINDER_RADIUS = 0.1  # Radius of the cylinder in km
 CYLINDER_ROTATION = np.array(
     [[0, 0, 1], [0, 1, 0], [-1, 0, 0]]
 )  # Rotation matrix (identity matrix by default)
@@ -232,11 +232,10 @@ def prepare_linear_system_for_cylindrical_acceleration(points, accelerations, n_
 
             # Axial (z) component
             dV_dz = (-k_mn / R_alpha) * exp_term * bessel_j
-            
-            # Compute the normalization term
-            k_m_plus_1 = BesselJ(m+1, k_mn)  # = J_{m+1}(jmn) for Bessel root
-            norm = 1.0 / np.exp(BETA* m)
 
+            # Compute the normalization term
+            k_m_plus_1 = BesselJ(m + 1, k_mn)  # = J_{m+1}(jmn) for Bessel root
+            norm = 1.0 / np.exp(BETA * m)
 
             for i in range(num_points):
                 # Radial (rho)
@@ -279,10 +278,10 @@ def prepare_linear_system_for_cylindrical_potential(points, potentials, n_n, n_m
             k_mn = k(m, n)
             exp_term = np.exp(-k_mn * z / R_alpha)
             bessel_j = BesselJ(m, k_mn * rho / R_alpha)
-            
+
             # Compute the normalization term
-            k_m_plus_1 = BesselJ(m+1, k_mn)  # = J_{m+1}(jmn) for Bessel root
-            norm = 1.0 / np.exp(BETA* m)
+            k_m_plus_1 = BesselJ(m + 1, k_mn)  # = J_{m+1}(jmn) for Bessel root
+            norm = 1.0 / np.exp(BETA * m)
 
             print(norm)
 
@@ -753,11 +752,10 @@ def compute_fitted_cylindrical_acceleration(points, fitted_params, n_n, n_m):
             dV_drho = (k_mn / R_alpha) * exp_term * bessel_j_derivative
             dV_dphi = (m / (rho + 1e-14)) * exp_term * bessel_j
             dV_dz = (-k_mn / R_alpha) * exp_term * bessel_j
-            
-            # Compute the normalization term
-            k_m_plus_1 = BesselJ(m+1, k_mn)  # = J_{m+1}(jmn) for Bessel root
-            norm = 1.0 / np.exp(BETA* m)
 
+            # Compute the normalization term
+            k_m_plus_1 = BesselJ(m + 1, k_mn)  # = J_{m+1}(jmn) for Bessel root
+            norm = 1.0 / np.exp(BETA * m)
 
             # Add contributions from coefficients
             fitted_acceleration[:, 0] += (
