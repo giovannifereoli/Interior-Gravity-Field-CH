@@ -50,11 +50,11 @@ CYLINDER_RADIUS = 0.1
 CYLINDER_ROTATION = np.eye(3)
 ALPHA = 100
 rotation_inv = np.linalg.inv(CYLINDER_ROTATION)
-np.random.seed(1)  # Set seed for reproducibility
 
 # NOTE: Clearly monte carlo with polyhedral gives biased results, using 25x25 makes it look better
 # NOTE: Clearly be aware of not putting P0 such that LinCov estimates goes outside the cylinder.
 # In order to put decent P0, let's stop trajectory at half period.
+# NOTE: OR JUST USE IT WORST CASE AND SHOW THE POWER OF THE METHOD!
 
 # TODO: Check A and rotations, math in general, pipeline, etc.
 
@@ -355,10 +355,10 @@ if __name__ == "__main__":
     n_state = 6 + 2 * n_n * n_m
     P0 = np.zeros((n_state, n_state))
     P0[:3, :3] = np.eye(3) * (1e-3) ** 2  # Position variance: 1e-3 km
-    P0[3:6, 3:6] = np.eye(3) * (1e-4) ** 2  # Velocity variance: 1e-4 km/s
+    P0[3:6, 3:6] = np.eye(3) * (1e-6) ** 2  # Velocity variance: 1e-6 km/s
     P0[6:, 6:] = np.diag(np.diag(full_cov_params))
 
-    stop_at_percent = 0.5
+    stop_at_percent = 0.5  # NOTE: to remain in linear regime!
     t_span = np.linspace(0, stop_at_percent * 55000, 100)  # 1 Hz sampling
 
     t, state, stm = propagate_state_and_stm(
@@ -511,6 +511,65 @@ if __name__ == "__main__":
             final_states[i] = result
     print("Monte Carlo propagation completed.")
 
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D
+    from tqdm import tqdm
+
+    # Function to plot cylinder
+    def plot_cylinder(
+        ax, center, radius, height=1.0, rotation=np.eye(3), color="gray", alpha=0.3
+    ):
+        u = np.linspace(0, 2 * np.pi, 50)
+        v = np.linspace(-height / 2, height / 2, 2)
+        U, V = np.meshgrid(u, v)
+        X = radius * np.cos(U)
+        Y = radius * np.sin(U)
+        Z = V
+
+        # Apply rotation
+        xyz = np.vstack([X.ravel(), Y.ravel(), Z.ravel()])
+        xyz_rot = rotation @ xyz
+        X_rot = xyz_rot[0].reshape(X.shape) + center[0]
+        Y_rot = xyz_rot[1].reshape(Y.shape) + center[1]
+        Z_rot = xyz_rot[2].reshape(Z.shape) + center[2]
+
+        ax.plot_surface(X_rot, Y_rot, Z_rot, color=color, alpha=alpha)
+
+    # Initialize figure
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection="3d")
+    ax.set_xlabel("X [km]")
+    ax.set_ylabel("Y [km]")
+    ax.set_zlabel("Z [km]")
+
+    # Plot cylinder
+    plot_cylinder(
+        ax,
+        CYLINDER_CENTER,
+        CYLINDER_RADIUS,
+        height=0.56,
+        rotation=CYLINDER_ROTATION,
+        alpha=0.2,
+    )
+
+    # Real-time Monte Carlo propagation
+    N_plot = min(100, N_samples)  # Limit number of trajectories for plotting speed
+    for i in tqdm(range(N_plot), desc="Monte Carlo Real-Time"):
+        sample_state = initial_samples[i]
+        t_mc, state_mc = propagate_trajectory(
+            initial_position=sample_state[:3],
+            initial_velocity=sample_state[3:6],
+            acceleration_func=acceleration_poly,
+            t_span=t_span,
+        )
+        ax.plot(state_mc[0], state_mc[1], state_mc[2], lw=1, alpha=0.6, color="blue")
+        plt.pause(0.01)
+
+    plt.show()
+    """
+
     # Compute empirical mean and covariance
     final_mean_mc = np.mean(final_states, axis=0)
     final_cov_mc = np.cov(final_states.T)
@@ -610,7 +669,21 @@ if __name__ == "__main__":
         fontsize=12,
         frameon=True,
     )
+    # for ax in fig.get_axes():
+    #    for tick in ax.get_xticklabels():
+    #        tick.set_rotation(30)
+    #    for tick in ax.get_yticklabels():
+    #        tick.set_rotation(0)
+
+    # from matplotlib.ticker import ScalarFormatter
+
+    # for ax in fig.get_axes():
+    #    ax.xaxis.set_major_formatter(ScalarFormatter(useMathText=True))
+    #    ax.yaxis.set_major_formatter(ScalarFormatter(useMathText=True))
     plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.subplots_adjust(
+        left=0.12, bottom=0.12, right=0.95, top=0.93, hspace=0.15, wspace=0.15
+    )
     fig.savefig(
         f"Images/fig_corner_MC_vs_LinCov_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
         dpi=1200,
@@ -624,7 +697,7 @@ if __name__ == "__main__":
     srif_cov_6d = P[:6, :6, -1]  # shape: (6,6)
 
     # Compute NEES
-    inv_cov = np.linalg.pinv(srif_cov_6d)
+    inv_cov = np.linalg.inv(srif_cov_6d)
     diffs = mc_final_6d - srif_mean_6d[None, :]
     nees_values = np.einsum("ij,jk,ik->i", diffs, inv_cov, diffs)
 
@@ -694,6 +767,16 @@ if __name__ == "__main__":
         linestyle="-",
         linewidth=2,
         label=f"Mean NEES={mean_nees:.2f}",
+    )
+
+    # Plot median NEES
+    median_nees = np.median(nees_values)
+    plt.axvline(
+        median_nees,
+        color=COLOR_PALETTE[1],
+        linestyle="--",
+        linewidth=2,
+        label=f"Median NEES={median_nees:.2f}",
     )
 
     # Labels and title
