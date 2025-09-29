@@ -44,19 +44,13 @@ mpl.rcParams["ytick.labelsize"] = 14
 mpl.rcParams["text.latex.preamble"] = r"\usepackage{mathrsfs}"
 
 
-# Define constants
+# Define constants and cylinder parameters
 CYLINDER_CENTER = np.array([0.0, 0.0, 0.28])
 CYLINDER_RADIUS = 0.1
 CYLINDER_ROTATION = np.eye(3)
 ALPHA = 100
-rotation_inv = np.linalg.inv(CYLINDER_ROTATION)
 
-# NOTE: Clearly monte carlo with polyhedral gives biased results, using 25x25 makes it look better
-# NOTE: Clearly be aware of not putting P0 such that LinCov estimates goes outside the cylinder.
-# In order to put decent P0, let's stop trajectory at half period.
-# NOTE: OR JUST USE IT WORST CASE AND SHOW THE POWER OF THE METHOD!
-
-# TODO: Check A and rotations, math in general, pipeline, etc.
+# TODO: When propagating with rotation different from I, check all the transformations
 
 
 def compute_A_and_sensitivities(
@@ -65,38 +59,51 @@ def compute_A_and_sensitivities(
     """
     Compute cylindrical Jacobian A_cyl and per-coefficient sensitivities for acceleration components.
     """
-    fac = alpha * Rstar
-    x = (j_mn * rho) / fac
-    exp_term = np.exp(-j_mn * z / fac)
-    Jm = BesselJ(m_vals, x)
-    Jm_p = BesselJp(m_vals, x, 1)
-    Jm_pp = BesselJp(m_vals, x, 2)
-
+    # Compute misc terms
+    R_alpha = alpha * Rstar
+    arg_Bessel = (j_mn * rho) / R_alpha
+    exp_term = np.exp(-j_mn * z / R_alpha)
+    Jm = BesselJ(m_vals, arg_Bessel)
+    Jm_p = BesselJp(m_vals, arg_Bessel, 1)
+    Jm_pp = BesselJp(m_vals, arg_Bessel, 2)
     cos_mphi = np.cos(m_vals * phi)
     sin_mphi = np.sin(m_vals * phi)
 
+    # Compute misc terms (2)
+    dPhi_dphi = np.sum(
+        exp_term * Jm * m_vals * (-A_coeff * sin_mphi + B_coeff * cos_mphi)
+    )
+
+    # Compute second derivatives wrt state
+    # Jr first row
     d2_drho2 = np.sum(
-        exp_term * (j_mn / fac) ** 2 * Jm_pp * (A_coeff * cos_mphi + B_coeff * sin_mphi)
+        exp_term
+        * (j_mn / R_alpha) ** 2
+        * Jm_pp
+        * (A_coeff * cos_mphi + B_coeff * sin_mphi)
     )
     d2_dphi_drho = np.sum(
         exp_term
-        * (j_mn / fac)
+        * (j_mn / R_alpha)
         * Jm_p
         * m_vals
         * (-A_coeff * sin_mphi + B_coeff * cos_mphi)
     )
     d2_dz_drho = -np.sum(
-        (j_mn / fac) ** 2 * exp_term * Jm_p * (A_coeff * cos_mphi + B_coeff * sin_mphi)
+        (j_mn / R_alpha) ** 2
+        * exp_term
+        * Jm_p
+        * (A_coeff * cos_mphi + B_coeff * sin_mphi)
     )
 
-    dPhi_dphi = np.sum(
-        exp_term * Jm * m_vals * (-A_coeff * sin_mphi + B_coeff * cos_mphi)
-    )
+    # Jr second row
     d2_dphi2 = -np.sum(
         exp_term * Jm * (m_vals**2) * (A_coeff * cos_mphi + B_coeff * sin_mphi)
     )
+
+    # Jr third row
     d2_dz_dphi = np.sum(
-        (j_mn / fac)
+        (j_mn / R_alpha)
         * exp_term
         * Jm
         * m_vals
@@ -104,14 +111,17 @@ def compute_A_and_sensitivities(
     )
 
     d2_dz2 = np.sum(
-        (j_mn / fac) ** 2 * exp_term * Jm * (A_coeff * cos_mphi + B_coeff * sin_mphi)
+        (j_mn / R_alpha) ** 2
+        * exp_term
+        * Jm
+        * (A_coeff * cos_mphi + B_coeff * sin_mphi)
     )
 
     A_cyl = np.array(
         [
             [d2_drho2, d2_dphi_drho, d2_dz_drho],
             [
-                -dPhi_dphi / (rho**2) + d2_dphi_drho / (rho),
+                d2_dphi_drho / (rho) - dPhi_dphi / (rho**2),
                 d2_dphi2 / (rho),
                 d2_dz_dphi / (rho),
             ],
@@ -120,12 +130,12 @@ def compute_A_and_sensitivities(
     )
 
     sens = {
-        "a_rho_A": exp_term * (j_mn / fac) * Jm_p * cos_mphi,
-        "a_rho_B": exp_term * (j_mn / fac) * Jm_p * sin_mphi,
+        "a_rho_A": exp_term * (j_mn / R_alpha) * Jm_p * cos_mphi,
+        "a_rho_B": exp_term * (j_mn / R_alpha) * Jm_p * sin_mphi,
         "a_phi_A": -(1 / (rho)) * exp_term * Jm * m_vals * sin_mphi,
         "a_phi_B": (1 / (rho)) * exp_term * Jm * m_vals * cos_mphi,
-        "a_z_A": -(j_mn / fac) * exp_term * Jm * cos_mphi,
-        "a_z_B": -(j_mn / fac) * exp_term * Jm * sin_mphi,
+        "a_z_A": -(j_mn / R_alpha) * exp_term * Jm * cos_mphi,
+        "a_z_B": -(j_mn / R_alpha) * exp_term * Jm * sin_mphi,
     }
 
     return A_cyl, sens
@@ -136,14 +146,14 @@ def cylindrical_to_cartesian_jacobian(A_cyl, a_cyl, phi):
     Transform 3x3 cylindrical Jacobian and acceleration into Cartesian Jacobian.
     """
     T = np.array(
-        [[np.cos(phi), -np.sin(phi), 0], [np.sin(phi), np.cos(phi), 0], [0, 0, 1]]
+        [[np.cos(phi), np.sin(phi), 0], [-np.sin(phi), np.cos(phi), 0], [0, 0, 1]]
     )
     T_T = T.T
     a_phi = a_cyl[1]
     T_tensor = a_phi * np.array(
         [[-np.sin(phi), np.cos(phi), 0], [-np.cos(phi), -np.sin(phi), 0], [0, 0, 0]]
     )
-    return (T_tensor + T_T @ A_cyl) @ T
+    return CYLINDER_ROTATION @ (T_tensor + T_T @ A_cyl) @ T @ CYLINDER_ROTATION.T
 
 
 def rotate_sensitivity_cylindrical(J_theta_cyl, phi):
@@ -151,36 +161,45 @@ def rotate_sensitivity_cylindrical(J_theta_cyl, phi):
     Rotate a (3xK) cylindrical sensitivity matrix into Cartesian coordinates.
     """
     T = np.array(
-        [[np.cos(phi), -np.sin(phi), 0], [np.sin(phi), np.cos(phi), 0], [0, 0, 1]]
+        [[np.cos(phi), np.sin(phi), 0], [-np.sin(phi), np.cos(phi), 0], [0, 0, 1]]
     )
-    return T.T @ J_theta_cyl
+    return CYLINDER_ROTATION @ T.T @ J_theta_cyl
 
 
 def compute_acceleration(position, fitted_params, n_n, n_m, j_mn_cache):
     """
     Compute acceleration in Cartesian coordinates at a given position.
     """
+    # Transform to cylindrical coordinates
     pt = np.array(position)
-    transformed_point = (pt - CYLINDER_CENTER) @ rotation_inv
+    transformed_point = (pt - CYLINDER_CENTER) @ CYLINDER_ROTATION.T
     rho = np.linalg.norm(transformed_point[:2])
     phi = np.arctan2(transformed_point[1], transformed_point[0])
     z = transformed_point[2]
 
-    m_vals = np.repeat(np.arange(n_m), n_n)
-    j_mn = j_mn_cache
-    A_coeff = fitted_params[0::2]
-    B_coeff = fitted_params[1::2]
+    # Expand m and n values
+    m_vals = np.repeat(np.arange(n_m), n_n)  # Each m value repeated n_n times
+    j_mn = j_mn_cache  # np.array([jn_zeros(m, n + 1)[-1] for m in range(n_m) for n in range(n_n)])
+    A_coeff = fitted_params[
+        0::2
+    ]  # NOTE: taking every second element starting from index 0
+    B_coeff = fitted_params[
+        1::2
+    ]  # NOTE: taking every second element starting from index 1
 
+    # Compute misc terms
     a_cyl = np.zeros(3)
-    fac = ALPHA * CYLINDER_RADIUS
-    x = (j_mn * rho) / fac
-    exp_term = np.exp(-j_mn * z / fac)
-    Jm = BesselJ(m_vals, x)
-    Jm_p = BesselJp(m_vals, x, 1)
+    R_alpha = ALPHA * CYLINDER_RADIUS
+    arg_Bessel = (j_mn * rho) / R_alpha
+    exp_term = np.exp(-j_mn * z / R_alpha)
+    Jm = BesselJ(m_vals, arg_Bessel)
+    Jm_p = BesselJp(m_vals, arg_Bessel, 1)
     cos_mphi = np.cos(m_vals * phi)
     sin_mphi = np.sin(m_vals * phi)
+
+    # Cylindrical acceleration components
     a_cyl[0] = np.sum(
-        exp_term * (j_mn / fac) * Jm_p * (A_coeff * cos_mphi + B_coeff * sin_mphi)
+        exp_term * (j_mn / R_alpha) * Jm_p * (A_coeff * cos_mphi + B_coeff * sin_mphi)
     )
     a_cyl[1] = np.sum(
         (1 / (rho))
@@ -190,14 +209,17 @@ def compute_acceleration(position, fitted_params, n_n, n_m, j_mn_cache):
         * (-A_coeff * sin_mphi + B_coeff * cos_mphi)
     )
     a_cyl[2] = np.sum(
-        -(j_mn / fac) * exp_term * Jm * (A_coeff * cos_mphi + B_coeff * sin_mphi)
+        -(j_mn / R_alpha) * exp_term * Jm * (A_coeff * cos_mphi + B_coeff * sin_mphi)
     )
 
+    # Transform back to Cartesian coordinates
+    # NOTE: @ R because is a row vector!
     a_rho, a_phi, a_z = a_cyl
     a_x = a_rho * np.cos(phi) - a_phi * np.sin(phi)
     a_y = a_rho * np.sin(phi) + a_phi * np.cos(phi)
     a_z = a_z
     accel_cart = np.array([a_x, a_y, a_z]) @ CYLINDER_ROTATION
+
     return accel_cart
 
 
@@ -205,17 +227,20 @@ def compute_dynamical_matrix(position, fitted_params, n_n, n_m, j_mn_cache):
     """
     Compute the dynamical matrix A for the state [position, velocity, coefficients].
     """
+    # Transform to cylindrical coordinates
     pt = np.array(position)
-    transformed_point = (pt - CYLINDER_CENTER) @ rotation_inv
+    transformed_point = (pt - CYLINDER_CENTER) @ CYLINDER_ROTATION.T
     rho = np.linalg.norm(transformed_point[:2])
     phi = np.arctan2(transformed_point[1], transformed_point[0])
     z = transformed_point[2]
 
+    # Expand m and n values
     m_vals = np.repeat(np.arange(n_m), n_n)
     j_mn = j_mn_cache
     A_coeff = fitted_params[0::2]
     B_coeff = fitted_params[1::2]
 
+    # Compute misc terms
     a_cyl = np.zeros(3)
     fac = ALPHA * CYLINDER_RADIUS
     x = (j_mn * rho) / fac
@@ -224,6 +249,8 @@ def compute_dynamical_matrix(position, fitted_params, n_n, n_m, j_mn_cache):
     Jm_p = BesselJp(m_vals, x, 1)
     cos_mphi = np.cos(m_vals * phi)
     sin_mphi = np.sin(m_vals * phi)
+
+    # Cylindrical acceleration components
     a_cyl[0] = np.sum(
         exp_term * (j_mn / fac) * Jm_p * (A_coeff * cos_mphi + B_coeff * sin_mphi)
     )
@@ -238,12 +265,13 @@ def compute_dynamical_matrix(position, fitted_params, n_n, n_m, j_mn_cache):
         -(j_mn / fac) * exp_term * Jm * (A_coeff * cos_mphi + B_coeff * sin_mphi)
     )
 
+    # Compute cylindrical Jacobian and rotate
     A_cyl, sens_cyl = compute_A_and_sensitivities(
         rho, phi, z, m_vals, j_mn, A_coeff, B_coeff, ALPHA, CYLINDER_RADIUS
     )
-
     J_cart = cylindrical_to_cartesian_jacobian(A_cyl, a_cyl, phi)
 
+    # Compute coefficients sensitivity matrix and rotate
     J_theta_cyl = np.vstack(
         [
             np.hstack([sens_cyl["a_rho_A"], sens_cyl["a_rho_B"]]),
@@ -253,6 +281,7 @@ def compute_dynamical_matrix(position, fitted_params, n_n, n_m, j_mn_cache):
     )
     J_theta_cart = rotate_sensitivity_cylindrical(J_theta_cyl, phi)
 
+    # Assemble full dynamical matrix
     K = 2 * n_n * n_m
     A = np.zeros((6 + K, 6 + K))
     A[0:3, 3:6] = np.eye(3)
@@ -266,10 +295,12 @@ def propagate_state_and_stm(initial_state, fitted_params, n_n, n_m, t_span):
     """
     Propagate the state and STM using a single call to solve_ivp.
     """
+    # Initial state and STM
     n_state = 6 + 2 * n_n * n_m
     stm0 = np.eye(n_state).ravel()
     y0 = np.hstack((initial_state, stm0))
 
+    # Integrate the combined state and STM
     sol = solve_ivp(
         fun=lambda t, y: _dynamics_full(
             t, y, n_state, fitted_params, n_n, n_m, j_mn_cache
@@ -291,8 +322,11 @@ def propagate_state_and_stm(initial_state, fitted_params, n_n, n_m, t_span):
 
 
 def plot_cov_ellipses(fig, mean, cov, color, nsig=1.0):
+    # Plot covariance ellipses on corner plot
     ndim = len(mean)
     axes = np.array(fig.axes).reshape((ndim, ndim))
+
+    # Loop over each subplot
     for i in range(ndim):
         for j in range(i):
             ax = axes[i, j]
@@ -324,14 +358,18 @@ def _dynamics_full(t, y, n_state, fitted_params, n_n, n_m, j_mn_cache):
     """
     Returns the time-derivative of [state; STM] for solve_ivp.
     """
+    # Unpack state and STM
     state = y[:n_state]
     stm_mat = y[n_state:].reshape((n_state, n_state))
     pos = state[0:3]
     vel = state[3:6]
+
+    # Compute acceleration and dynamical matrix
     a = compute_acceleration(pos, fitted_params, n_n, n_m, j_mn_cache)
     A = compute_dynamical_matrix(pos, fitted_params, n_n, n_m, j_mn_cache)
     state_dot = np.hstack((vel, a, np.zeros(2 * n_n * n_m)))
     stm_dot = (A @ stm_mat).ravel()
+
     return np.hstack((state_dot, stm_dot))
 
 
@@ -773,8 +811,8 @@ if __name__ == "__main__":
     median_nees = np.median(nees_values)
     plt.axvline(
         median_nees,
-        color=COLOR_PALETTE[1],
-        linestyle="--",
+        color=COLOR_PALETTE[-1],
+        linestyle="-",
         linewidth=2,
         label=f"Median NEES={median_nees:.2f}",
     )

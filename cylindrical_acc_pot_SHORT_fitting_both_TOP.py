@@ -176,7 +176,7 @@ def cylindrical_to_cartesian_acceleration(points, cylindrical_accelerations):
     a_x = a_rho * np.cos(phi) - a_phi * np.sin(phi)
     a_y = a_rho * np.sin(phi) + a_phi * np.cos(phi)
 
-    return np.column_stack((a_x, a_y, a_z))
+    return np.column_stack((a_x, a_y, a_z)) @ CYLINDER_ROTATION
 
 
 # Fit cylindrical acceleration components using least squares

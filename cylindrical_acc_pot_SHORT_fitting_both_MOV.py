@@ -30,6 +30,8 @@ from scipy.integrate import solve_ivp
 from datetime import datetime
 from scipy.stats import lognorm
 
+# TODO: if propagatin with rotation different from I, check all the acceleration transformations
+
 
 # Use a colorblind-friendly color palette
 
@@ -59,7 +61,9 @@ DENSITY = 1.0
 CYLINDER_CENTER = np.array([0.0, 0.0, 0.28])  # Center of the cylinder base in XYZ
 CYLINDER_HEIGHT = 0.5  # Height of the cylinder in km
 CYLINDER_RADIUS = 0.1  # Radius of the cylinder in km
-CYLINDER_ROTATION = np.eye(3)  # Rotation matrix (identity matrix by default)
+CYLINDER_ROTATION = np.eye(
+    3
+)  # Rotation matrix (identity matrix by default), used .T wrt paper!
 NUM_POINTS = 1000  # Number of points to generate
 
 # 2) as before,Rotation x-axis
@@ -1091,7 +1095,7 @@ def cylindrical_to_cartesian_acceleration(points, cylindrical_accelerations):
     a_x = a_rho * np.cos(phi) - a_phi * np.sin(phi)
     a_y = a_rho * np.sin(phi) + a_phi * np.cos(phi)
 
-    return np.column_stack((a_x, a_y, a_z))
+    return np.column_stack((a_x, a_y, a_z)) @ CYLINDER_ROTATION
 
 
 def acceleration_fitted(position):
