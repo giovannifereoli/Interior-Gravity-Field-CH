@@ -17,6 +17,7 @@ from tqdm import tqdm
 from scipy.integrate import solve_ivp
 from scipy.stats import chi2
 from datetime import datetime
+from matplotlib.ticker import ScalarFormatter
 
 # Set LaTeX formatting
 COLOR_PALETTE = [
@@ -437,7 +438,7 @@ if __name__ == "__main__":
     print("Propagation covariance completed.")
 
     # Parameters
-    N_samples = 1000  # Monte Carlo sample count
+    N_samples = 10000  # Monte Carlo sample count
     MC_w_polyhedral = True
     rng = np.random.default_rng(42)
     n_state = initial_state.shape[0]
@@ -653,7 +654,7 @@ if __name__ == "__main__":
         show_titles=False,
         color=COLOR_PALETTE[0],
         title_fmt=".4e",
-        label_kwargs={"fontsize": 12},
+        label_kwargs={"fontsize": 12, "labelpad": 50},
         fig=plt.figure(figsize=(14, 14)),
         bins=30,
         hist_kwargs={"linewidth": 1.5},
@@ -701,23 +702,12 @@ if __name__ == "__main__":
     ]
     fig.legend(
         handles=legend_elements,
-        loc="upper center",
-        bbox_to_anchor=(0.5, 1),
+        loc="lower center",
+        # bbox_to_anchor=(0.5, 1),
         ncol=3,
-        fontsize=12,
+        fontsize=14,
         frameon=True,
     )
-    # for ax in fig.get_axes():
-    #    for tick in ax.get_xticklabels():
-    #        tick.set_rotation(30)
-    #    for tick in ax.get_yticklabels():
-    #        tick.set_rotation(0)
-
-    # from matplotlib.ticker import ScalarFormatter
-
-    # for ax in fig.get_axes():
-    #    ax.xaxis.set_major_formatter(ScalarFormatter(useMathText=True))
-    #    ax.yaxis.set_major_formatter(ScalarFormatter(useMathText=True))
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.subplots_adjust(
         left=0.12, bottom=0.12, right=0.95, top=0.93, hspace=0.15, wspace=0.15
