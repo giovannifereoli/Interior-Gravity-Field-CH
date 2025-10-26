@@ -1,4 +1,3 @@
-```
 # Interior Gravity Characterization of Small Celestial Bodies Using Cylindrical Harmonics
 
 **Giovanni Fereoli<sup>1,2</sup> · Jay W. McMahon<sup>1,2</sup>**  
@@ -33,38 +32,6 @@ The formulation is particularly suited for **spacecraft proximity operations**, 
 - 🛰️ **Mission-Relevant Applications**  
   Enables precise local gravity modeling for trajectory design, OD, and landing-site analysis.
 
-- 📈 **Validated Results**  
-  Benchmarked on the Gaskell (2008) Eros shape model and Dawn FC2 datasets.  
-  Demonstrates faster convergence and improved accuracy over spherical harmonics.
-
----
-
-## 🧩 Repository Structure
-
-```
-
-📦 CylindricalHarmonics_GravityModel
-├── README.md                     # Project overview (this file)
-├── paper/                        # LaTeX source for the submitted manuscript
-│   ├── main.tex
-│   ├── figures/
-│   ├── references.bib
-│   └── sn-jnl.cls
-├── src/                          # Core Python code
-│   ├── bessel_basis.py           # Fourier–Bessel basis & normalization
-│   ├── gravity_fit.py            # Coefficient estimation (least squares)
-│   ├── gravity_eval.py           # Potential and acceleration computation
-│   └── visualization.py          # Plotting and convergence diagnostics
-├── data/
-│   ├── shape_model/              # Gaskell (2008) Eros triangular mesh
-│   ├── polyhedral_reference/     # Reference polyhedral gravity data
-│   └── fitted_coefficients/      # Stored cylindrical harmonic coefficients
-└── examples/
-├── compare_polyhedral_vs_cyl.py  # Reproduce paper validation figures
-└── propagate_trajectory.py       # Example trajectory propagation test
-
-````
-
 ---
 
 ## 🧠 Theoretical Background
@@ -86,57 +53,6 @@ where:
 This representation satisfies **Laplace’s equation exactly** and converges **within a finite cylindrical region**, enabling high-accuracy modeling near irregular surfaces where spherical harmonics fail.
 
 ---
-
-## 🚀 Getting Started
-
-### Requirements
-
-- Python ≥ 3.9  
-- NumPy, SciPy, Matplotlib, SymPy  
-- (optional) spiceypy for SPICE trajectory validation
-
-### Installation
-
-```bash
-git clone https://github.com/<your-username>/CylindricalHarmonics_GravityModel.git
-cd CylindricalHarmonics_GravityModel
-pip install -r requirements.txt
-````
-
-### Example Usage
-
-```python
-import numpy as np
-from src.bessel_basis import CylindricalBasis
-from src.gravity_eval import compute_gravity
-
-# Initialize cylindrical basis
-basis = CylindricalBasis(N=5, M=5, radius=1.0)
-
-# Load fitted coefficients
-coeffs = np.load('data/fitted_coefficients/eros_cylindrical.npy', allow_pickle=True)
-
-# Evaluate potential and acceleration
-U, a = compute_gravity(rho=0.5, phi=1.2, z=0.1, coeffs=coeffs, basis=basis)
-
-print("Potential [m^2/s^2]:", U)
-print("Acceleration [m/s^2]:", a)
-```
-
----
-
-## 📊 Validation Example
-
-To reproduce validation figures comparing the cylindrical and polyhedral gravity fields:
-
-```bash
-python examples/compare_polyhedral_vs_cyl.py
-```
-
-This generates RMS error and convergence plots as in the manuscript.
-
----
-
 ## 📚 Citation
 
 If you use this code or reproduce results from the paper, please cite:
@@ -168,4 +84,3 @@ at the University of Colorado Boulder, in collaboration with the
 
 Special thanks to the **Dawn** and **NEAR Shoemaker** mission teams for publicly available data.
 
-```
