@@ -9,9 +9,9 @@ class Spacecraft:
         """
         Spacecraft representation.
 
-        position:  (3,) km in body-fixed frame
+        position:  (3,) LU in body-fixed frame
         orientation: (3,3) rotation matrix from body frame to camera frame
-        velocity:  (3,) km/s in body-fixed frame (optional)
+        velocity:  (3,) LU/s in body-fixed frame (optional)
         """
         self.position = position
         self.orientation = orientation

@@ -59,8 +59,8 @@ DENSITY = 1.0
 
 # 1) No rotation
 CYLINDER_CENTER = np.array([0.0, 0.0, 0.28])  # Center of the cylinder base in XYZ
-CYLINDER_HEIGHT = 0.5  # Height of the cylinder in km
-CYLINDER_RADIUS = 0.1  # Radius of the cylinder in km
+CYLINDER_HEIGHT = 0.5  # Height of the cylinder in LU
+CYLINDER_RADIUS = 0.1  # Radius of the cylinder in LU
 CYLINDER_ROTATION = np.eye(
     3
 )  # Rotation matrix (identity matrix by default), used .T wrt paper!
@@ -69,8 +69,8 @@ NUM_POINTS = 1000  # Number of points to generate
 # 2) as before, rotation x-axis
 """'
 CYLINDER_CENTER = np.array([-0.1, -0.28, 0])  # Center of the cylinder base in XYZ
-CYLINDER_HEIGHT = 0.5  # Height of the cylinder in km
-CYLINDER_RADIUS = 0.1  # Radius of the cylinder in km
+CYLINDER_HEIGHT = 0.5  # Height of the cylinder in LU
+CYLINDER_RADIUS = 0.1  # Radius of the cylinder in LU
 CYLINDER_ROTATION = np.array(
     [[1, 0, 0], [0, 0, -1], [0, 1, 0]]
 )  # Rotation matrix (identity matrix by default)
@@ -80,8 +80,8 @@ NUM_POINTS = 1000  # Number of points to generate
 # 3) as before, rotation z-axis
 """
 CYLINDER_CENTER = np.array([-1.26, 0, 0])  # Center of the cylinder base in XYZ
-CYLINDER_HEIGHT = 0.5  # Height of the cylinder in km
-CYLINDER_RADIUS = 0.1  # Radius of the cylinder in km
+CYLINDER_HEIGHT = 0.5  # Height of the cylinder in LU
+CYLINDER_RADIUS = 0.1  # Radius of the cylinder in LU
 CYLINDER_ROTATION = np.array(
     [[0, 0, 1], [0, 1, 0], [-1, 0, 0]]
 )  # Rotation matrix (identity matrix by default)
@@ -649,21 +649,22 @@ def plot_coefficient_matrices(A, B):
     plt.tight_layout(rect=[0, 0, 1, 0.95])
 
 
-def plot_power_spectrum_with_empirical_cov(A, B, cov_matrix_empirical, n_n, n_m):
+def plot_power_spectrum_with_empirical_cov(A, B, cov_matrix_empirical, n_n, n_m, plot_snr=True):
     """
-    Compute and plot RMS of coefficients, RMS of empirical uncertainty,
-    and SNR per order m. SNR is plotted on a logarithmic scale (not in dB).
+    Compute and plot RMS of coefficients and RMS of empirical uncertainty.
+    Optionally plot SNR per order m (on logarithmic scale).
 
     Args:
         A, B: Fitted coefficient matrices (n_m x n_n)
         cov_matrix_empirical: Empirical covariance matrix from residuals
         n_n: Number of degree terms
         n_m: Number of order terms
+        plot_snr (bool): If True, include SNR plot (default: True)
     """
     # Compute RMS of coefficients with proper normalization
     rms_coeffs = np.zeros(n_m)
     for m in range(n_m):
-        K_m = n_n if m == 0 else 2 * n_n  # number of coefficients at order m
+        K_m = n_n if m == 0 else 2 * n_n
         rms_coeffs[m] = np.sqrt(np.sum(A[m, :] ** 2 + B[m, :] ** 2) / K_m)
 
     # Unpack variances from covariance matrix
@@ -687,11 +688,8 @@ def plot_power_spectrum_with_empirical_cov(A, B, cov_matrix_empirical, n_n, n_m)
             np.sum(sigma_A_empirical[m, :] ** 2 + sigma_B_empirical[m, :] ** 2) / K_m
         )
 
-    # SNR (linear ratio, plotted on log axis)
-    snr = rms_coeffs / rms_empirical
-
     # Plotting
-    _, ax1 = plt.subplots(figsize=(12, 8))
+    fig, ax1 = plt.subplots(figsize=(12, 8))
 
     (l1,) = ax1.semilogy(
         range(n_m), rms_coeffs, marker="o", linestyle="-", color=COLOR_PALETTE[0]
@@ -705,33 +703,52 @@ def plot_power_spectrum_with_empirical_cov(A, B, cov_matrix_empirical, n_n, n_m)
     ax1.minorticks_on()
     ax1.grid(which="minor", linestyle=":", linewidth=0.5, alpha=0.5)
 
-    ax2 = ax1.twinx()
-    (l3,) = ax2.plot(
-        range(n_m), snr, marker="d", linestyle="-.", color=COLOR_PALETTE[1]
-    )
-    ax2.set_yscale("log")
-    ax2.set_ylabel("SNR (-, log scale)", labelpad=10)
+    if plot_snr:
+        # Compute SNR (linear ratio)
+        snr = rms_coeffs / rms_empirical
+        ax2 = ax1.twinx()
+        (l3,) = ax2.plot(
+            range(n_m), snr, marker="d", linestyle="-.", color=COLOR_PALETTE[1]
+        )
+        ax2.set_yscale("log")
+        ax2.set_ylabel("SNR (-, log scale)", labelpad=10)
 
-    ax1.legend(
-        [l1, l2, l3],
-        ["RMS Coefficients", "RMS Empirical Uncertainty", "SNR"],
-        loc="lower right",
-        frameon=True,
-        fancybox=True,
-        edgecolor="black",
-        fontsize=14,
-    )
+        ax1.legend(
+            [l1, l2, l3],
+            ["RMS Coefficients", "RMS Empirical Uncertainty", "SNR"],
+            loc="lower right",
+            frameon=True,
+            fancybox=True,
+            edgecolor="black",
+            fontsize=14,
+        )
 
-    plt.savefig(
-        "Images/power_spectrum_empirical_snr_logscale.pdf",
-        dpi=1200,
-        bbox_inches="tight",
-    )
+        plt.savefig(
+            "Images/power_spectrum_empirical_snr_logscale.pdf",
+            dpi=1200,
+            bbox_inches="tight",
+        )
+    else:
+        ax1.legend(
+            [l1, l2],
+            ["RMS Coefficients", "RMS Empirical Uncertainty"],
+            loc="upper right",
+            frameon=True,
+            fancybox=True,
+            edgecolor="black",
+            fontsize=14,
+        )
+        plt.savefig(
+            "Images/power_spectrum_empirical_nosnr.pdf",
+            dpi=1200,
+            bbox_inches="tight",
+        )
+
 
 
 # Call the functions
 A, B = print_fitted_parameters(fitted_params, n_n, n_m)
-plot_power_spectrum_with_empirical_cov(A, B, cov_matrix, n_n, n_m)
+plot_power_spectrum_with_empirical_cov(A, B, cov_matrix, n_n, n_m, False)
 # plot_coefficients_semilogy(A, B, n_n, n_m)
 # plot_coefficient_matrices(A, B)
 # plot_power_spectrum_by_order(A, B, n_n, n_m)
@@ -825,9 +842,9 @@ def plot_error_on_cylinder(cylinder_points, percentage_error, title="Percentage 
     cbar.set_label("Relative Error (\\%)")
 
     # Set labels and title
-    ax.set_xlabel("$X$ (km)", labelpad=10)
-    ax.set_ylabel("$Y$ (km)", labelpad=10)
-    ax.set_zlabel("$Z$ (km)", labelpad=10)
+    ax.set_xlabel("$X$ (LU)", labelpad=10)
+    ax.set_ylabel("$Y$ (LU)", labelpad=10)
+    ax.set_zlabel("$Z$ (LU)", labelpad=10)
     ax.set_aspect("equal")
     plt.savefig(
         f"Images/cylerror_plot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
@@ -1056,9 +1073,9 @@ def plot_trajectories(t_poly, y_poly, t_fitted, y_fitted):
     )
 
     # Set labels and title
-    ax.set_xlabel("$X$ (km)", labelpad=10)
-    ax.set_ylabel("$Y$ (km)", labelpad=10)
-    ax.set_zlabel("$Z$ (km)", labelpad=10)
+    ax.set_xlabel("$X$ (LU)", labelpad=10)
+    ax.set_ylabel("$Y$ (LU)", labelpad=10)
+    ax.set_zlabel("$Z$ (LU)", labelpad=10)
     plt.legend(
         loc="best",
         frameon=True,
@@ -1223,9 +1240,9 @@ def plot_trajectories_multiple(t_poly, y_poly, traj_dict):
         x_cyl, y_cyl, z_cyl, color="lightyellow", alpha=0.3, edgecolor="none"
     )
 
-    ax.set_xlabel("$X$ (km)", labelpad=10)
-    ax.set_ylabel("$Y$ (km)", labelpad=10)
-    ax.set_zlabel("$Z$ (km)", labelpad=10)
+    ax.set_xlabel("$X$ (LU)", labelpad=10)
+    ax.set_ylabel("$Y$ (LU)", labelpad=10)
+    ax.set_zlabel("$Z$ (LU)", labelpad=10)
     ax.set_aspect("equal")
     plt.legend(frameon=True, fancybox=True, edgecolor="black", fontsize=14)
     plt.savefig("Images/trajectory_comparison.pdf", dpi=1200, bbox_inches="tight")
@@ -1237,12 +1254,12 @@ def plot_trajectory_differences(t, y_poly, traj_dict):
     axs = axs.ravel()
 
     labels = [
-        "$|\\delta x|$ (km)",
-        "$|\\delta y|$ (km)",
-        "$|\\delta z|$ (km)",
-        "$|\\delta v_x|$ (km/s)",
-        "$|\\delta v_y|$ (km/s)",
-        "$|\\delta v_z|$ (km/s)",
+        "$|\\delta x|$ (LU)",
+        "$|\\delta y|$ (LU)",
+        "$|\\delta z|$ (LU)",
+        "$|\\delta v_x|$ (LU/s)",
+        "$|\\delta v_y|$ (LU/s)",
+        "$|\\delta v_z|$ (LU/s)",
     ]
 
     markers = ["o", "<", "^", "D", "v", "s"]

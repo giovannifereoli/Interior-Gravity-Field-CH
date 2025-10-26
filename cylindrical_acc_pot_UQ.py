@@ -393,8 +393,8 @@ if __name__ == "__main__":
     # Initialize covariance matrix
     n_state = 6 + 2 * n_n * n_m
     P0 = np.zeros((n_state, n_state))
-    P0[:3, :3] = np.eye(3) * (1e-3) ** 2  # Position variance: 1e-3 km
-    P0[3:6, 3:6] = np.eye(3) * (1e-6) ** 2  # Velocity variance: 1e-6 km/s
+    P0[:3, :3] = np.eye(3) * (1e-3) ** 2  # Position variance: 1e-3 LU
+    P0[3:6, 3:6] = np.eye(3) * (1e-6) ** 2  # Velocity variance: 1e-6 LU/s
     P0[6:, 6:] = np.diag(np.diag(full_cov_params))
 
     stop_at_percent = 0.5  # NOTE: to remain in linear regime!
@@ -579,9 +579,9 @@ if __name__ == "__main__":
     # Initialize figure
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111, projection="3d")
-    ax.set_xlabel("X [km]")
-    ax.set_ylabel("Y [km]")
-    ax.set_zlabel("Z [km]")
+    ax.set_xlabel("X [LU]")
+    ax.set_ylabel("Y [LU]")
+    ax.set_zlabel("Z [LU]")
 
     # Plot cylinder
     plot_cylinder(
@@ -620,12 +620,12 @@ if __name__ == "__main__":
     # Plotting results
     compare_idx = np.arange(6)
     labels = [
-        r"$x (km)$",
-        r"$y (km)$",
-        r"$z (km)$",
-        r"$v_x (km/s)$",
-        r"$v_y (km/s)$",
-        r"$v_z (km/s)$",
+        r"$x (LU)$",
+        r"$y (LU)$",
+        r"$z (LU)$",
+        r"$v_x (LU/s)$",
+        r"$v_y (LU/s)$",
+        r"$v_z (LU/s)$",
     ]
     print("\n===== Final State Statistics Comparison =====")
     print(f"{'State':6}  |  {'Mean MC':>15}  |  {'Mean SRIF':>15}")

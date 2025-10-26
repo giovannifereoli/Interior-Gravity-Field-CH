@@ -300,7 +300,7 @@ def compute_measurement_partials(position, n_state, fx=1000, fy=1000):
     # Measurement noise covariance
     R = np.diag(
         [
-            (1e-4) ** 2,  # Range [km^2]
+            (1e-4) ** 2,  # Range [LU^2]
             (0.2) ** 2,  # Pixel noise [pixels^2]
             (0.2) ** 2,  # Line noise [pixels^2]
         ]
@@ -346,7 +346,7 @@ def compute_measurement_partials2(position, n_state):
     H[2, 2] = (r**2 - dz**2) / (r**3 * cos_phi)  # dphi/dz
 
     # Measurement noise covariance
-    R = np.diag([(1e-4) ** 2, 0.001**2, 0.001**2])  # [km^2, rad^2, rad^2]
+    R = np.diag([(1e-4) ** 2, 0.001**2, 0.001**2])  # [LU^2, rad^2, rad^2]
 
     return H, R
 
@@ -442,8 +442,8 @@ if __name__ == "__main__":
     # Initialize covariance matrix
     n_state = 6 + 2 * n_n * n_m
     P0 = np.zeros((n_state, n_state))
-    P0[:3, :3] = np.eye(3) * (1e-3) ** 2  # Position variance: 1e-3 km
-    P0[3:6, 3:6] = np.eye(3) * (1e-3) ** 2  # Velocity variance: 1e-3 km/s
+    P0[:3, :3] = np.eye(3) * (1e-3) ** 2  # Position variance: 1e-3 LU
+    P0[3:6, 3:6] = np.eye(3) * (1e-3) ** 2  # Velocity variance: 1e-3 LU/s
     P0[6:, 6:] = np.diag(np.diag(full_cov_params))
 
     stop_at_percent = 0.985
@@ -523,9 +523,9 @@ if __name__ == "__main__":
     x_cyl = CYLINDER_RADIUS * np.cos(theta)
     y_cyl = CYLINDER_RADIUS * np.sin(theta)
     ax1.plot_wireframe(x_cyl, y_cyl, z_cyl, color=COLOR_PALETTE[1], alpha=0.3)
-    ax1.set_xlabel(r"$X$ (km)", fontsize=12)
-    ax1.set_ylabel(r"$Y$ (km)", fontsize=12)
-    ax1.set_zlabel(r"$Z$ (km)", fontsize=12)
+    ax1.set_xlabel(r"$X$ (LU)", fontsize=12)
+    ax1.set_ylabel(r"$Y$ (LU)", fontsize=12)
+    ax1.set_zlabel(r"$Z$ (LU)", fontsize=12)
     ax1.legend(fontsize=10)
     ax1.grid(True)
     ax1.set_aspect("equal")
@@ -536,7 +536,7 @@ if __name__ == "__main__":
     ax2.plot(t / 3600, state[1, :], label=r"$y$", color=COLOR_PALETTE[1])
     ax2.plot(t / 3600, state[2, :], label=r"$z$", color=COLOR_PALETTE[2])
     ax2.set_xlabel(r"Time (hr)", fontsize=12)
-    ax2.set_ylabel(r"Position (km)", fontsize=12)
+    ax2.set_ylabel(r"Position (LU)", fontsize=12)
     ax2.legend(fontsize=10)
     ax2.grid(True)
 
@@ -546,7 +546,7 @@ if __name__ == "__main__":
     ax3.plot(t / 3600, state[4, :], label=r"$v_y$", color=COLOR_PALETTE[1])
     ax3.plot(t / 3600, state[5, :], label=r"$v_z$", color=COLOR_PALETTE[2])
     ax3.set_xlabel(r"Time (hr)", fontsize=12)
-    ax3.set_ylabel(r"Velocity (km/s)", fontsize=12)
+    ax3.set_ylabel(r"Velocity (LU/s)", fontsize=12)
     ax3.legend(fontsize=10)
     ax3.grid(True)
     plt.tight_layout()
@@ -572,7 +572,7 @@ if __name__ == "__main__":
     )
     ax4.set_yscale("log")
     ax4.set_xlabel(r"Time (hr)", fontsize=12)
-    ax4.set_ylabel(r"Std. Dev. (km)", fontsize=12)
+    ax4.set_ylabel(r"Std. Dev. (LU)", fontsize=12)
     ax4.legend(fontsize=10)
     ax4.grid(True, which="both")
 
@@ -604,7 +604,7 @@ if __name__ == "__main__":
     )
     ax5.set_yscale("log")
     ax5.set_xlabel(r"Time (hr)", fontsize=12)
-    ax5.set_ylabel(r"Std. Dev. (km/s)", fontsize=12)
+    ax5.set_ylabel(r"Std. Dev. (LU/s)", fontsize=12)
     ax5.legend(fontsize=10)
     ax5.grid(True, which="both")
 

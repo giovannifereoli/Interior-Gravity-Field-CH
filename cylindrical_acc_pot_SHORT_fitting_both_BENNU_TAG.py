@@ -75,8 +75,8 @@ DENSITY = 1.0
 
 # 1) No rotation
 CYLINDER_CENTER = np.array([0.0, 0.0, 0.1])  # Center of the cylinder base in XYZ
-CYLINDER_HEIGHT = 0.5  # Height of the cylinder in km
-CYLINDER_RADIUS = 0.1  # Radius of the cylinder in km
+CYLINDER_HEIGHT = 0.5  # Height of the cylinder in LU
+CYLINDER_RADIUS = 0.1  # Radius of the cylinder in LU
 CYLINDER_ROTATION = np.eye(3)  # Rotation matrix (identity matrix by default)
 NUM_POINTS = 1000  # Number of points to generate
 

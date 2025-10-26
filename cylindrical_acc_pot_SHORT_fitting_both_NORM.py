@@ -59,16 +59,16 @@ DENSITY = 1.0
 
 # 1) No rotation
 CYLINDER_CENTER = np.array([0.0, 0.0, 0.28])  # Center of the cylinder base in XYZ
-CYLINDER_HEIGHT = 0.5  # Height of the cylinder in km
-CYLINDER_RADIUS = 0.1  # Radius of the cylinder in km
+CYLINDER_HEIGHT = 0.5  # Height of the cylinder in LU
+CYLINDER_RADIUS = 0.1  # Radius of the cylinder in LU
 CYLINDER_ROTATION = np.eye(3)  # Rotation matrix (identity matrix by default)
 NUM_POINTS = 1000  # Number of points to generate
 
 # 2) as before,Rotation x-axis
 """'
 CYLINDER_CENTER = np.array([-0.1, -0.28, 0])  # Center of the cylinder base in XYZ
-CYLINDER_HEIGHT = 0.5  # Height of the cylinder in km
-CYLINDER_RADIUS = 0.1  # Radius of the cylinder in km
+CYLINDER_HEIGHT = 0.5  # Height of the cylinder in LU
+CYLINDER_RADIUS = 0.1  # Radius of the cylinder in LU
 CYLINDER_ROTATION = np.array(
     [[1, 0, 0], [0, 0, -1], [0, 1, 0]]
 )  # Rotation matrix (identity matrix by default)
@@ -78,8 +78,8 @@ NUM_POINTS = 1000  # Number of points to generate
 # 3) as before,Rotation x-axis
 """
 CYLINDER_CENTER = np.array([-1.26, 0, 0])  # Center of the cylinder base in XYZ
-CYLINDER_HEIGHT = 0.5  # Height of the cylinder in km
-CYLINDER_RADIUS = 0.1  # Radius of the cylinder in km
+CYLINDER_HEIGHT = 0.5  # Height of the cylinder in LU
+CYLINDER_RADIUS = 0.1  # Radius of the cylinder in LU
 CYLINDER_ROTATION = np.array(
     [[0, 0, 1], [0, 1, 0], [-1, 0, 0]]
 )  # Rotation matrix (identity matrix by default)
@@ -701,9 +701,9 @@ def plot_error_on_cylinder(cylinder_points, percentage_error, title="Percentage 
     cbar.set_label("Relative Error (\\%)")
 
     # Set labels and title
-    ax.set_xlabel("$X$ (km)", labelpad=10)
-    ax.set_ylabel("$Y$ (km)", labelpad=10)
-    ax.set_zlabel("$Z$ (km)", labelpad=10)
+    ax.set_xlabel("$X$ (LU)", labelpad=10)
+    ax.set_ylabel("$Y$ (LU)", labelpad=10)
+    ax.set_zlabel("$Z$ (LU)", labelpad=10)
     ax.set_aspect("equal")
     plt.savefig(
         f"Images/cylerror_plot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
@@ -936,9 +936,9 @@ def plot_trajectories(t_poly, y_poly, t_fitted, y_fitted):
     )
 
     # Set labels and title
-    ax.set_xlabel("$X$ (km)", labelpad=10)
-    ax.set_ylabel("$Y$ (km)", labelpad=10)
-    ax.set_zlabel("$Z$ (km)", labelpad=10)
+    ax.set_xlabel("$X$ (LU)", labelpad=10)
+    ax.set_ylabel("$Y$ (LU)", labelpad=10)
+    ax.set_zlabel("$Z$ (LU)", labelpad=10)
     plt.legend(
         loc="best",
         frameon=True,
@@ -1103,9 +1103,9 @@ def plot_trajectories_multiple(t_poly, y_poly, traj_dict):
         x_cyl, y_cyl, z_cyl, color="lightyellow", alpha=0.3, edgecolor="none"
     )
 
-    ax.set_xlabel("$X$ (km)", labelpad=10)
-    ax.set_ylabel("$Y$ (km)", labelpad=10)
-    ax.set_zlabel("$Z$ (km)", labelpad=10)
+    ax.set_xlabel("$X$ (LU)", labelpad=10)
+    ax.set_ylabel("$Y$ (LU)", labelpad=10)
+    ax.set_zlabel("$Z$ (LU)", labelpad=10)
     ax.set_aspect("equal")
     plt.legend(frameon=True, fancybox=True, edgecolor="black", fontsize=14)
     plt.savefig("Images/trajectory_comparison.pdf", dpi=1200, bbox_inches="tight")
@@ -1117,12 +1117,12 @@ def plot_trajectory_differences(t, y_poly, traj_dict):
     axs = axs.ravel()
 
     labels = [
-        "$|\\delta x|$ (km)",
-        "$|\\delta y|$ (km)",
-        "$|\\delta z|$ (km)",
-        "$|\\delta v_x|$ (km/s)",
-        "$|\\delta v_y|$ (km/s)",
-        "$|\\delta v_z|$ (km/s)",
+        "$|\\delta x|$ (LU)",
+        "$|\\delta y|$ (LU)",
+        "$|\\delta z|$ (LU)",
+        "$|\\delta v_x|$ (LU/s)",
+        "$|\\delta v_y|$ (LU/s)",
+        "$|\\delta v_z|$ (LU/s)",
     ]
 
     markers = ["o", "<", "^", "D", "v", "s"]

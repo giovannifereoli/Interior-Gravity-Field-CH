@@ -46,8 +46,8 @@ def compute_measurement_partials(position, velocity, quaternion, n_state, camera
     constant illumination, no albedo effects, no camera distortion, and no landmark occlusion.
 
     Args:
-        position: Spacecraft position in asteroid body frame [x, y, z] (km).
-        velocity: Spacecraft velocity in asteroid body frame [v_x, v_y, v_z] (km/s).
+        position: Spacecraft position in asteroid body frame [x, y, z] (LU).
+        velocity: Spacecraft velocity in asteroid body frame [v_x, v_y, v_z] (LU/s).
         quaternion: Spacecraft attitude quaternion [q0, q1, q2, q3] (scalar-first, body to asteroid frame).
         n_state: State dimension (10 + 2*n_n*n_m).
         camera_params: Dict with 'fx', 'fy' (focal lengths, pixels), 'cx', 'cy' (principal point, pixels),
@@ -58,7 +58,7 @@ def compute_measurement_partials(position, velocity, quaternion, n_state, camera
     Returns:
         H: (2 + 2*N)xN Jacobian matrix [drange/dstate, drangerate/dstate, du_i/dstate, dv_i/dstate].
         R: (2 + 2*N)x(2 + 2*N) measurement noise covariance matrix.
-        r_intersect: LIDAR intersection point with asteroid (km) or None.
+        r_intersect: LIDAR intersection point with asteroid (LU) or None.
         landmarks_visible: List of (u, v, idx) for visible landmarks.
     """
     # Load mesh if not cached

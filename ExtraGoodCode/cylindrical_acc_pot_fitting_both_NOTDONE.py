@@ -590,9 +590,9 @@ def plot_trajectories(t_poly, y_poly, t_fitted, y_fitted):
     )
 
     # Add labels and legend
-    ax.set_xlabel("$X$ (km)")
-    ax.set_ylabel("$Y$ (km)")
-    ax.set_zlabel("$Z$ (km)")
+    ax.set_xlabel("$X$ (LU)")
+    ax.set_ylabel("$Y$ (LU)")
+    ax.set_zlabel("$Z$ (LU)")
     ax.legend(loc="upper right")
     ax.set_aspect("equal")
 

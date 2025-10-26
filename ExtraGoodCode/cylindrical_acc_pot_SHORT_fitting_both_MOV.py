@@ -304,7 +304,7 @@ A_pot, b_pot = prepare_linear_system_for_cylindrical_potential(
 # Define regularization parameters
 M = num_params  # Number of parameters
 alpha = 1e-3  # Regularization strength
-order_weights = np.zeros(km)
+order_weights = np.zeros(LU)
 idx = 0
 for m in range(n_m):
     for n in range(1, n_n + 1):
@@ -313,7 +313,7 @@ for m in range(n_m):
         order_weights[idx : idx + 2] = alpha * weight  # Apply to each block of 4 terms
         idx += 2
 A_reg = np.diag(order_weights)
-b_reg = np.zeros(km)
+b_reg = np.zeros(LU)
 
 # Define LSQ fitting
 aug_A = np.vstack([A_acc, A_pot])
@@ -373,7 +373,7 @@ def compute_and_plot_covariance(cov_matrix, n_n, n_m):
         for n in range(1, n_n + 1):
             sigma_A[m, n - 1] = std_devs[idx]
             sigma_B[m, n - 1] = std_devs[idx + 1]
-            m_values.append(km)
+            m_values.append(LU)
             sigma_values_A.append(std_devs[idx])
             sigma_values_B.append(std_devs[idx + 1])
             idx += 2
@@ -621,9 +621,9 @@ def plot_error_on_cylinder(cylinder_points, percentage_error, title="Percentage 
     cbar.set_label("Relative Error (%)")
 
     # Set labels and title
-    ax.set_xlabel("$X$ (km)", labelpad=10)
-    ax.set_ylabel("$Y$ (km)", labelpad=10)
-    ax.set_zlabel("$Z$ (km)", labelpad=10)
+    ax.set_xlabel("$X$ (LU)", labelpad=10)
+    ax.set_ylabel("$Y$ (LU)", labelpad=10)
+    ax.set_zlabel("$Z$ (LU)", labelpad=10)
     ax.set_aspect("equal")
     plt.savefig(
         f"Images/cylerror_plot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
@@ -852,9 +852,9 @@ def plot_trajectories(t_poly, y_poly, t_fitted, y_fitted):
     )
 
     # Set labels and title
-    ax.set_xlabel("$X$ (km)", labelpad=10)
-    ax.set_ylabel("$Y$ (km)", labelpad=10)
-    ax.set_zlabel("$Z$ (km)", labelpad=10)
+    ax.set_xlabel("$X$ (LU)", labelpad=10)
+    ax.set_ylabel("$Y$ (LU)", labelpad=10)
+    ax.set_zlabel("$Z$ (LU)", labelpad=10)
     plt.legend(
         loc="best",
         frameon=True,
@@ -976,12 +976,12 @@ def plot_differences_semilogy(t, y_poly, y_fitted):
     differences = np.abs(y_poly - y_fitted)
 
     labels = [
-        "$\delta x$ (km)",
-        "$ \delta y$ (km)",
-        "$\delta  z$ (km)",
-        "$ \delta v_x$ (km/sec)",
-        "$\delta v_y$ (km/sec)",
-        "$\delta v_z$ (km/sec)",
+        "$\delta x$ (LU)",
+        "$ \delta y$ (LU)",
+        "$\delta  z$ (LU)",
+        "$ \delta v_x$ (LU/sec)",
+        "$\delta v_y$ (LU/sec)",
+        "$\delta v_z$ (LU/sec)",
     ]
     marker_styles = ["o", "s", "^", "D", "v", "<"]
 
