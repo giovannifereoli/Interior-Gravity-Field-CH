@@ -1,4 +1,4 @@
-```markdown
+```
 # Interior Gravity Characterization of Small Celestial Bodies Using Cylindrical Harmonics
 
 **Giovanni Fereoli<sup>1,2</sup> · Jay W. McMahon<sup>1,2</sup>**  
