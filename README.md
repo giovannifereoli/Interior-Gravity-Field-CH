@@ -6,54 +6,12 @@
 
 ---
 
-## 🪐 Overview
+##  Overview
 
-This repository accompanies the paper:
-
-> **Fereoli, G. & McMahon, J.W. (2025)**  
-> *Interior Gravity Characterization of Small Celestial Bodies Using Cylindrical Harmonics*  
-> *Celestial Mechanics and Dynamical Astronomy* (under review)
-
-The project introduces a **cylindrical harmonic (Fourier–Bessel) gravity expansion** that provides an **accurate, locally convergent, and computationally efficient** representation of the gravitational potential of small irregular bodies.  
-The formulation is particularly suited for **spacecraft proximity operations**, **orbit determination (OD)**, and **landing dynamics** on asteroids and comets.
+The project introduces a **cylindrical harmonic (Fourier–Bessel) gravity expansion** that provides an **accurate, locally convergent, and computationally efficient** representation of the gravitational potential of small irregular bodies. The formulation is particularly suited for **spacecraft proximity operations**, **orbit determination (OD)**, and **landing dynamics** on asteroids and comets.
 
 ---
-
-## ⚙️ Key Features
-
-- 🌀 **Interior Cylindrical Harmonic Expansion**  
-  Derived analytically from Laplace’s equation in cylindrical coordinates.  
-  Employs Fourier–Bessel functions guaranteeing convergence inside a cylindrical domain.
-
-- 🧮 **Efficient Gravity Reconstruction**  
-  Coefficients estimated via least-squares fitting to polyhedral reference fields.  
-  Achieves sub-percent RMS errors in potential and acceleration.
-
-- 🛰️ **Mission-Relevant Applications**  
-  Enables precise local gravity modeling for trajectory design, OD, and landing-site analysis.
-
----
-
-## 🧠 Theoretical Background
-
-The gravitational potential \( U(\rho, \phi, z) \) is represented as
-
-\[
-U(\rho, \phi, z) =
-\sum_{n=-N}^{N} \sum_{m=1}^{M}
-C_{mn}\, J_n(k_{mn}\rho)\, \cos(n\phi)\, e^{k_{mn}z}
-\]
-
-where:
-
-- \( J_n \): Bessel function of the first kind  
-- \( k_{mn} \): radial eigenvalue (root of \( J_n' \))  
-- \( C_{mn} \): fitted coefficient from least-squares optimization  
-
-This representation satisfies **Laplace’s equation exactly** and converges **within a finite cylindrical region**, enabling high-accuracy modeling near irregular surfaces where spherical harmonics fail.
-
----
-## 📚 Citation
+## Citation
 
 If you use this code or reproduce results from the paper, please cite:
 
@@ -69,18 +27,8 @@ If you use this code or reproduce results from the paper, please cite:
 
 ---
 
-## 📄 License
+## License
 
 Released under the **MIT License**.
 See the [LICENSE](LICENSE) file for details.
-
----
-
-## 👨‍🚀 Acknowledgments
-
-Developed within the **Orbit and Small Body Research (ORCCA) Lab**
-at the University of Colorado Boulder, in collaboration with the
-**Colorado Center for Astrodynamics Research (CCAR)**.
-
-Special thanks to the **Dawn** and **NEAR Shoemaker** mission teams for publicly available data.
 
