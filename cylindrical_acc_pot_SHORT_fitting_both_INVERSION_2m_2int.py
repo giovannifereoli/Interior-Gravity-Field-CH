@@ -494,7 +494,7 @@ if __name__ == "__main__":
         center=np.array([0.10, -0.05, 0.20]),
         radius=0.12,
         height=0.45,
-        rotation=np.eye(3),
+        rotation=np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]]),
         alpha=100.0,
     )
 
