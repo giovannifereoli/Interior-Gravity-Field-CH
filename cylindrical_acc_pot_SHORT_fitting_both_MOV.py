@@ -649,7 +649,9 @@ def plot_coefficient_matrices(A, B):
     plt.tight_layout(rect=[0, 0, 1, 0.95])
 
 
-def plot_power_spectrum_with_empirical_cov(A, B, cov_matrix_empirical, n_n, n_m, plot_snr=True):
+def plot_power_spectrum_with_empirical_cov(
+    A, B, cov_matrix_empirical, n_n, n_m, plot_snr=True
+):
     """
     Compute and plot RMS of coefficients and RMS of empirical uncertainty.
     Optionally plot SNR per order m (on logarithmic scale).
@@ -743,7 +745,6 @@ def plot_power_spectrum_with_empirical_cov(A, B, cov_matrix_empirical, n_n, n_m,
             dpi=1200,
             bbox_inches="tight",
         )
-
 
 
 # Call the functions

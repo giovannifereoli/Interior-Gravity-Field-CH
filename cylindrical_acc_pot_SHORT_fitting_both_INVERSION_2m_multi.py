@@ -492,27 +492,36 @@ if __name__ == "__main__":
     )
     spec2 = CylinderSpec(
         center=np.array([0.10, -0.05, 0.20]),
-        radius=0.12,
-        height=0.45,
+        radius=0.1,
+        height=0.5,
         rotation=np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]]),
         alpha=100.0,
     )
+    spec3 = CylinderSpec(
+        center=np.array([-1.26, 0, 0]),
+        radius=0.1,
+        height=0.5,
+        rotation=np.array([[0, 0, 1], [0, 1, 0], [-1, 0, 0]]),
+        alpha=100.0,
+    )
 
-    specs = [spec1, spec2]
+    specs = [spec1]  # , spec2, spec3]
 
     # sample points in each cylinder
     NUM_POINTS_1 = 1200
     NUM_POINTS_2 = 1200
+    NUM_POINTS_3 = 1200
     points1 = generate_points_in_cylinder(spec1, NUM_POINTS_1, seed=1)
     points2 = generate_points_in_cylinder(spec2, NUM_POINTS_2, seed=2)
-    points_list = [points1, points2]
+    points3 = generate_points_in_cylinder(spec3, NUM_POINTS_3, seed=3)
+    points_list = [points1]  # , points2, points3]
 
     # truncation
-    n_n, n_m = 25, 25
+    n_n, n_m = 5, 5
 
     # fixed mascon positions
     r1 = np.array([0.35, -0.02, 0.05])
-    r2 = np.array([0.10, 0.18, 0.02])
+    r2 = np.array([-0.10, 0.08, 0.02])
 
     mu_true = np.array([5e-9, 2e-9], float)
     mu1_true, mu2_true = float(mu_true[0]), float(mu_true[1])
@@ -601,11 +610,27 @@ if __name__ == "__main__":
             coeffs_list[0], n_n, n_m, "Cylinder #1 RMS spectrum (poly + anomalies)"
         )
     )
-    figs.append(
-        plot_rms_spectrum(
-            coeffs_list[1], n_n, n_m, "Cylinder #2 RMS spectrum (poly + anomalies)"
-        )
+    # figs.append(
+    #    plot_rms_spectrum(
+    #        coeffs_list[1], n_n, n_m, "Cylinder #2 RMS spectrum (poly + anomalies)"
+    #    )
+    # )
+    # figs.append(
+    #    plot_rms_spectrum(
+    #        coeffs_list[2], n_n, n_m, "Cylinder #3 RMS spectrum (poly + anomalies)"
+    #    )
+    # )
+
+    mascons = np.vstack([r1.reshape(1, 3), r2.reshape(1, 3)])
+    fig_shape, ax_shape = plot_shape_and_mascons_matplotlib(
+        vertices,
+        faces,
+        mascons,
+        title="EROS shape + fixed mascons",
+        face_alpha=0.20,
+        decimate_faces=5,  # bump up if too slow
     )
+    figs.append(fig_shape)
 
     # mu comparison
     figs.append(
@@ -637,11 +662,11 @@ if __name__ == "__main__":
             specs[0], points_list[0], res_blocks[0][0], res_blocks[0][1]
         )
     )
-    figs.append(
-        plot_residual_norms(
-            specs[1], points_list[1], res_blocks[1][0], res_blocks[1][1]
-        )
-    )
+    # figs.append(
+    #    plot_residual_norms(
+    #        specs[1], points_list[1], res_blocks[1][0], res_blocks[1][1]
+    #    )
+    # )
 
     if res_mcmc.corner_fig is not None:
         figs.append(res_mcmc.corner_fig)
@@ -653,5 +678,13 @@ if __name__ == "__main__":
     print("LSQ cost =", res_lsq.cost)
     print("MCMC cost =", res_mcmc.cost, " (using MAP sample)")
     print("MCMC sigma_like =", res_mcmc.sigma_like)
+
+    pct_lsq = 100.0 * (mu_lsq - mu_true) / (np.abs(mu_true))
+    pct_mcmc = 100.0 * (mu_mcmc - mu_true) / (np.abs(mu_true))
+
+    print("\n=== % ERROR (LSQ)  ===", pct_lsq)
+    print("=== % ERROR (MCMC) ===", pct_mcmc)
+    print("=== |%| (LSQ)  ===", np.abs(pct_lsq))
+    print("=== |%| (MCMC) ===", np.abs(pct_mcmc))
 
     plt.show()

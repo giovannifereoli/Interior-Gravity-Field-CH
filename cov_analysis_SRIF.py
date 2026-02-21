@@ -300,9 +300,9 @@ def compute_measurement_partials(position, n_state, fx=1000, fy=1000):
     # Measurement noise covariance
     R = np.diag(
         [
-            (1e-4) ** 2,  # Range [LU^2]
-            (0.2) ** 2,  # Pixel noise [pixels^2]
-            (0.2) ** 2,  # Line noise [pixels^2]
+            (1e-3) ** 2,  # Range [LU^2]
+            (0.5) ** 2,  # Pixel noise [pixels^2]
+            (0.5) ** 2,  # Line noise [pixels^2]
         ]
     )
 
@@ -423,6 +423,60 @@ def _dynamics_full(t, y, n_state, fitted_params, n_n, n_m, j_mn_cache):
     return np.hstack((state_dot, stm_dot))
 
 
+def snc_gamma_qtilde(dt: float, n_state: int, sigma_a: float):
+    """
+    White accel SNC on the first 6 states [r; v] only.
+    w ~ N(0, sigma_a^2 I3)
+
+    Returns:
+    Gamma : (n_state, 3)
+    Qtilde: (3,3)
+    """
+    I3 = np.eye(3)
+
+    Gamma = np.zeros((n_state, 3))
+    Gamma[:3, :] = 0.5 * dt**2 * I3  # position
+    Gamma[3:6, :] = dt * I3  # velocity
+
+    Qtilde = (sigma_a**2) * I3
+    return Gamma, Qtilde
+
+
+def srif_time_update_with_snc(
+    R_sqrt: np.ndarray, Phi: np.ndarray, Gamma: np.ndarray, Qtilde: np.ndarray
+):
+    """
+    SRIF prediction with additive process noise using ONE augmented QR.
+
+    Deterministic:   R <- R * Phi^{-1}
+    Noise injection: augment with Ru and -R*Gamma like your reference snippet.
+    """
+    n = R_sqrt.shape[0]
+    q = Qtilde.shape[0]
+
+    # Ru = chol(Qtilde)^{-1} (upper)
+    Ru = np.linalg.inv(cholesky(Qtilde, lower=False))
+
+    # Build augmented prediction matrix:
+    # [ Ru          0 ]
+    # [ -R*Gamma  R*Phi^{-1} ]
+    Phi_inv = np.linalg.inv(Phi)
+    Rbar = R_sqrt @ Phi_inv
+
+    J = np.vstack(
+        (
+            np.hstack((Ru, np.zeros((q, n)))),
+            np.hstack((-R_sqrt @ Gamma, Rbar)),
+        )
+    )
+
+    _, Jhat = qr(J, mode="economic")
+
+    # Extract updated R (bottom-right)
+    R_new = Jhat[q : q + n, q : q + n]
+    return R_new
+
+
 if __name__ == "__main__":
     # Load fitted parameters
     fitted_params = np.load("fitted_params_both.npy")
@@ -443,11 +497,11 @@ if __name__ == "__main__":
     n_state = 6 + 2 * n_n * n_m
     P0 = np.zeros((n_state, n_state))
     P0[:3, :3] = np.eye(3) * (1e-3) ** 2  # Position variance: 1e-3 LU
-    P0[3:6, 3:6] = np.eye(3) * (1e-3) ** 2  # Velocity variance: 1e-3 LU/s
-    P0[6:, 6:] = np.diag(np.diag(full_cov_params))
+    P0[3:6, 3:6] = np.eye(3) * (1e-6) ** 2  # Velocity variance: 1e-6 LU/s
+    P0[6:, 6:] = 1e3 * np.diag(np.diag(full_cov_params))
 
     stop_at_percent = 0.985
-    t_span = np.linspace(0, stop_at_percent * 55000, 100)  # 1 Hz sampling
+    t_span = np.linspace(0, stop_at_percent * 55000, 100)  # 1 update every ~550s
 
     t, state, stm = propagate_state_and_stm(
         initial_state, fitted_params, n_n, n_m, t_span
@@ -474,21 +528,31 @@ if __name__ == "__main__":
     _, R_meas = compute_measurement_partials(state[:3, 1], n_state)
     SRI = cholesky(np.linalg.inv(R_meas), lower=False)
 
+    # Precompute measurement whitening matrix
+    _, R_meas = compute_measurement_partials(state[:3, 1], n_state)
+    SRI = cholesky(np.linalg.inv(R_meas), lower=False)
+
+    sigma_a = 1e-9  # <-- tune this (LU/s^2). start conservative (bigger) then decrease.
+
     for i in tqdm(range(1, n_steps), desc="SRIF", ncols=80):
         # Compute the STM for the current step
         Phi = stm[:, :, i] @ np.linalg.inv(STM_tm)
         STM_tm = stm[:, :, i]
 
-        # Prediction step
-        pred_matrix = R_sqrt @ np.linalg.inv(Phi)
-        _, RQ = qr(pred_matrix, mode="economic")
-        R_sqrt = RQ[:n_state, :n_state]
+        # Prediction step WITH SNC (SRIF-QR augmentation)
+        dt = float(t[i] - t[i - 1])
+        Gamma, Qtilde = snc_gamma_qtilde(dt, n_state, sigma_a)
+        R_sqrt = srif_time_update_with_snc(R_sqrt, Phi, Gamma, Qtilde)
 
         # Measurement update
-        H, _ = compute_measurement_partials(state[:3, i], n_state)
+        H, R_meas = compute_measurement_partials(state[:3, i], n_state)
+
+        # (optional but recommended) refresh whitening each step if R_meas changes
+        SRI = cholesky(np.linalg.inv(R_meas), lower=False)
+
         H_w = SRI @ H
         update_matrix = np.vstack([R_sqrt, H_w])
-        Q, R_combined = qr(update_matrix, mode="economic")
+        _, R_combined = qr(update_matrix, mode="economic")
         R_sqrt = R_combined[:n_state, :n_state]
 
         # Covariance reconstruction

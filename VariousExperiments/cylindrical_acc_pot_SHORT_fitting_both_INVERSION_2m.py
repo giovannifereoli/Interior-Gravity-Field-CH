@@ -21,6 +21,7 @@ from scipy.special import jv as BesselJ, jvp as BesselJp, jn_zeros
 from scipy.optimize import least_squares
 
 import mesh_utility
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from polyhedral_gravity import Polyhedron, PolyhedronIntegrity, GravityEvaluable
 
 
@@ -88,7 +89,7 @@ def mascon_potential_acc(
     r2 = np.sum(dr * dr, axis=1) + softening**2
     r = np.sqrt(r2)
     V = -mu / r
-    a = -mu * dr / (r[:, None] ** 3 + 1e-30)
+    a = mu * dr / (r[:, None] ** 3 + 1e-30)
     return V, a
 
 
@@ -587,6 +588,59 @@ def plot_residual_norms(
     ax.grid(True, linestyle="--", alpha=0.5)
     ax.legend()
     return fig
+
+
+def plot_shape_and_mascons_matplotlib(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    mascon_positions: np.ndarray,  # (K,3)
+    title: str = "Shape model + mascons",
+    face_alpha: float = 0.20,
+    mascon_size: int = 180,
+    decimate_faces: int = 1,  # set e.g. 5 or 10 if mesh is huge
+):
+    """
+    vertices: (Nv,3)
+    faces: (Nf,3) indices into vertices OR (Nf,?) first 3 used
+    mascon_positions: (K,3)
+    """
+    V = np.asarray(vertices, float)
+    F = np.asarray(faces, int)
+    if F.shape[1] > 3:
+        F = F[:, :3]
+
+    # decimate faces if needed
+    if decimate_faces > 1:
+        F = F[::decimate_faces]
+
+    tri_verts = V[F]  # (Nf,3,3)
+
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection="3d")
+
+    mesh = Poly3DCollection(tri_verts, linewidths=0.1)
+    mesh.set_alpha(face_alpha)
+    ax.add_collection3d(mesh)
+
+    # mascons
+    M = np.asarray(mascon_positions, float)
+    ax.scatter(M[:, 0], M[:, 1], M[:, 2], s=mascon_size, marker="o", color="red")
+
+    # set equal aspect-ish
+    mins = V.min(axis=0)
+    maxs = V.max(axis=0)
+    ctr = 0.5 * (mins + maxs)
+    span = (maxs - mins).max()
+    ax.set_xlim(ctr[0] - 0.5 * span, ctr[0] + 0.5 * span)
+    ax.set_ylim(ctr[1] - 0.5 * span, ctr[1] + 0.5 * span)
+    ax.set_zlim(ctr[2] - 0.5 * span, ctr[2] + 0.5 * span)
+
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z")
+    ax.set_title(title)
+
+    return fig, ax
 
 
 # ======================================================================================

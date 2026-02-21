@@ -124,7 +124,7 @@ def mascon_potential_acc(
     r2 = np.sum(dr * dr, axis=1) + softening**2
     r = np.sqrt(r2)
     V = -mu / (r + 1e-30)
-    a = -mu * dr / ((r[:, None] ** 3) + 1e-30)
+    a = mu * dr / ((r[:, None] ** 3) + 1e-30)
     return V, a
 
 
@@ -261,9 +261,9 @@ def sh_basis_potential_and_acc(
     dV_dlon = k * Pbar * dtrig_dlon
 
     # Accel spherical components
-    a_r = -dV_dr
-    a_lat = -(dV_dlat / (r + 1e-30))
-    a_lon = -(dV_dlon / ((r + 1e-30) * (coslat + 1e-30)))
+    a_r = dV_dr
+    a_lat = dV_dlat / (r + 1e-30)
+    a_lon = dV_dlon / ((r + 1e-30) * (coslat + 1e-30))
 
     # Convert to Cartesian
     cl = np.cos(lat)
@@ -696,8 +696,8 @@ if __name__ == "__main__":
     # ---------------------------
     # Fixed mascon positions (must be inside body)
     # ---------------------------
-    r1 = center + np.array([0.20, -0.05, 0.10])
-    r2 = center + np.array([-0.10, 0.12, -0.02])
+    r1 = np.array([0.35, -0.02, 0.05])
+    r2 = np.array([-0.10, 0.08, 0.02])
 
     # True anomalies (Δmu wrt constant-density poly)
     mu_true = np.array([5e-9, 2e-9], float)
@@ -705,7 +705,7 @@ if __name__ == "__main__":
     # ---------------------------
     # Spherical Harmonics setup
     # ---------------------------
-    L = 9  # increase if you want (cost ~ O(N * L^2))
+    L = 10  # increase if you want (cost ~ O(N * L^2))
     R_ref = Rb  # typical choice: body reference radius
     shspec = SHSpec(L=L, R_ref=R_ref, center=center)
 
@@ -831,5 +831,13 @@ if __name__ == "__main__":
     print("MCMC cost =", res_mcmc.cost, "(MAP sample)")
     print("MCMC sigma_like =", res_mcmc.sigma_like)
     print("L =", L, "N_fit =", points.shape[0], "R_ref =", R_ref)
+
+    pct_lsq = 100.0 * (mu_lsq - mu_true) / (np.abs(mu_true))
+    pct_mcmc = 100.0 * (mu_mcmc - mu_true) / (np.abs(mu_true))
+
+    print("\n=== % ERROR (LSQ)  ===", pct_lsq)
+    print("=== % ERROR (MCMC) ===", pct_mcmc)
+    print("=== |%| (LSQ)  ===", np.abs(pct_lsq))
+    print("=== |%| (MCMC) ===", np.abs(pct_mcmc))
 
     plt.show()
