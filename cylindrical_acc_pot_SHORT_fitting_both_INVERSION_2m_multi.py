@@ -266,6 +266,59 @@ def build_cylinder_signatures(
 # ======================================================================================
 
 
+def forward_truth_coeffs_by_refit_multi(
+    beta_true: np.ndarray,
+    mu_tot: float,
+    specs: List["CylinderSpec"],
+    points_list: List[np.ndarray],
+    vertices,
+    faces,
+    density: float,
+    center: np.ndarray,
+    n_n: int,
+    n_m: int,
+    r1: np.ndarray,
+    r2: np.ndarray,
+    parallel: bool = False,
+    softening: float = 0.0,
+    enforce_B0n_flag: bool = True,
+):
+    """
+    Build truth coefficients by *actually evaluating the truth field* and refitting.
+    This introduces truncation/model-mismatch realism.
+    """
+    beta_true = np.asarray(beta_true, float)
+    if not beta_feasible(beta_true):
+        raise ValueError(f"beta_true infeasible: {beta_true}")
+
+    bt = beta_tilde(beta_true)
+    dmu1 = beta_true[0] * mu_tot
+    dmu2 = beta_true[1] * mu_tot
+
+    cT_list = []
+    for spec, pts in zip(specs, points_list):
+        # baseline poly field
+        pot_poly, acc_poly = eval_poly_gravity(
+            vertices, faces, density, pts, parallel=parallel
+        )
+
+        # mascon fields
+        pot1, acc1 = mascon_potential_acc(pts, r1, mu=dmu1, softening=softening)
+        pot2, acc2 = mascon_potential_acc(pts, r2, mu=dmu2, softening=softening)
+
+        # truth field
+        pot_T = bt * pot_poly + pot1 + pot2
+        acc_T = bt * acc_poly + acc1 + acc2
+
+        # refit coefficients from truth field
+        cT = fit_cyl_coeffs_from_field(
+            spec, pts, pot_T, acc_T, n_n, n_m, enforce_B0n_flag=enforce_B0n_flag
+        )
+        cT_list.append(cT)
+
+    return cT_list
+
+
 def forward_truth_coeffs_from_betas_multi(
     beta_true: np.ndarray,
     mu_tot: float,
@@ -610,6 +663,27 @@ if __name__ == "__main__":
     )
     dc_obs_list = delta_coeffs_obs_multi(cT_list, cCD_list)
 
+    """
+    cT_list = forward_truth_coeffs_by_refit_multi(
+        beta_true=beta_true,
+        mu_tot=mu_tot,
+        specs=specs,
+        points_list=points_list,
+        vertices=vertices,
+        faces=faces,
+        density=DENSITY,
+        center=center,
+        n_n=n_n,
+        n_m=n_m,
+        r1=r1,
+        r2=r2,
+        parallel=False,
+        softening=0.0,
+        enforce_B0n_flag=True,
+    )
+    dc_obs_list = delta_coeffs_obs_multi(cT_list, cCD_list)
+    """
+
     # ---------------------------
     # Covariance on coefficient residuals (1% of CD components) — STACKED
     # ---------------------------
@@ -621,8 +695,12 @@ if __name__ == "__main__":
 
     rng = np.random.default_rng(123)
     for i in range(len(dc_obs_list)):
-        noise = rng.multivariate_normal(mean=np.zeros(Sigma.shape[0]), cov=Sigma)
-        dc_obs_list[i] += noise.reshape(dc_obs_list[i].shape)
+        dc = dc_obs_list[i]
+        noise = rng.multivariate_normal(
+            mean=np.zeros(Sigma.shape[0]), cov=Sigma
+        ).reshape(dc.shape)
+        mask = dc != 0.0  # Avoid adding noise to B0n coefficients!
+        dc_obs_list[i] = dc + noise * mask
 
     # ---------------------------
     # INVERSE LSQ (beta)
@@ -735,6 +813,22 @@ if __name__ == "__main__":
         figs.append(
             plot_rms_spectrum(
                 cCD, n_n, n_m, f"Cylinder #{i+1}: baseline coeff spectrum"
+            )
+        ),
+        figs.append(
+            plot_rms_spectrum(
+                100 * (dc_obs / (cCD + 1e-14)),
+                n_n,
+                n_m,
+                f"Cylinder #{i+1}: relative Δcoeff spectrum",
+            )
+        ),
+        figs.append(
+            plot_rms_spectrum(
+                dc_obs,
+                n_n,
+                n_m,
+                f"Cylinder #{i+1}: absolute Δcoeff spectrum",
             )
         )  # noqa: F405
         # figs.append(

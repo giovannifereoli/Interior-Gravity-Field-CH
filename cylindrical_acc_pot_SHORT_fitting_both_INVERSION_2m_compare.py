@@ -357,6 +357,53 @@ def build_coefficient_signatures(
     return CS_CD, c1, c2, mu_tot
 
 
+def forward_truth_coeffs_by_refit(
+    beta_true: np.ndarray,
+    mu_tot: float,
+    shspec: SHSpec,
+    points: np.ndarray,
+    vertices,
+    faces,
+    density: float,
+    r1: np.ndarray,
+    r2: np.ndarray,
+    parallel: bool = False,
+    softening: float = 0.0,
+    w_acc_fit: float = 1.0,
+    w_pot_fit: float = 1.0,
+):
+    """
+    Build CS_T by *actually evaluating the truth field* and refitting SH.
+    This breaks the inverse-crime and introduces truncation/model-mismatch realism.
+    """
+    beta_true = np.asarray(beta_true, float)
+    if not beta_feasible(beta_true):
+        raise ValueError(f"beta_true infeasible: {beta_true}")
+
+    bt = beta_tilde(beta_true)
+    mu1 = beta_true[0] * mu_tot
+    mu2 = beta_true[1] * mu_tot
+
+    # baseline poly field
+    pot_poly, acc_poly = eval_poly_gravity(
+        vertices, faces, density, points, parallel=parallel
+    )
+
+    # mascon fields (with truth mu1, mu2)
+    pot1, acc1 = mascon_potential_acc(points, r1, mu=mu1, softening=softening)
+    pot2, acc2 = mascon_potential_acc(points, r2, mu=mu2, softening=softening)
+
+    # truth field
+    pot_T = bt * pot_poly + pot1 + pot2
+    acc_T = bt * acc_poly + acc1 + acc2
+
+    # refit SH coefficients from truth field
+    CS_T = fit_sh_to_field(
+        shspec, points, pot_T, acc_T, w_acc=w_acc_fit, w_pot=w_pot_fit
+    )
+    return CS_T
+
+
 def forward_truth_coeffs_from_betas(
     beta_true: np.ndarray,
     mu_tot: float,
@@ -692,6 +739,25 @@ if __name__ == "__main__":
     CS_T = forward_truth_coeffs_from_betas(beta_true, mu_tot, CS_CD, c1, c2)
     dCS_obs = CS_T - CS_CD
 
+    """
+    CS_T = forward_truth_coeffs_by_refit(
+        beta_true=beta_true,
+        mu_tot=mu_tot,
+        shspec=shspec,
+        points=points,
+        vertices=vertices,
+        faces=faces,
+        density=DENSITY,
+        r1=r1,
+        r2=r2,
+        parallel=False,
+        softening=0.0,
+        w_acc_fit=w_acc_fit,
+        w_pot_fit=w_pot_fit,
+    )
+    dCS_obs = CS_T - CS_CD
+    """
+
     # ---------------------------
     # (2) Covariance on coefficient residuals (1% of CD components)
     # ---------------------------
@@ -808,6 +874,13 @@ if __name__ == "__main__":
     figs.append(
         plot_degree_spectrum(
             dCS_obs, L, "Observed coefficient discrepancy ΔCS_obs degree RMS"
+        )
+    )
+    figs.append(
+        plot_degree_spectrum(
+            100 * (dCS_obs / CS_CD),
+            L,
+            "Observed coefficient discrepancy relative ΔCS_obs degree RMS",
         )
     )
     figs.append(plot_beta_comparison(beta_true, beta_lsq, beta_mcmc))
