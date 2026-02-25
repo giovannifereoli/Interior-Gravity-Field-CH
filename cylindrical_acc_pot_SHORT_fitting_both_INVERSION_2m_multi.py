@@ -18,6 +18,15 @@ from typing import Tuple, Optional, List, Dict
 from scipy.optimize import least_squares
 from VariousExperiments.cylindrical_acc_pot_SHORT_fitting_both_INVERSION_2m import *
 
+
+# TODO: let's add realistic noise on coefficient to simulate OD. You can sample them from their covariance for instance
+# or you can put something on the design matrix to simulate correlated and colored noise and re-fit.
+
+# TODO: how you did this script and the SPH is wrong. You need to keep total mass constant. Ideally,
+# you can do poly with rho=1 and scale it during iterations, keep cached design matrix, re-compute GM, etc. etc.
+
+# TODO: for MCMC print MAP and estimate auto-corelation tau for convergence!
+
 # ------------------------------------------------------------
 # NEW: multi-cylinder forward
 # ------------------------------------------------------------
