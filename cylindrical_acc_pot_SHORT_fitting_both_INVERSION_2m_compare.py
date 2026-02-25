@@ -1,39 +1,52 @@
 """
-Two-mascon TAG-style forward + inverse (GLOBAL SPHERICAL HARMONICS, from scratch)
+Two-mascon TAG-style forward + inverse (GLOBAL SPHERICAL HARMONICS) WITH MASS CONSERVATION
+— parameterized in MASS FRACTIONS (beta1,beta2) and residuals in COEFFICIENT SPACE.
 
-✅ Full pipeline:
-   (1) Forward synth field: constant-density polyhedron + TWO fixed-position mascon anomalies (Δmu1, Δmu2)
-   (2) Fit GLOBAL spherical harmonics coefficients (linear LS) to that synthetic field (acc + pot)
-       - points are all around the asteroid (spherical shell)
-   (3) Given fitted SH coeffs + known polyhedron, estimate ONLY Δmu1, Δmu2 (positions fixed)
-       - do LSQ (scipy least_squares) + MCMC (emcee)
-✅ ALL plots at the END (no plt.show inside solvers)
+YOU ASKED:
+1) Optimize β1, β2 (mass fractions), not Δμ.
+   Δμ_j = β_j * μ_tot
+   β̃   = 1 - (β1+β2)
 
-Notes / conventions:
-- SH expansion is real (C_lm, S_lm) about an origin "center".
-- Potential model basis (no explicit GM factor): V = Σ a_p * basis_p(r,lat,lon)
-  so coefficients have your LU/TU potential units built-in.
-- Acceleration is a = -∇V computed in spherical components then mapped to Cartesian.
+2) Residuals must be differences of spherical-harmonics coefficients (as in your notebook):
+   ΔCS_obs = CS_T - CS_CD
+   Model:  ΔCS(β) = (β̃-1) CS_CD + Σ CS_j(Δμ_j) = -(β1+β2) CS_CD + CS_1(β1 μ_tot)+CS_2(β2 μ_tot)
 
-Dependencies:
-  numpy, scipy, matplotlib, emcee (optional), corner (optional),
-  polyhedral_gravity, mesh_utility
+Implementation strategy (robust + minimal physics assumptions):
+- Cache baseline poly field (pot+acc) at sampling points once.
+- Fit SH coefficients for:
+    (a) baseline: CS_CD  from poly field
+    (b) unit-mascon signatures: c1, c2 such that CS_j(Δμ)=Δμ * c_j
+        computed by fitting SH to point-mass field with μ=1 at the same points.
+- Forward truth:
+    Choose (β1_true, β2_true). Then:
+      CS_T = β̃ CS_CD + (β1 μ_tot)c1 + (β2 μ_tot)c2
+  (equivalently, you could generate field and refit; this coefficient-space construction is exact
+   because the mapping field->coeffs is linear, and it matches your notebook.)
+- Inverse:
+    Observed ΔCS_obs = CS_T - CS_CD
+    Model ΔCS(β) = -(β1+β2) CS_CD + (β1 μ_tot)c1 + (β2 μ_tot)c2
+    Solve β via LSQ + MCMC.
+
+✅ No solver does plt.show; plots only at end.
 """
 
 from __future__ import annotations
+
 import numpy as np
 import matplotlib.pyplot as plt
 from dataclasses import dataclass
 from typing import Tuple, Optional
+from math import factorial
+
 from scipy.optimize import least_squares
-from scipy.special import lpmv  # associated Legendre P_lm(x), x in [-1,1]
+from scipy.special import lpmv
 
 import mesh_utility
 from polyhedral_gravity import Polyhedron, PolyhedronIntegrity, GravityEvaluable
 
 
 # ======================================================================================
-# Geometry + sampling (global points all around)
+# Geometry + sampling
 # ======================================================================================
 
 
@@ -48,18 +61,14 @@ def sample_points_in_spherical_shell(
     center: np.ndarray,
     seed: int = 1,
 ) -> np.ndarray:
-    """
-    Uniform in volume in a spherical shell: r in [r_min, r_max].
-    """
     rng = np.random.default_rng(seed)
     u = rng.uniform(0.0, 1.0, num_points)
     r = (r_min**3 + u * (r_max**3 - r_min**3)) ** (1.0 / 3.0)
 
-    cos_th = rng.uniform(-1.0, 1.0, num_points)  # colatitude theta
+    cos_th = rng.uniform(-1.0, 1.0, num_points)
     th = np.arccos(cos_th)
     lon = rng.uniform(0.0, 2.0 * np.pi, num_points)
 
-    # spherical to cart (relative)
     x = r * np.sin(th) * np.cos(lon)
     y = r * np.sin(th) * np.sin(lon)
     z = r * np.cos(th)
@@ -70,11 +79,6 @@ def sample_points_in_spherical_shell(
 def cart_to_sph(
     points: np.ndarray, center: np.ndarray
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Returns (r, lat, lon) where:
-      lat = geocentric latitude in [-pi/2, pi/2]
-      lon in [0, 2pi)
-    """
     p = points - center[None, :]
     x, y, z = p[:, 0], p[:, 1], p[:, 2]
     r = np.sqrt(x * x + y * y + z * z)
@@ -84,7 +88,7 @@ def cart_to_sph(
 
 
 # ======================================================================================
-# Poly gravity evaluation (baseline constant-density poly)
+# Poly gravity evaluation
 # ======================================================================================
 
 
@@ -101,11 +105,26 @@ def eval_poly_gravity(
     N = points.shape[0]
     pot = np.zeros(N, float)
     acc = np.zeros((N, 3), float)
+
     for i, p in enumerate(points):
         V, a, _ = eval_poly(computation_points=p, parallel=parallel)
         pot[i] = float(np.squeeze(V))
         acc[i] = np.squeeze(a)
     return pot, acc
+
+
+def estimate_mu_tot_from_poly(
+    pot_poly: np.ndarray, points: np.ndarray, center: np.ndarray
+) -> float:
+    """
+    Sign-agnostic μ_tot magnitude estimator (robust to potential sign convention):
+      |U| ≈ μ/r  => μ ≈ median(|U| r)
+    """
+    r = np.linalg.norm(points - center[None, :], axis=1)
+    mu_mag = np.median(np.abs(pot_poly) * r)
+    if not np.isfinite(mu_mag) or mu_mag <= 0.0:
+        raise ValueError(f"Bad mu_tot estimate: {mu_mag}")
+    return float(mu_mag)
 
 
 # ======================================================================================
@@ -116,10 +135,6 @@ def eval_poly_gravity(
 def mascon_potential_acc(
     points: np.ndarray, r_m: np.ndarray, mu: float, softening: float = 0.0
 ):
-    """
-    V = -mu / r
-    a = -mu * dr / r^3
-    """
     dr = points - r_m[None, :]
     r2 = np.sum(dr * dr, axis=1) + softening**2
     r = np.sqrt(r2)
@@ -128,26 +143,41 @@ def mascon_potential_acc(
     return V, a
 
 
-import numpy as np
-from dataclasses import dataclass
-from typing import Tuple
-from scipy.special import lpmv
-from math import factorial
+# ======================================================================================
+# Mass bookkeeping in beta-space
+# ======================================================================================
+
+
+def beta_tilde(beta: np.ndarray) -> float:
+    beta = np.asarray(beta, float)
+    return float(1.0 - np.sum(beta))
+
+
+def beta_feasible(beta: np.ndarray) -> bool:
+    """
+    Minimal constraints for redistribution with nonnegative baseline:
+      beta1>=0, beta2>=0, beta1+beta2 <= 1
+    """
+    beta = np.asarray(beta, float)
+    if beta.shape != (2,):
+        return False
+    if np.any(~np.isfinite(beta)):
+        return False
+    if np.any(beta < 0.0):
+        return False
+    return (beta[0] + beta[1]) <= 1.0
+
 
 # ======================================================================================
-# GLOBAL spherical harmonics (FULLY NORMALIZED, real C/S): parameterization + design matrices
-#   - Uses scipy.special.lpmv(m,l,x), which INCLUDES the Condon–Shortley phase (-1)^m.
-#   - Normalization here is the standard "fully normalized" geodesy/gravity one:
-#       P̄_lm(x) = N_lm * P_lm(x)
-#       N_lm = sqrt( (2 - δ_m0) (2l+1) (l-m)! / (l+m)! )
+# GLOBAL spherical harmonics (FULLY NORMALIZED, real C/S)
 # ======================================================================================
 
 
 @dataclass
 class SHSpec:
-    L: int  # max degree
-    R_ref: float  # reference radius (LU)
-    center: np.ndarray  # expansion center (3,)
+    L: int
+    R_ref: float
+    center: np.ndarray
 
 
 def sh_num_params(L: int) -> int:
@@ -155,14 +185,6 @@ def sh_num_params(L: int) -> int:
 
 
 def sh_param_indexing(L: int):
-    """
-    index -> (l,m,kind) with kind in {"C","S"}.
-    Order:
-      l=0: C00
-      for l=1..L:
-        m=0: C_l0
-        m=1..l: C_lm, S_lm
-    """
     ls, ms, ks = [0], [0], ["C"]
     for l in range(1, L + 1):
         ls.append(l)
@@ -179,23 +201,15 @@ def sh_param_indexing(L: int):
 
 
 def _N_lm(l: int, m: int) -> float:
-    """Fully-normalization factor N_lm."""
-    # (2 - δ_m0)
     fac = 1.0 if m == 0 else 2.0
     return np.sqrt(fac * (2 * l + 1) * factorial(l - m) / factorial(l + m))
 
 
 def _Pbar_lm(l: int, m: int, x: np.ndarray) -> np.ndarray:
-    """Fully-normalized associated Legendre P̄_lm(x) = N_lm * P_lm(x)."""
     return _N_lm(l, m) * lpmv(m, l, x)
 
 
 def _dP_lm_dx(l: int, m: int, x: np.ndarray) -> np.ndarray:
-    """
-    Derivative w.r.t x of associated Legendre P_lm(x) (UNnormalized).
-    Stable identity:
-      d/dx P_lm(x) = [l x P_lm(x) - (l+m) P_{l-1,m}(x)] / (x^2 - 1)
-    """
     if l == 0:
         return np.zeros_like(x)
     P_lm = lpmv(m, l, x)
@@ -206,33 +220,16 @@ def _dP_lm_dx(l: int, m: int, x: np.ndarray) -> np.ndarray:
 
 
 def _dPbar_lm_dx(l: int, m: int, x: np.ndarray) -> np.ndarray:
-    """Derivative of fully-normalized P̄_lm(x): just multiply by N_lm."""
     return _N_lm(l, m) * _dP_lm_dx(l, m, x)
 
 
-# --- you already have this somewhere ---
-# def cart_to_sph(points: np.ndarray, center: np.ndarray) -> Tuple[np.ndarray,np.ndarray,np.ndarray]:
-#     returns r, lat, lon  (lat in radians, lon in radians)
-
-
 def sh_basis_potential_and_acc(
-    spec: SHSpec,
-    points: np.ndarray,
-    l: int,
-    m: int,
-    kind: str,  # "C" or "S"
+    spec: SHSpec, points: np.ndarray, l: int, m: int, kind: str
 ):
-    """
-    Returns:
-      V_basis (N,)
-      a_basis (N,3)   for coefficient amplitude = 1
-    Using fully-normalized P̄_lm(sin(lat)).
-    """
     r, lat, lon = cart_to_sph(points, spec.center)
-    x = np.sin(lat)  # argument for P̄_lm
+    x = np.sin(lat)
     coslat = np.cos(lat)
 
-    # radial factor: (R_ref^l / r^(l+1))
     R = spec.R_ref
     k = (R**l) / ((r + 1e-30) ** (l + 1))
 
@@ -249,23 +246,17 @@ def sh_basis_potential_and_acc(
             trig = np.sin(m * lon)
             dtrig_dlon = m * np.cos(m * lon)
 
-    # Potential
     V = k * Pbar * trig
 
-    # spherical derivatives
     dV_dr = -(l + 1) * V / (r + 1e-30)
-
     dPbar_dx = _dPbar_lm_dx(l, m, x)
     dV_dlat = k * dPbar_dx * coslat * trig
-
     dV_dlon = k * Pbar * dtrig_dlon
 
-    # Accel spherical components
     a_r = dV_dr
     a_lat = dV_dlat / (r + 1e-30)
     a_lon = dV_dlon / ((r + 1e-30) * (coslat + 1e-30))
 
-    # Convert to Cartesian
     cl = np.cos(lat)
     sl = np.sin(lat)
     co = np.cos(lon)
@@ -280,17 +271,8 @@ def sh_basis_potential_and_acc(
 
 
 def build_sh_design_matrices(
-    spec: SHSpec,
-    points: np.ndarray,
-    use_potential: bool = True,
-    use_acc: bool = True,
+    spec: SHSpec, points: np.ndarray, use_potential: bool = True, use_acc: bool = True
 ):
-    """
-    Linear system:
-      V(points) ≈ A_pot @ c
-      a(points) ≈ A_acc @ c   (stacked ax,ay,az)
-    Coefficients c are for FULLY NORMALIZED real SH (C/S).
-    """
     L = spec.L
     P = sh_num_params(L)
     N = points.shape[0]
@@ -311,84 +293,34 @@ def build_sh_design_matrices(
             A_acc[0::3, j] = ab[:, 0]
             A_acc[1::3, j] = ab[:, 1]
             A_acc[2::3, j] = ab[:, 2]
-
     return A_pot, A_acc
 
 
-def sh_eval_from_coeffs(
-    spec: SHSpec, points: np.ndarray, coeffs: np.ndarray
-) -> Tuple[np.ndarray, np.ndarray]:
-    A_pot, A_acc = build_sh_design_matrices(
-        spec, points, use_potential=True, use_acc=True
-    )
-    V = A_pot @ coeffs
-    a = (A_acc @ coeffs).reshape((-1, 3), order="C")
-    return V, a
-
-
-# ======================================================================================
-# (1) FORWARD: poly + fixed mascon anomalies -> fit SH coeffs (linear LS)
-# ======================================================================================
-
-
-def fit_sh_for_poly_plus_2fixedmascons(
-    vertices,
-    faces,
-    density: float,
+def fit_sh_to_field(
     shspec: SHSpec,
     points: np.ndarray,
-    r1: np.ndarray,
-    r2: np.ndarray,
-    mu1: float,
-    mu2: float,
-    parallel: bool = False,
-    softening: float = 0.0,
+    pot: np.ndarray,
+    acc: np.ndarray,
     w_acc: float = 1.0,
     w_pot: float = 1.0,
-):
-    pot_poly, acc_poly = eval_poly_gravity(
-        vertices, faces, density, points, parallel=parallel
-    )
-
-    pot1, acc1 = mascon_potential_acc(points, r1, mu1, softening=softening)
-    pot2, acc2 = mascon_potential_acc(points, r2, mu2, softening=softening)
-
-    pot_tot = pot_poly + pot1 + pot2
-    acc_tot = acc_poly + acc1 + acc2
-
-    # Build design matrices for SH
+) -> np.ndarray:
     A_pot, A_acc = build_sh_design_matrices(
         shspec, points, use_potential=True, use_acc=True
     )
-
-    b_pot = pot_tot
-    b_acc = acc_tot.reshape(-1, order="C")
-
+    b_pot = pot
+    b_acc = acc.reshape(-1, order="C")
     aug_A = np.vstack([w_acc * A_acc, w_pot * A_pot])
     aug_b = np.hstack([w_acc * b_acc, w_pot * b_pot])
-
     coeffs, *_ = np.linalg.lstsq(aug_A, aug_b, rcond=None)
-
-    return dict(
-        coeffs=coeffs,
-        points=points,
-        pot_poly=pot_poly,
-        acc_poly=acc_poly,
-        pot_tot=pot_tot,
-        acc_tot=acc_tot,
-        mu_true=np.array([mu1, mu2], float),
-        r1=r1,
-        r2=r2,
-    )
+    return coeffs
 
 
 # ======================================================================================
-# (2) INVERSE: given SH coeffs + known poly -> estimate ONLY mu1, mu2 (LSQ + MCMC)
+# Coefficient-space model pieces
 # ======================================================================================
 
 
-def estimate_2mus_from_shcoeffs_lsq(
-    coeffs_sh: np.ndarray,
+def build_coefficient_signatures(
     vertices,
     faces,
     density: float,
@@ -396,40 +328,120 @@ def estimate_2mus_from_shcoeffs_lsq(
     points: np.ndarray,
     r1: np.ndarray,
     r2: np.ndarray,
-    x0_mu: np.ndarray,
-    bounds_mu: Tuple[np.ndarray, np.ndarray],
     parallel: bool = False,
     softening: float = 0.0,
-    use_potential: bool = True,
-    w_acc: float = 1.0,
-    w_pot: float = 1.0,
+    w_acc_fit: float = 1.0,
+    w_pot_fit: float = 1.0,
 ):
-    pot_target, acc_target = sh_eval_from_coeffs(shspec, points, coeffs_sh)
-
+    """
+    Returns:
+      CS_CD  : baseline SH coeffs from poly at density
+      c1,c2  : unit-mu coefficient signatures for mascons at r1,r2
+      mu_tot : magnitude estimate from poly potential
+    """
     pot_poly, acc_poly = eval_poly_gravity(
         vertices, faces, density, points, parallel=parallel
     )
+    mu_tot = estimate_mu_tot_from_poly(pot_poly, points, center=shspec.center)
 
-    pot_resid = (pot_target - pot_poly) if use_potential else None
-    acc_resid = acc_target - acc_poly
+    CS_CD = fit_sh_to_field(
+        shspec, points, pot_poly, acc_poly, w_acc=w_acc_fit, w_pot=w_pot_fit
+    )
 
-    def fun(mu_vec):
-        mu1, mu2 = float(mu_vec[0]), float(mu_vec[1])
-        pot1, acc1 = mascon_potential_acc(points, r1, mu1, softening=softening)
-        pot2, acc2 = mascon_potential_acc(points, r2, mu2, softening=softening)
-        pot_m = pot1 + pot2
-        acc_m = acc1 + acc2
+    pot1u, acc1u = mascon_potential_acc(points, r1, mu=1.0, softening=softening)
+    pot2u, acc2u = mascon_potential_acc(points, r2, mu=1.0, softening=softening)
 
-        r_acc = (acc_m - acc_resid).reshape(-1, order="C") * w_acc
-        if use_potential:
-            r_pot = (pot_m - pot_resid) * w_pot
-            return np.hstack([r_acc, r_pot])
-        return r_acc
+    c1 = fit_sh_to_field(shspec, points, pot1u, acc1u, w_acc=w_acc_fit, w_pot=w_pot_fit)
+    c2 = fit_sh_to_field(shspec, points, pot2u, acc2u, w_acc=w_acc_fit, w_pot=w_pot_fit)
 
-    lb, ub = bounds_mu
+    return CS_CD, c1, c2, mu_tot
+
+
+def forward_truth_coeffs_from_betas(
+    beta_true: np.ndarray,
+    mu_tot: float,
+    CS_CD: np.ndarray,
+    c1: np.ndarray,
+    c2: np.ndarray,
+):
+    bt = beta_tilde(beta_true)
+    mu1 = beta_true[0] * mu_tot
+    mu2 = beta_true[1] * mu_tot
+    CS_T = bt * CS_CD + mu1 * c1 + mu2 * c2
+    return CS_T
+
+
+def delta_cs_model(
+    beta: np.ndarray, mu_tot: float, CS_CD: np.ndarray, c1: np.ndarray, c2: np.ndarray
+) -> np.ndarray:
+    # ΔCS(β) = -(β1+β2) CS_CD + (β1 μ_tot)c1 + (β2 μ_tot)c2
+    beta = np.asarray(beta, float)
+    return (
+        (-(beta[0] + beta[1]) * CS_CD)
+        + (beta[0] * mu_tot) * c1
+        + (beta[1] * mu_tot) * c2
+    )
+
+
+# ======================================================================================
+# Covariance builder (1% of CD coeff components)
+# ======================================================================================
+
+
+def build_sigma_from_cd_coeffs(CS_CD: np.ndarray, frac: float = 0.01) -> np.ndarray:
+    """
+    Sigma = diag( (frac * max(|CS_CD_k|, floor))^2 )
+    Floor prevents zero coefficients from giving zero-variance.
+    """
+    CS_CD = np.asarray(CS_CD, float)
+    floor = frac * (np.median(np.abs(CS_CD)) + 1e-30)  # tiny but not zero
+    sig = frac * np.maximum(np.abs(CS_CD), floor)
+    return np.diag(sig * sig)
+
+
+# ======================================================================================
+# Inverse in coefficient space: LSQ + MCMC
+# ======================================================================================
+
+
+def estimate_betas_from_deltaCS_lsq(
+    deltaCS_obs: np.ndarray,
+    mu_tot: float,
+    CS_CD: np.ndarray,
+    c1: np.ndarray,
+    c2: np.ndarray,
+    x0_beta: np.ndarray,
+    bounds_beta: Tuple[np.ndarray, np.ndarray],
+    Sigma: Optional[np.ndarray] = None,
+):
+    """
+    Solve min || L^{-1} (ΔCS_model(beta) - ΔCS_obs) ||^2  with Sigma = L L^T.
+    """
+    y = np.asarray(deltaCS_obs, float)
+    lb, ub = np.asarray(bounds_beta[0], float), np.asarray(bounds_beta[1], float)
+
+    if Sigma is None:
+
+        def whiten(v):
+            return v
+
+    else:
+        L = np.linalg.cholesky(Sigma + 1e-30 * np.eye(Sigma.shape[0]))
+        Linv = np.linalg.inv(L)
+
+        def whiten(v):
+            return Linv @ v
+
+    def fun(beta):
+        beta = np.asarray(beta, float)
+        if (np.any(beta < lb) or np.any(beta > ub)) or (not beta_feasible(beta)):
+            return 1e6 * np.ones_like(y)
+        r = delta_cs_model(beta, mu_tot, CS_CD, c1, c2) - y
+        return whiten(r)
+
     return least_squares(
         fun,
-        x0=x0_mu,
+        x0=np.asarray(x0_beta, float),
         bounds=(lb, ub),
         method="trf",
         jac="2-point",
@@ -445,22 +457,15 @@ def estimate_2mus_from_shcoeffs_lsq(
     )
 
 
-def estimate_2mus_from_shcoeffs_mcmc(
-    coeffs_sh: np.ndarray,
-    vertices,
-    faces,
-    density: float,
-    shspec: SHSpec,
-    points: np.ndarray,
-    r1: np.ndarray,
-    r2: np.ndarray,
-    x0_mu: np.ndarray,
-    bounds_mu: Tuple[np.ndarray, np.ndarray],
-    parallel: bool = False,
-    softening: float = 0.0,
-    use_potential: bool = True,
-    w_acc: float = 1.0,
-    w_pot: float = 1.0,
+def estimate_betas_from_deltaCS_mcmc(
+    deltaCS_obs: np.ndarray,
+    mu_tot: float,
+    CS_CD: np.ndarray,
+    c1: np.ndarray,
+    c2: np.ndarray,
+    x0_beta: np.ndarray,
+    bounds_beta: Tuple[np.ndarray, np.ndarray],
+    Sigma: Optional[np.ndarray] = None,
     sigma_like: Optional[float] = None,
     nwalkers: int = 48,
     n_burn: int = 1500,
@@ -475,7 +480,6 @@ def estimate_2mus_from_shcoeffs_mcmc(
     except Exception as e:
         raise ImportError("emcee is required: pip install emcee") from e
 
-    # optional corner (NO plt.show here)
     try:
         import corner
 
@@ -483,68 +487,59 @@ def estimate_2mus_from_shcoeffs_mcmc(
     except Exception:
         _HAS_CORNER = False
 
-    pot_target, acc_target = sh_eval_from_coeffs(shspec, points, coeffs_sh)
-    pot_poly, acc_poly = eval_poly_gravity(
-        vertices, faces, density, points, parallel=parallel
-    )
+    y = np.asarray(deltaCS_obs, float)
+    lb, ub = np.asarray(bounds_beta[0], float), np.asarray(bounds_beta[1], float)
 
-    pot_resid = (pot_target - pot_poly) if use_potential else None
-    acc_resid = acc_target - acc_poly
+    if Sigma is not None:
+        L = np.linalg.cholesky(Sigma + 1e-30 * np.eye(Sigma.shape[0]))
+        Linv = np.linalg.inv(L)
 
-    y_acc = acc_resid.reshape(-1, order="C")
-    y = (
-        np.hstack([w_acc * y_acc, w_pot * pot_resid])
-        if use_potential
-        else (w_acc * y_acc)
-    )
+        def quad_form(res):
+            z = Linv @ res
+            return float(np.dot(z, z))
 
-    lb, ub = np.asarray(bounds_mu[0], float), np.asarray(bounds_mu[1], float)
+        sigma_like_used = None
+    else:
+        if sigma_like is None:
+            y_rms = np.sqrt(np.mean(y**2)) + 1e-30
+            sigma_like = 0.01 * y_rms
+        inv_sigma2 = 1.0 / (sigma_like**2)
 
-    def log_prior(mu_vec):
-        mu_vec = np.asarray(mu_vec, float)
-        if np.any(mu_vec < lb) or np.any(mu_vec > ub):
+        def quad_form(res):
+            return float(np.sum(res * res) * inv_sigma2)
+
+        sigma_like_used = sigma_like
+
+    def log_prior(beta):
+        beta = np.asarray(beta, float)
+        if np.any(beta < lb) or np.any(beta > ub):
             return -np.inf
-        if mu_vec[0] <= 0.0 or mu_vec[1] <= 0.0:
+        if not beta_feasible(beta):
             return -np.inf
         return 0.0
 
-    def model_vec(mu_vec):
-        mu1, mu2 = float(mu_vec[0]), float(mu_vec[1])
-        pot1, acc1 = mascon_potential_acc(points, r1, mu1, softening=softening)
-        pot2, acc2 = mascon_potential_acc(points, r2, mu2, softening=softening)
-        pot_m = pot1 + pot2
-        acc_m = acc1 + acc2
-
-        m_acc = acc_m.reshape(-1, order="C")
-        return (
-            np.hstack([w_acc * m_acc, w_pot * pot_m])
-            if use_potential
-            else (w_acc * m_acc)
-        )
-
-    if sigma_like is None:
-        y_rms = np.sqrt(np.mean(y**2)) + 1e-30
-        sigma_like = 0.01 * y_rms
-    inv_sigma2 = 1.0 / (sigma_like**2)
-
-    def log_prob(mu_vec):
-        lp = log_prior(mu_vec)
+    def log_prob(beta):
+        lp = log_prior(beta)
         if not np.isfinite(lp):
             return -np.inf
-        r = model_vec(mu_vec) - y
-        return lp - 0.5 * np.sum(r * r) * inv_sigma2
+        res = delta_cs_model(beta, mu_tot, CS_CD, c1, c2) - y
+        return lp - 0.5 * quad_form(res)
 
     ndim = 2
     rng = np.random.default_rng(seed)
 
-    scale = np.array([0.2 * max(x0_mu[0], 1e-16), 0.2 * max(x0_mu[1], 1e-16)], float)
-    scale = np.maximum(scale, np.array([1e-12, 1e-12]))
-    p0 = x0_mu[None, :] + rng.normal(size=(nwalkers, ndim)) * scale[None, :]
+    scale = np.maximum(0.2 * np.abs(np.asarray(x0_beta, float)), np.array([1e-6, 1e-6]))
+    p0 = (
+        np.asarray(x0_beta, float)[None, :]
+        + rng.normal(size=(nwalkers, ndim)) * scale[None, :]
+    )
 
     for i in range(nwalkers):
         p0[i] = np.minimum(np.maximum(p0[i], lb), ub)
-        p0[i, 0] = max(p0[i, 0], 1e-12)
-        p0[i, 1] = max(p0[i, 1], 1e-12)
+        for _ in range(50):
+            if beta_feasible(p0[i]):
+                break
+            p0[i] *= 0.5
 
     sampler = emcee.EnsembleSampler(nwalkers, ndim, log_prob)
     sampler.run_mcmc(p0, n_burn, progress=True)
@@ -554,51 +549,48 @@ def estimate_2mus_from_shcoeffs_mcmc(
     samples = sampler.get_chain(flat=True, thin=thin)
     logp = sampler.get_log_prob(flat=True, thin=thin)
 
-    mu_hat = np.median(samples, axis=0)
+    beta_hat = np.median(samples, axis=0)
     cov_hat = np.cov(samples, rowvar=False)
 
     i_map = int(np.argmax(logp))
-    mu_map = samples[i_map]
-    r_map = model_vec(mu_map) - y
-    cost_hat = 0.5 * float(np.sum(r_map**2))
+    beta_map = samples[i_map]
+    res_map = delta_cs_model(beta_map, mu_tot, CS_CD, c1, c2) - y
+    cost_hat = 0.5 * float(np.sum(res_map**2))
 
     corner_fig = None
     if _HAS_CORNER:
         corner_fig = corner.corner(
             samples,
-            labels=[r"$\Delta\mu_1$", r"$\Delta\mu_2$"],
-            truths=mu_hat,
+            labels=[r"$\beta_1$", r"$\beta_2$"],
+            truths=beta_hat,
             show_titles=True,
             title_fmt=".3e",
             quantiles=[0.16, 0.50, 0.84],
         )
 
     return SimpleNamespace(
-        x=mu_hat,
+        x=beta_hat,
         cov=cov_hat,
         cost=cost_hat,
         success=True,
-        message="MCMC posterior median estimate (mu1, mu2 only)",
+        message="MCMC posterior median estimate (beta1,beta2) in coefficient space",
         samples=samples,
         log_prob=logp,
         sampler=sampler,
         corner_fig=corner_fig,
-        sigma_like=sigma_like,
-        mu_map=mu_map,
+        sigma_like=sigma_like_used,
+        beta_map=beta_map,
+        mu_tot=mu_tot,
     )
 
 
 # ======================================================================================
-# Plot helpers (ONLY called at the end)
+# Plot helpers
 # ======================================================================================
 
 
 def sh_degree_rms(coeffs: np.ndarray, L: int) -> np.ndarray:
-    """
-    RMS per degree: sqrt( sum_{m} (C_lm^2 + S_lm^2) )
-    with our packed ordering.
-    """
-    ls, ms, ks = sh_param_indexing(L)
+    ls, _, _ = sh_param_indexing(L)
     rms = np.zeros(L + 1, float)
     for l in range(L + 1):
         idx = np.where(ls == l)[0]
@@ -618,52 +610,21 @@ def plot_degree_spectrum(coeffs: np.ndarray, L: int, title: str):
     return fig
 
 
-def plot_mu_comparison(mu_true: np.ndarray, mu_lsq: np.ndarray, mu_mcmc: np.ndarray):
+def plot_beta_comparison(
+    beta_true: np.ndarray, beta_lsq: np.ndarray, beta_mcmc: np.ndarray
+):
     fig, ax = plt.subplots(figsize=(8, 5))
     x = np.array([0, 1])
     w = 0.25
-    ax.bar(x - w, mu_true, width=w, label="True")
-    ax.bar(x, mu_lsq, width=w, label="LSQ")
-    ax.bar(x + w, mu_mcmc, width=w, label="MCMC median")
+    ax.bar(x - w, beta_true, width=w, label="True")
+    ax.bar(x, beta_lsq, width=w, label="LSQ")
+    ax.bar(x + w, beta_mcmc, width=w, label="MCMC median")
     ax.set_xticks(x)
-    ax.set_xticklabels([r"$\Delta\mu_1$", r"$\Delta\mu_2$"])
-    ax.set_ylabel(r"$\Delta\mu$ (LU$^3$/TU$^2$)")
-    ax.set_title("Mascon anomaly recovery (global SH fit)")
+    ax.set_xticklabels([r"$\beta_1$", r"$\beta_2$"])
+    ax.set_ylabel(r"Mass fraction $\beta$")
+    ax.set_title(r"Mass-fraction recovery ($\tilde{\beta}=1-\beta_1-\beta_2$)")
     ax.grid(True, linestyle="--", alpha=0.5)
     ax.legend()
-    return fig
-
-
-def plot_residual_norm_hist(acc_resid: np.ndarray, acc_model: np.ndarray):
-    nr = np.linalg.norm(acc_resid, axis=1)
-    nm = np.linalg.norm(acc_model - acc_resid, axis=1)
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.hist(nr, bins=60, alpha=0.6, density=True, label=r"$\|\mathbf{a}_{res}\|$")
-    ax.hist(
-        nm,
-        bins=60,
-        alpha=0.6,
-        density=True,
-        label=r"$\|\mathbf{a}_{model}-\mathbf{a}_{res}\|$",
-    )
-    ax.set_xlabel("Acceleration norm (Cartesian)")
-    ax.set_ylabel("PDF")
-    ax.set_title("Residual acceleration vs post-fit mismatch (acc only)")
-    ax.grid(True, linestyle="--", alpha=0.5)
-    ax.legend()
-    return fig
-
-
-def plot_point_cloud(points: np.ndarray, r1: np.ndarray, r2: np.ndarray, title: str):
-    fig = plt.figure(figsize=(10, 7))
-    ax = fig.add_subplot(111, projection="3d")
-    ax.scatter(points[:, 0], points[:, 1], points[:, 2], s=2, alpha=0.35)
-    ax.scatter([r1[0]], [r1[1]], [r1[2]], s=80, marker="x")
-    ax.scatter([r2[0]], [r2[1]], [r2[2]], s=80, marker="x")
-    ax.set_title(title)
-    ax.set_xlabel("X (LU)")
-    ax.set_ylabel("Y (LU)")
-    ax.set_zlabel("Z (LU)")
     return fig
 
 
@@ -677,107 +638,133 @@ if __name__ == "__main__":
     # ---------------------------
     vertices, faces = mesh_utility.read_pk_file("3dmeshes/eros.pk")
     vertices, faces = np.asarray(vertices), np.asarray(faces)
-    DENSITY = 1.0  # constant-density poly baseline
 
-    # Expansion center: use mesh centroid (or your body-fixed origin)
+    DENSITY = 1.0
     center = vertices.mean(axis=0)
     Rb = bounding_sphere_radius(vertices, center=center)
 
     # ---------------------------
-    # GLOBAL fit points: spherical shell all around the asteroid
+    # Fit points: spherical shell
     # ---------------------------
     N_FIT = 10000
-    r_min = 1.05 * Rb
-    r_max = 3.0 * Rb
     points = sample_points_in_spherical_shell(
-        N_FIT, r_min, r_max, center=center, seed=1
+        N_FIT, 1.05 * Rb, 3.0 * Rb, center=center, seed=1
     )
 
-    # ---------------------------
-    # Fixed mascon positions (must be inside body)
-    # ---------------------------
+    # mascon locations
     r1 = np.array([0.35, -0.02, 0.05])
     r2 = np.array([-0.10, 0.08, 0.02])
 
-    # True anomalies (Δmu wrt constant-density poly)
-    mu_true = np.array([5e-9, 2e-9], float)
-
     # ---------------------------
-    # Spherical Harmonics setup
+    # SH setup
     # ---------------------------
-    L = 10  # increase if you want (cost ~ O(N * L^2))
-    R_ref = Rb  # typical choice: body reference radius
-    shspec = SHSpec(L=L, R_ref=R_ref, center=center)
+    L = 9
+    shspec = SHSpec(L=L, R_ref=Rb, center=center)
 
-    # weights between acc and pot in the LS fit
+    # weights for LS coefficient fits (field -> coeffs)
     w_acc_fit = 1.0
     w_pot_fit = 1.0
 
     # ---------------------------
-    # (1) Forward synth -> fit SH coeffs
+    # Build baseline coeffs + mascon coefficient signatures
     # ---------------------------
-    fwd = fit_sh_for_poly_plus_2fixedmascons(
+    CS_CD, c1, c2, mu_tot = build_coefficient_signatures(
         vertices,
         faces,
         DENSITY,
         shspec,
         points,
-        r1=r1,
-        r2=r2,
-        mu1=float(mu_true[0]),
-        mu2=float(mu_true[1]),
+        r1,
+        r2,
         parallel=False,
         softening=0.0,
-        w_acc=w_acc_fit,
-        w_pot=w_pot_fit,
+        w_acc_fit=w_acc_fit,
+        w_pot_fit=w_pot_fit,
     )
-    coeffs_sh = fwd["coeffs"]
 
     # ---------------------------
-    # (2a) Inverse LSQ: estimate mu only
+    # (1) FORWARD truth in coefficient space with betas
     # ---------------------------
-    x0_mu = np.array([0, 0])
-    lb = np.array([0.0, 0.0])
-    ub = np.array([1e-6, 1e-6])
+    beta_true = np.array([0.02, 0.01], float)  # 2% and 1% of total mass
+    if not beta_feasible(beta_true):
+        raise ValueError("beta_true infeasible; need beta>=0 and beta1+beta2<=1")
 
-    res_lsq = estimate_2mus_from_shcoeffs_lsq(
-        coeffs_sh,
-        vertices,
-        faces,
-        DENSITY,
-        shspec,
-        points,
-        r1=r1,
-        r2=r2,
-        x0_mu=x0_mu,
-        bounds_mu=(lb, ub),
-        parallel=False,
-        softening=0.0,
-        use_potential=True,
-        w_acc=1.0,
-        w_pot=1.0,
+    CS_T = forward_truth_coeffs_from_betas(beta_true, mu_tot, CS_CD, c1, c2)
+    dCS_obs = CS_T - CS_CD
+
+    # ---------------------------
+    # (2) Covariance on coefficient residuals (1% of CD components)
+    # ---------------------------
+    Sigma_dCS = build_sigma_from_cd_coeffs(CS_CD, frac=0.01)
+
+    # ---------------------------
+    # Add noise to observed Δc_obs (optional, can be commented out)
+    # ---------------------------
+
+    rng = np.random.default_rng(123)
+    for i in range(len(dCS_obs)):
+        noise = rng.normal(scale=np.sqrt(Sigma_dCS[i, i]))
+        dCS_obs[i] += noise
+
+    # ---------------------------
+    # (3a) INVERSE LSQ in coefficient space
+    # ---------------------------
+    x0_beta = np.array([0.0, 0.0], float)
+    lb = np.array([0.0, 0.0], float)
+    ub = np.array([1.0, 1.0], float)
+
+    res_lsq = estimate_betas_from_deltaCS_lsq(
+        deltaCS_obs=dCS_obs,
+        mu_tot=mu_tot,
+        CS_CD=CS_CD,
+        c1=c1,
+        c2=c2,
+        x0_beta=x0_beta,
+        bounds_beta=(lb, ub),
+        Sigma=Sigma_dCS,
     )
-    mu_lsq = res_lsq.x
+    beta_lsq = res_lsq.x
+
+    def _extract_lsq_cov(res, eps=1e-30):
+        J = res.jac
+        m, n = J.shape
+        sigma2 = 2.0 * res.cost / max(m - n, 1)  # residual variance estimate
+        JTJ = J.T @ J
+        try:
+            Cov = sigma2 * np.linalg.inv(JTJ)
+        except np.linalg.LinAlgError:
+            Cov = sigma2 * np.linalg.pinv(JTJ)
+        Cov = 0.5 * (Cov + Cov.T) + eps * np.eye(n)
+        return Cov
+
+    def _print_cov_stats(tag, est, Cov, truth, eps=1e-30):
+        est = np.asarray(est, float)
+        truth = np.asarray(truth, float)
+        sig = np.sqrt(np.maximum(np.diag(Cov), 0.0))
+        pct_sig = 100.0 * sig / (np.abs(est) + eps)
+        snr = est / (sig + eps)
+        pct_err = 100.0 * (est - truth) / (np.abs(truth) + eps)
+        print(f"\n--- {tag} covariance / sigma / SNR ---")
+        print("Cov =\n", Cov)
+        print("sigma =", sig)
+        print("%sigma =", pct_sig)
+        print("SNR   =", snr)
+        print("%err  =", pct_err)
+
+    Cov_beta_lsq = _extract_lsq_cov(res_lsq)
 
     # ---------------------------
-    # (2b) Inverse MCMC: posterior on mu
+    # (3b) INVERSE MCMC in coefficient space
     # ---------------------------
-    res_mcmc = estimate_2mus_from_shcoeffs_mcmc(
-        coeffs_sh,
-        vertices,
-        faces,
-        DENSITY,
-        shspec,
-        points,
-        r1=r1,
-        r2=r2,
-        x0_mu=mu_lsq,
-        bounds_mu=(lb, ub),
-        parallel=False,
-        softening=0.0,
-        use_potential=True,
-        w_acc=1.0,
-        w_pot=1.0,
+    res_mcmc = estimate_betas_from_deltaCS_mcmc(
+        deltaCS_obs=dCS_obs,
+        mu_tot=mu_tot,
+        CS_CD=CS_CD,
+        c1=c1,
+        c2=c2,
+        x0_beta=beta_lsq,
+        bounds_beta=(lb, ub),
+        Sigma=Sigma_dCS,
         sigma_like=None,
         nwalkers=48,
         n_burn=1500,
@@ -785,59 +772,76 @@ if __name__ == "__main__":
         thin=10,
         seed=123,
     )
-    mu_mcmc = res_mcmc.x
+    beta_mcmc = res_mcmc.x
+    Cov_beta_mcmc = res_mcmc.cov  # already in your SimpleNamespace
 
     # ---------------------------
-    # Diagnostics: residual accel attributed to anomalies
+    # Derived: beta_tilde and Δμ
     # ---------------------------
-    pot_target, acc_target = sh_eval_from_coeffs(shspec, points, coeffs_sh)
-    pot_poly, acc_poly = eval_poly_gravity(
-        vertices, faces, DENSITY, points, parallel=False
-    )
+    bt_true = beta_tilde(beta_true)
+    bt_lsq = beta_tilde(beta_lsq)
+    bt_mcmc = beta_tilde(beta_mcmc)
 
-    acc_resid = acc_target - acc_poly
+    dmu_true = beta_true * mu_tot
+    dmu_lsq = beta_lsq * mu_tot
+    dmu_mcmc = beta_mcmc * mu_tot
 
-    _, acc1h = mascon_potential_acc(points, r1, float(mu_mcmc[0]), softening=0.0)
-    _, acc2h = mascon_potential_acc(points, r2, float(mu_mcmc[1]), softening=0.0)
-    acc_model = acc1h + acc2h
+    # ---- NEW: propagate covariance to Δμ-space ----
+    Cov_dmu_lsq = (mu_tot**2) * Cov_beta_lsq
+    Cov_dmu_mcmc = (mu_tot**2) * Cov_beta_mcmc
+
+    # ---------------------------
+    # % errors (beta and Δμ)
+    # ---------------------------
+    eps = 1e-30
+    beta_pct_lsq = 100.0 * (beta_lsq - beta_true) / np.maximum(np.abs(beta_true), eps)
+    beta_pct_mcmc = 100.0 * (beta_mcmc - beta_true) / np.maximum(np.abs(beta_true), eps)
+
+    dmu_pct_lsq = 100.0 * (dmu_lsq - dmu_true) / np.maximum(np.abs(dmu_true), eps)
+    dmu_pct_mcmc = 100.0 * (dmu_mcmc - dmu_true) / np.maximum(np.abs(dmu_true), eps)
 
     # ==================================================================================
     # PLOTS (ONLY HERE)
     # ==================================================================================
     figs = []
-    figs.append(
-        plot_point_cloud(
-            points,
-            r1,
-            r2,
-            "Global fit points (spherical shell) + fixed mascon locations",
-        )
-    )
+    figs.append(plot_degree_spectrum(CS_CD, L, "Baseline SH degree RMS (CS_CD)"))
     figs.append(
         plot_degree_spectrum(
-            coeffs_sh, L, "SH coefficient degree RMS spectrum (poly + anomalies)"
+            dCS_obs, L, "Observed coefficient discrepancy ΔCS_obs degree RMS"
         )
     )
-    figs.append(plot_mu_comparison(mu_true=mu_true, mu_lsq=mu_lsq, mu_mcmc=mu_mcmc))
-    figs.append(plot_residual_norm_hist(acc_resid, acc_model))
-    if res_mcmc.corner_fig is not None:
+    figs.append(plot_beta_comparison(beta_true, beta_lsq, beta_mcmc))
+    if getattr(res_mcmc, "corner_fig", None) is not None:
         figs.append(res_mcmc.corner_fig)
 
-    # Summary
-    print("\n=== TRUE Δmu ===", mu_true)
-    print("=== LSQ  Δmu ===", mu_lsq)
-    print("=== MCMC Δmu ===", mu_mcmc)
-    print("LSQ cost =", res_lsq.cost)
+    # ---------------------------
+    # Summary prints
+    # ---------------------------
+    print("\n=== mu_tot (magnitude) ===", mu_tot)
+
+    print("\n=== TRUE beta ===", beta_true, " beta_tilde =", bt_true)
+    print("=== LSQ  beta ===", beta_lsq, " beta_tilde =", bt_lsq)
+    print("=== MCMC beta ===", beta_mcmc, " beta_tilde =", bt_mcmc)
+
+    print("\n=== TRUE Δμ ===", dmu_true)
+    print("=== LSQ  Δμ ===", dmu_lsq)
+    print("=== MCMC Δμ ===", dmu_mcmc)
+
+    print("\n=== % ERROR beta (LSQ)  ===", beta_pct_lsq)
+    print("=== % ERROR beta (MCMC) ===", beta_pct_mcmc)
+    print("=== % ERROR Δμ  (LSQ)  ===", dmu_pct_lsq)
+    print("=== % ERROR Δμ  (MCMC) ===", dmu_pct_mcmc)
+
+    print("\nLSQ cost  =", res_lsq.cost)
     print("MCMC cost =", res_mcmc.cost, "(MAP sample)")
-    print("MCMC sigma_like =", res_mcmc.sigma_like)
-    print("L =", L, "N_fit =", points.shape[0], "R_ref =", R_ref)
+    print(
+        "MCMC sigma_like (None if using Sigma) =", getattr(res_mcmc, "sigma_like", None)
+    )
 
-    pct_lsq = 100.0 * (mu_lsq - mu_true) / (np.abs(mu_true))
-    pct_mcmc = 100.0 * (mu_mcmc - mu_true) / (np.abs(mu_true))
+    _print_cov_stats("LSQ (beta)", beta_lsq, Cov_beta_lsq, beta_true)
+    _print_cov_stats("MCMC (beta)", beta_mcmc, Cov_beta_mcmc, beta_true)
 
-    print("\n=== % ERROR (LSQ)  ===", pct_lsq)
-    print("=== % ERROR (MCMC) ===", pct_mcmc)
-    print("=== |%| (LSQ)  ===", np.abs(pct_lsq))
-    print("=== |%| (MCMC) ===", np.abs(pct_mcmc))
+    _print_cov_stats("LSQ (Δμ)", dmu_lsq, Cov_dmu_lsq, dmu_true)
+    _print_cov_stats("MCMC (Δμ)", dmu_mcmc, Cov_dmu_mcmc, dmu_true)
 
     plt.show()

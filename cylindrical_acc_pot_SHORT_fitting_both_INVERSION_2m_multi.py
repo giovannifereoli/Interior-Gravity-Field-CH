@@ -1,267 +1,391 @@
 """
-PATCH: extend pipeline to TWO cylinders in the forward model, and use BOTH cylinders
-simultaneously in the inverse (LSQ + MCMC) to estimate the SAME (mu1, mu2).
+Two-mascon TAG-style forward + inverse (TWO CYLINDERS, CYLINDRICAL-HARMONICS FIT)
+WITH MASS CONSERVATION — REDONE THE RIGHT WAY (beta-parameterization + coeff-space residuals)
 
-Key idea:
-- Forward: for each cylinder i, sample points_i inside cylinder_i, evaluate (poly + mascons)
-  at points_i, then fit cylinder coeffs_i by LS on that cylinder’s basis.
-- Inverse: stack residual vectors from BOTH cylinders into ONE big residual. Solve mu1, mu2
-  once, shared across cylinders.
+YOU ASKED (mirror of the spherical fix):
+1) Optimization variables are NOT Δμ, but β1, β2 (mass fractions):
+      Δμ1 = β1 * μ_tot
+      Δμ2 = β2 * μ_tot
+      β̃  = 1 - (β1 + β2)   (baseline scale)
 
-You can drop this into your script by:
-  1) replacing the single-cylinder forward+inverse functions with the multi-cylinder ones below
-  2) updating __main__ to define spec_list and points_list
+   Constraints (hard):
+      β1 >= 0, β2 >= 0, β1+β2 <= 1
+
+2) Residuals are NOT in physical space (fields), but in COEFFICIENT SPACE, like your notebook:
+      Δc_obs,i = c_T,i  - c_CD,i     (for each cylinder i)
+   Model:
+      c_T,i(β) = β̃ c_CD,i + Δμ1 c1_i + Δμ2 c2_i
+   Therefore
+      Δc_model,i(β) = c_T,i(β) - c_CD,i
+                    = (β̃-1)c_CD,i + Δμ1 c1_i + Δμ2 c2_i
+                    = -(β1+β2)c_CD,i + (β1 μ_tot)c1_i + (β2 μ_tot)c2_i
+
+   Stack across cylinders:
+      r(β) = stack_i( W_i^{1/2} (Δc_model,i(β) - Δc_obs,i) )
+
+Pipeline:
+A) Per cylinder i:
+   - sample points_i in cylinder_i
+   - evaluate baseline poly at density ρ0 -> (pot_poly_i, acc_poly_i)
+   - fit baseline cylindrical coeffs: c_CD,i  (LS on [cyl_acc + pot])
+   - compute μ_tot once (robust magnitude estimate from poly potential)
+
+   - compute unit-mascon signatures in coeff-space:
+        c1_i: fit coeffs to mascon field at r1 with μ=1
+        c2_i: fit coeffs to mascon field at r2 with μ=1
+     so that coeffs from mascon j with Δμ are:  Δμ * c_j,i
+
+B) Forward truth (in coeff space):
+   pick beta_true -> Δμ_true -> build:
+        c_T,i = β̃ c_CD,i + Δμ1 c1_i + Δμ2 c2_i
+   define observed coefficient residuals:
+        Δc_obs,i = c_T,i - c_CD,i
+
+C) Inverse:
+   LSQ + MCMC on β = [β1,β2] using coefficient-space residuals.
+
+Dependencies:
+  numpy, scipy, matplotlib, emcee (optional), corner (optional),
+  polyhedral_gravity, mesh_utility
+  + your cylindrical utilities (imported with *):
+      CylinderSpec
+      generate_points_in_cylinder
+      cart_to_cyl_acc
+      prepare_linear_system_for_cyl_acc
+      prepare_linear_system_for_cyl_pot
+      zero_B0n
+      plot_rms_spectrum
+      plot_shape_and_mascons_matplotlib
+      plot_mu_comparison
 """
 
+from __future__ import annotations
+
 import numpy as np
+import matplotlib.pyplot as plt
 from typing import Tuple, Optional, List, Dict
 from scipy.optimize import least_squares
-from VariousExperiments.cylindrical_acc_pot_SHORT_fitting_both_INVERSION_2m import *
+
+import mesh_utility
+from polyhedral_gravity import Polyhedron, PolyhedronIntegrity, GravityEvaluable
+
+from VariousExperiments.cylindrical_acc_pot_SHORT_fitting_both_INVERSION_2m import *  # noqa: F403, F401
 
 
 # TODO: let's add realistic noise on coefficient to simulate OD. You can sample them from their covariance for instance
 # or you can put something on the design matrix to simulate correlated and colored noise and re-fit.
 
-# TODO: how you did this script and the SPH is wrong. You need to keep total mass constant. Ideally,
-# you can do poly with rho=1 and scale it during iterations, keep cached design matrix, re-compute GM, etc. etc.
 
-# TODO: for MCMC print MAP and estimate auto-corelation tau for convergence!
-
-# ------------------------------------------------------------
-# NEW: multi-cylinder forward
-# ------------------------------------------------------------
+# ======================================================================================
+# Poly gravity evaluation (baseline constant-density poly) + mu_tot estimate
+# ======================================================================================
 
 
-def fit_cylinders_for_poly_plus_2fixedmascons(
+def eval_poly_gravity(
+    vertices, faces, density: float, points: np.ndarray, parallel: bool = False
+):
+    poly = Polyhedron(
+        polyhedral_source=(np.asarray(vertices), np.asarray(faces)),
+        density=density,
+        integrity_check=PolyhedronIntegrity.DISABLE,
+    )
+    eval_poly = GravityEvaluable(poly)
+
+    N = points.shape[0]
+    pot = np.zeros(N, float)
+    acc = np.zeros((N, 3), float)
+    for i, p in enumerate(points):
+        V, a, _ = eval_poly(computation_points=p, parallel=parallel)
+        pot[i] = float(np.squeeze(V))
+        acc[i] = np.squeeze(a)
+    return pot, acc
+
+
+def estimate_mu_tot_from_poly(
+    pot_poly: np.ndarray, points: np.ndarray, center: np.ndarray
+) -> float:
+    """
+    Robust magnitude estimate that DOES NOT care about sign convention:
+        |U| ~ μ/r  =>  μ ~ median(|U| * r)
+    """
+    r = np.linalg.norm(points - center[None, :], axis=1)
+    mu_mag = np.median(np.abs(pot_poly) * r)
+    if not np.isfinite(mu_mag) or mu_mag <= 0.0:
+        raise ValueError(f"Bad mu_tot estimate: {mu_mag}")
+    return float(mu_mag)
+
+
+# ======================================================================================
+# Mascon anomalies (point masses)
+# ======================================================================================
+
+
+def mascon_potential_acc(
+    points: np.ndarray, r_m: np.ndarray, mu: float, softening: float = 0.0
+):
+    dr = points - r_m[None, :]
+    r2 = np.sum(dr * dr, axis=1) + softening**2
+    r = np.sqrt(r2)
+    V = -mu / (r + 1e-30)
+    a = mu * dr / ((r[:, None] ** 3) + 1e-30)
+    return V, a
+
+
+# ======================================================================================
+# Mass bookkeeping in beta-space
+# ======================================================================================
+
+
+def beta_tilde(beta: np.ndarray) -> float:
+    beta = np.asarray(beta, float)
+    return float(1.0 - np.sum(beta))
+
+
+def beta_feasible(beta: np.ndarray) -> bool:
+    """
+    Redistribution constraints:
+      beta1>=0, beta2>=0, beta1+beta2 <= 1
+    """
+    beta = np.asarray(beta, float)
+    if beta.shape != (2,):
+        return False
+    if np.any(~np.isfinite(beta)):
+        return False
+    if np.any(beta < 0.0):
+        return False
+    return (beta[0] + beta[1]) <= 1.0
+
+
+# ======================================================================================
+# Cylindrical fit wrappers (field -> coeffs) for your utilities
+# ======================================================================================
+
+
+def fit_cyl_coeffs_from_field(
+    spec: "CylinderSpec",
+    points: np.ndarray,
+    pot: np.ndarray,
+    acc_cart: np.ndarray,
+    n_n: int,
+    n_m: int,
+    enforce_B0n_flag: bool = True,
+) -> np.ndarray:
+    """
+    Fit cylindrical-harmonics coeffs by linear LS stacking (cyl_acc + pot).
+    """
+    cyl_acc = cart_to_cyl_acc(spec, points, acc_cart)  # noqa: F405
+
+    A_acc, b_acc = prepare_linear_system_for_cyl_acc(
+        spec, points, cyl_acc, n_n, n_m
+    )  # noqa: F405
+    A_pot, b_pot = prepare_linear_system_for_cyl_pot(
+        spec, points, pot, n_n, n_m
+    )  # noqa: F405
+
+    aug_A = np.vstack([A_acc, A_pot])
+    aug_b = np.hstack([b_acc, b_pot])
+
+    coeffs, *_ = np.linalg.lstsq(aug_A, aug_b, rcond=None)
+
+    if enforce_B0n_flag:
+        zero_B0n(coeffs, n_n=n_n)  # noqa: F405
+
+    return coeffs
+
+
+# ======================================================================================
+# Build per-cylinder coefficient signatures (baseline + unit mascons)
+# ======================================================================================
+
+
+def build_cylinder_signatures(
     vertices,
     faces,
     density: float,
+    center: np.ndarray,
     specs: List["CylinderSpec"],
     points_list: List[np.ndarray],
     n_n: int,
     n_m: int,
     r1: np.ndarray,
     r2: np.ndarray,
-    mu1: float,
-    mu2: float,
     parallel: bool = False,
-    enforce_B0n_flag: bool = True,
     softening: float = 0.0,
+    enforce_B0n_flag: bool = True,
 ) -> Dict:
-    assert len(specs) == len(points_list), "specs and points_list must have same length"
+    """
+    For each cylinder i, compute:
+      cCD_i : coeffs fit to baseline poly field
+      c1_i  : coeffs fit to unit mascon at r1 (mu=1)
+      c2_i  : coeffs fit to unit mascon at r2 (mu=1)
 
-    coeffs_list = []
-    truth_blocks = []
+    Also compute mu_tot once from baseline poly (robust magnitude), using all cylinders' samples.
+    """
+    assert len(specs) == len(points_list)
 
-    for spec, points in zip(specs, points_list):
-        # poly (constant density)
+    cCD_list = []
+    c1_list = []
+    c2_list = []
+    mu_est_list = []
+
+    for spec, pts in zip(specs, points_list):
         pot_poly, acc_poly = eval_poly_gravity(
-            vertices, faces, density, points, parallel=parallel
+            vertices, faces, density, pts, parallel=parallel
         )
 
-        # mascon anomalies
-        pot1, acc1 = mascon_potential_acc(points, r1, mu1, softening=softening)
-        pot2, acc2 = mascon_potential_acc(points, r2, mu2, softening=softening)
-
-        pot_tot = pot_poly + pot1 + pot2
-        acc_tot = acc_poly + acc1 + acc2
-
-        cyl_acc_tot = cart_to_cyl_acc(spec, points, acc_tot)
-
-        A_acc, b_acc = prepare_linear_system_for_cyl_acc(
-            spec, points, cyl_acc_tot, n_n, n_m
+        cCD = fit_cyl_coeffs_from_field(
+            spec, pts, pot_poly, acc_poly, n_n, n_m, enforce_B0n_flag=enforce_B0n_flag
         )
-        A_pot, b_pot = prepare_linear_system_for_cyl_pot(
-            spec, points, pot_tot, n_n, n_m
+        cCD_list.append(cCD)
+
+        mu_est_list.append(estimate_mu_tot_from_poly(pot_poly, pts, center=center))
+
+        pot1u, acc1u = mascon_potential_acc(pts, r1, mu=1.0, softening=softening)
+        pot2u, acc2u = mascon_potential_acc(pts, r2, mu=1.0, softening=softening)
+
+        c1_list.append(
+            fit_cyl_coeffs_from_field(
+                spec, pts, pot1u, acc1u, n_n, n_m, enforce_B0n_flag=enforce_B0n_flag
+            )
         )
-
-        aug_A = np.vstack([A_acc, A_pot])
-        aug_b = np.hstack([b_acc, b_pot])
-
-        coeffs, *_ = np.linalg.lstsq(aug_A, aug_b, rcond=None)
-        if enforce_B0n_flag:
-            zero_B0n(coeffs, n_n=n_n)
-
-        coeffs_list.append(coeffs)
-        truth_blocks.append(
-            dict(
-                pot_poly=pot_poly,
-                acc_poly=acc_poly,
-                pot_tot=pot_tot,
-                acc_tot=acc_tot,
-                cyl_acc_tot=cyl_acc_tot,
+        c2_list.append(
+            fit_cyl_coeffs_from_field(
+                spec, pts, pot2u, acc2u, n_n, n_m, enforce_B0n_flag=enforce_B0n_flag
             )
         )
 
-    return dict(
-        coeffs_list=coeffs_list,
-        truth_blocks=truth_blocks,
-        mu_true=np.array([mu1, mu2], float),
-        r1=r1,
-        r2=r2,
-    )
+    mu_tot = float(np.median(np.asarray(mu_est_list)))
+    if not np.isfinite(mu_tot) or mu_tot <= 0.0:
+        raise ValueError(f"Invalid mu_tot from cylinder estimates: {mu_tot}")
+
+    return dict(mu_tot=mu_tot, cCD_list=cCD_list, c1_list=c1_list, c2_list=c2_list)
 
 
-# ------------------------------------------------------------
-# NEW: helpers to build stacked residual vector across cylinders
-# ------------------------------------------------------------
+# ======================================================================================
+# Forward truth in coefficient space (per cylinder), and observed Δc_obs
+# ======================================================================================
 
 
-def _targets_from_coeffs_multi(
-    coeffs_list: List[np.ndarray],
-    specs: List["CylinderSpec"],
-    points_list: List[np.ndarray],
-    n_n: int,
-    n_m: int,
-    use_potential: bool,
-):
-    cyl_acc_targets = []
-    pot_targets = [] if use_potential else None
-    for coeffs, spec, points in zip(coeffs_list, specs, points_list):
-        cyl_acc_targets.append(cyl_acc_from_coeffs(spec, points, coeffs, n_n, n_m))
-        if use_potential:
-            pot_targets.append(cyl_pot_from_coeffs(spec, points, coeffs, n_n, n_m))
-    return cyl_acc_targets, pot_targets
+def forward_truth_coeffs_from_betas_multi(
+    beta_true: np.ndarray,
+    mu_tot: float,
+    cCD_list: List[np.ndarray],
+    c1_list: List[np.ndarray],
+    c2_list: List[np.ndarray],
+) -> List[np.ndarray]:
+    beta_true = np.asarray(beta_true, float)
+    if not beta_feasible(beta_true):
+        raise ValueError(f"beta_true infeasible: {beta_true}")
+
+    bt = beta_tilde(beta_true)
+    dmu1 = beta_true[0] * mu_tot
+    dmu2 = beta_true[1] * mu_tot
+
+    cT_list = []
+    for cCD, c1, c2 in zip(cCD_list, c1_list, c2_list):
+        cT_list.append(bt * cCD + dmu1 * c1 + dmu2 * c2)
+    return cT_list
 
 
-def _poly_fields_multi(
-    vertices,
-    faces,
-    density: float,
-    specs: List["CylinderSpec"],
-    points_list: List[np.ndarray],
-    parallel: bool,
-):
-    pot_polys, acc_polys, cyl_acc_polys = [], [], []
-    for spec, points in zip(specs, points_list):
-        pot_poly, acc_poly = eval_poly_gravity(
-            vertices, faces, density, points, parallel=parallel
+def delta_coeffs_obs_multi(
+    cT_list: List[np.ndarray], cCD_list: List[np.ndarray]
+) -> List[np.ndarray]:
+    return [
+        np.asarray(cT, float) - np.asarray(cCD, float)
+        for cT, cCD in zip(cT_list, cCD_list)
+    ]
+
+
+def delta_coeffs_model_multi(
+    beta: np.ndarray,
+    mu_tot: float,
+    cCD_list: List[np.ndarray],
+    c1_list: List[np.ndarray],
+    c2_list: List[np.ndarray],
+) -> List[np.ndarray]:
+    """
+    Δc_model,i(β) = -(β1+β2)cCD_i + (β1 μ_tot)c1_i + (β2 μ_tot)c2_i
+    """
+    beta = np.asarray(beta, float)
+    out = []
+    for cCD, c1, c2 in zip(cCD_list, c1_list, c2_list):
+        out.append(
+            (-(beta[0] + beta[1]) * cCD)
+            + (beta[0] * mu_tot) * c1
+            + (beta[1] * mu_tot) * c2
         )
-        pot_polys.append(pot_poly)
-        acc_polys.append(acc_poly)
-        cyl_acc_polys.append(cart_to_cyl_acc(spec, points, acc_poly))
-    return pot_polys, acc_polys, cyl_acc_polys
+    return out
 
 
-def _stack_residual_observation(
-    cyl_acc_targets: List[np.ndarray],
-    pot_targets: Optional[List[np.ndarray]],
-    cyl_acc_polys: List[np.ndarray],
-    pot_polys: List[np.ndarray],
-    use_potential: bool,
-    w_acc: float,
-    w_pot: float,
+def stack_coeffs_multi(dclist: List[np.ndarray]) -> np.ndarray:
+    return np.hstack([dc.ravel(order="C") for dc in dclist])
+
+
+# ======================================================================================
+# Covariance builder (1% of CD coeff components) for STACKED cylinders
+# ======================================================================================
+
+
+def build_sigma_from_cd_coeffs_multi(
+    cCD_list: List[np.ndarray], frac: float = 0.01
+) -> np.ndarray:
+    """
+    Sigma = diag( (frac * max(|cCD_k|, floor))^2 ) over the STACKED coefficient vector.
+    Floor prevents zeros from giving zero-variance.
+    """
+    cd_stack = stack_coeffs_multi(cCD_list)
+    floor = frac * (np.median(np.abs(cd_stack)) + 1e-30)
+    sig = frac * np.maximum(np.abs(cd_stack), floor)
+    return np.diag(sig * sig)
+
+
+# ======================================================================================
+# Inverse in coefficient space: LSQ + MCMC
+# ======================================================================================
+
+
+def estimate_betas_lsq_multi_coeffspace(
+    dc_obs_list: List[np.ndarray],
+    mu_tot: float,
+    cCD_list: List[np.ndarray],
+    c1_list: List[np.ndarray],
+    c2_list: List[np.ndarray],
+    x0_beta: np.ndarray,
+    bounds_beta: Tuple[np.ndarray, np.ndarray],
+    Sigma: Optional[np.ndarray] = None,
 ):
-    # residual attributed to anomalies, stacked across cylinders
-    y_parts = []
-    for i in range(len(cyl_acc_targets)):
-        cyl_acc_resid = cyl_acc_targets[i] - cyl_acc_polys[i]
-        y_acc = cyl_acc_resid.reshape(-1, order="C")
-        y_parts.append(w_acc * y_acc)
+    """
+    Solve min || L^{-1} (Δc_model(beta) - Δc_obs) ||^2 with stacked cylinders.
+    Sigma is covariance of stacked Δc (MxM).
+    """
+    y = stack_coeffs_multi(dc_obs_list)
+    lb, ub = np.asarray(bounds_beta[0], float), np.asarray(bounds_beta[1], float)
 
-        if use_potential:
-            pot_resid = pot_targets[i] - pot_polys[i]
-            y_parts.append(w_pot * pot_resid)
+    if Sigma is None:
 
-    y = np.hstack(y_parts)
-    return y
+        def whiten(v):
+            return v
 
+    else:
+        L = np.linalg.cholesky(Sigma + 1e-30 * np.eye(Sigma.shape[0]))
+        Linv = np.linalg.inv(L)
 
-def _stack_model_vector_multi(
-    mu_vec: np.ndarray,
-    specs: List["CylinderSpec"],
-    points_list: List[np.ndarray],
-    r1: np.ndarray,
-    r2: np.ndarray,
-    softening: float,
-    use_potential: bool,
-    w_acc: float,
-    w_pot: float,
-):
-    mu1, mu2 = float(mu_vec[0]), float(mu_vec[1])
+        def whiten(v):
+            return Linv @ v
 
-    m_parts = []
-    for spec, points in zip(specs, points_list):
-        pot1, acc1 = mascon_potential_acc(points, r1, mu1, softening=softening)
-        pot2, acc2 = mascon_potential_acc(points, r2, mu2, softening=softening)
-
-        pot_m = pot1 + pot2
-        acc_m = acc1 + acc2
-        cyl_acc_m = cart_to_cyl_acc(spec, points, acc_m)
-
-        m_acc = cyl_acc_m.reshape(-1, order="C")
-        m_parts.append(w_acc * m_acc)
-        if use_potential:
-            m_parts.append(w_pot * pot_m)
-
-    return np.hstack(m_parts)
-
-
-# ------------------------------------------------------------
-# NEW: multi-cylinder inverse (LSQ)
-# ------------------------------------------------------------
-
-
-def estimate_2mus_from_coeffs_lsq_multi(
-    coeffs_list: List[np.ndarray],
-    vertices,
-    faces,
-    density: float,
-    specs: List["CylinderSpec"],
-    points_list: List[np.ndarray],
-    n_n: int,
-    n_m: int,
-    r1: np.ndarray,
-    r2: np.ndarray,
-    x0_mu: np.ndarray,  # (2,)
-    bounds_mu: Tuple[np.ndarray, np.ndarray],
-    parallel: bool = False,
-    softening: float = 0.0,
-    use_potential: bool = True,
-    w_acc: float = 1.0,
-    w_pot: float = 1.0,
-):
-    assert len(coeffs_list) == len(specs) == len(points_list)
-
-    # targets from coeffs (each cylinder)
-    cyl_acc_targets, pot_targets = _targets_from_coeffs_multi(
-        coeffs_list, specs, points_list, n_n, n_m, use_potential
-    )
-
-    # known poly fields
-    pot_polys, _, cyl_acc_polys = _poly_fields_multi(
-        vertices, faces, density, specs, points_list, parallel=parallel
-    )
-
-    # stacked observed residual vector (what mascons must explain)
-    y = _stack_residual_observation(
-        cyl_acc_targets=cyl_acc_targets,
-        pot_targets=pot_targets,
-        cyl_acc_polys=cyl_acc_polys,
-        pot_polys=pot_polys,
-        use_potential=use_potential,
-        w_acc=w_acc,
-        w_pot=w_pot,
-    )
-
-    def fun(mu_vec):
-        m = _stack_model_vector_multi(
-            mu_vec=np.asarray(mu_vec, float),
-            specs=specs,
-            points_list=points_list,
-            r1=r1,
-            r2=r2,
-            softening=softening,
-            use_potential=use_potential,
-            w_acc=w_acc,
-            w_pot=w_pot,
+    def fun(beta):
+        beta = np.asarray(beta, float)
+        if (np.any(beta < lb) or np.any(beta > ub)) or (not beta_feasible(beta)):
+            return 1e6 * np.ones_like(y)
+        dc_model_list = delta_coeffs_model_multi(
+            beta, mu_tot, cCD_list, c1_list, c2_list
         )
-        return m - y
+        r = stack_coeffs_multi(dc_model_list) - y
+        return whiten(r)
 
-    lb, ub = bounds_mu
-    res = least_squares(
+    return least_squares(
         fun,
-        x0=x0_mu,
+        x0=np.asarray(x0_beta, float),
         bounds=(lb, ub),
         method="trf",
         jac="2-point",
@@ -275,32 +399,17 @@ def estimate_2mus_from_coeffs_lsq_multi(
         tr_solver="exact",
         verbose=2,
     )
-    return res
 
 
-# ------------------------------------------------------------
-# NEW: multi-cylinder inverse (MCMC)
-# ------------------------------------------------------------
-
-
-def estimate_2mus_from_coeffs_mcmc_multi(
-    coeffs_list: List[np.ndarray],
-    vertices,
-    faces,
-    density: float,
-    specs: List["CylinderSpec"],
-    points_list: List[np.ndarray],
-    n_n: int,
-    n_m: int,
-    r1: np.ndarray,
-    r2: np.ndarray,
-    x0_mu: np.ndarray,  # (2,)
-    bounds_mu: Tuple[np.ndarray, np.ndarray],
-    parallel: bool = False,
-    softening: float = 0.0,
-    use_potential: bool = True,
-    w_acc: float = 1.0,
-    w_pot: float = 1.0,
+def estimate_betas_mcmc_multi_coeffspace(
+    dc_obs_list: List[np.ndarray],
+    mu_tot: float,
+    cCD_list: List[np.ndarray],
+    c1_list: List[np.ndarray],
+    c2_list: List[np.ndarray],
+    x0_beta: np.ndarray,
+    bounds_beta: Tuple[np.ndarray, np.ndarray],
+    Sigma: Optional[np.ndarray] = None,
     sigma_like: Optional[float] = None,
     nwalkers: int = 48,
     n_burn: int = 1500,
@@ -322,75 +431,62 @@ def estimate_2mus_from_coeffs_mcmc_multi(
     except Exception:
         _HAS_CORNER = False
 
-    assert len(coeffs_list) == len(specs) == len(points_list)
+    y = stack_coeffs_multi(dc_obs_list)
+    lb, ub = np.asarray(bounds_beta[0], float), np.asarray(bounds_beta[1], float)
 
-    # targets from coeffs
-    cyl_acc_targets, pot_targets = _targets_from_coeffs_multi(
-        coeffs_list, specs, points_list, n_n, n_m, use_potential
-    )
+    if Sigma is not None:
+        L = np.linalg.cholesky(Sigma + 1e-30 * np.eye(Sigma.shape[0]))
+        Linv = np.linalg.inv(L)
 
-    # known poly fields
-    pot_polys, _, cyl_acc_polys = _poly_fields_multi(
-        vertices, faces, density, specs, points_list, parallel=parallel
-    )
+        def quad(res):
+            z = Linv @ res
+            return float(np.dot(z, z))
 
-    # stacked observed residual vector
-    y = _stack_residual_observation(
-        cyl_acc_targets=cyl_acc_targets,
-        pot_targets=pot_targets,
-        cyl_acc_polys=cyl_acc_polys,
-        pot_polys=pot_polys,
-        use_potential=use_potential,
-        w_acc=w_acc,
-        w_pot=w_pot,
-    )
+        sigma_like_used = None
+    else:
+        if sigma_like is None:
+            y_rms = np.sqrt(np.mean(y**2)) + 1e-30
+            sigma_like = 0.01 * y_rms
+        inv_sigma2 = 1.0 / (sigma_like**2)
 
-    lb, ub = np.asarray(bounds_mu[0], float), np.asarray(bounds_mu[1], float)
+        def quad(res):
+            return float(np.sum(res * res) * inv_sigma2)
 
-    def log_prior(mu_vec):
-        mu_vec = np.asarray(mu_vec, float)
-        if np.any(mu_vec < lb) or np.any(mu_vec > ub):
+        sigma_like_used = sigma_like
+
+    def log_prior(beta):
+        beta = np.asarray(beta, float)
+        if np.any(beta < lb) or np.any(beta > ub):
             return -np.inf
-        if mu_vec[0] <= 0.0 or mu_vec[1] <= 0.0:
+        if not beta_feasible(beta):
             return -np.inf
         return 0.0
 
-    def model_vec(mu_vec):
-        return _stack_model_vector_multi(
-            mu_vec=np.asarray(mu_vec, float),
-            specs=specs,
-            points_list=points_list,
-            r1=r1,
-            r2=r2,
-            softening=softening,
-            use_potential=use_potential,
-            w_acc=w_acc,
-            w_pot=w_pot,
-        )
-
-    if sigma_like is None:
-        y_rms = np.sqrt(np.mean(y**2)) + 1e-30
-        sigma_like = 0.01 * y_rms
-    inv_sigma2 = 1.0 / (sigma_like**2)
-
-    def log_prob(mu_vec):
-        lp = log_prior(mu_vec)
+    def log_prob(beta):
+        lp = log_prior(beta)
         if not np.isfinite(lp):
             return -np.inf
-        r = model_vec(mu_vec) - y
-        return lp - 0.5 * np.sum(r * r) * inv_sigma2
+        dc_model_list = delta_coeffs_model_multi(
+            beta, mu_tot, cCD_list, c1_list, c2_list
+        )
+        r = stack_coeffs_multi(dc_model_list) - y
+        return lp - 0.5 * quad(r)
 
     ndim = 2
     rng = np.random.default_rng(seed)
 
-    scale = np.array([0.2 * max(x0_mu[0], 1e-16), 0.2 * max(x0_mu[1], 1e-16)], float)
-    scale = np.maximum(scale, np.array([1e-12, 1e-12]))
-    p0 = x0_mu[None, :] + rng.normal(size=(nwalkers, ndim)) * scale[None, :]
+    scale = np.maximum(0.2 * np.abs(np.asarray(x0_beta, float)), np.array([1e-6, 1e-6]))
+    p0 = (
+        np.asarray(x0_beta, float)[None, :]
+        + rng.normal(size=(nwalkers, ndim)) * scale[None, :]
+    )
 
     for i in range(nwalkers):
         p0[i] = np.minimum(np.maximum(p0[i], lb), ub)
-        p0[i, 0] = max(p0[i, 0], 1e-12)
-        p0[i, 1] = max(p0[i, 1], 1e-12)
+        for _ in range(50):
+            if beta_feasible(p0[i]):
+                break
+            p0[i] *= 0.5
 
     sampler = emcee.EnsembleSampler(nwalkers, ndim, log_prob)
     sampler.run_mcmc(p0, n_burn, progress=True)
@@ -400,205 +496,204 @@ def estimate_2mus_from_coeffs_mcmc_multi(
     samples = sampler.get_chain(flat=True, thin=thin)
     logp = sampler.get_log_prob(flat=True, thin=thin)
 
-    mu_hat = np.median(samples, axis=0)
+    beta_hat = np.median(samples, axis=0)
     cov_hat = np.cov(samples, rowvar=False)
 
     i_map = int(np.argmax(logp))
-    mu_map = samples[i_map]
-    r_map = model_vec(mu_map) - y
+    beta_map = samples[i_map]
+    r_map = (
+        stack_coeffs_multi(
+            delta_coeffs_model_multi(beta_map, mu_tot, cCD_list, c1_list, c2_list)
+        )
+        - y
+    )
     cost_hat = 0.5 * float(np.sum(r_map**2))
 
     corner_fig = None
     if _HAS_CORNER:
         corner_fig = corner.corner(
             samples,
-            labels=[r"$\Delta\mu_1$", r"$\Delta\mu_2$"],
-            truths=mu_hat,
+            labels=[r"$\beta_1$", r"$\beta_2$"],
+            truths=beta_hat,
             show_titles=True,
             title_fmt=".3e",
             quantiles=[0.16, 0.50, 0.84],
         )
 
     return SimpleNamespace(
-        x=mu_hat,
+        x=beta_hat,
         cov=cov_hat,
         cost=cost_hat,
         success=True,
-        message="MCMC posterior median estimate (mu1, mu2) using BOTH cylinders",
+        message="MCMC posterior median estimate (beta1,beta2) using BOTH cylinders in coefficient space",
         samples=samples,
         log_prob=logp,
         sampler=sampler,
         corner_fig=corner_fig,
-        sigma_like=sigma_like,
-        mu_map=mu_map,
+        sigma_like=sigma_like_used,
+        beta_map=beta_map,
+        mu_tot=mu_tot,
     )
-
-
-# ------------------------------------------------------------
-# OPTIONAL: residual histogram, per-cylinder (for plots at end)
-# ------------------------------------------------------------
-
-
-def build_cyl_acc_residual_and_model_per_cyl(
-    coeffs_list: List[np.ndarray],
-    vertices,
-    faces,
-    density: float,
-    specs: List["CylinderSpec"],
-    points_list: List[np.ndarray],
-    n_n: int,
-    n_m: int,
-    r1: np.ndarray,
-    r2: np.ndarray,
-    mu_hat: np.ndarray,
-    parallel: bool = False,
-    softening: float = 0.0,
-):
-    cyl_acc_targets, _ = _targets_from_coeffs_multi(
-        coeffs_list, specs, points_list, n_n, n_m, use_potential=False
-    )
-
-    pot_polys, _, cyl_acc_polys = _poly_fields_multi(
-        vertices, faces, density, specs, points_list, parallel=parallel
-    )
-
-    out = []
-    for spec, points, cyl_acc_t, cyl_acc_p in zip(
-        specs, points_list, cyl_acc_targets, cyl_acc_polys
-    ):
-        cyl_acc_resid = cyl_acc_t - cyl_acc_p
-
-        pot1, acc1 = mascon_potential_acc(
-            points, r1, float(mu_hat[0]), softening=softening
-        )
-        pot2, acc2 = mascon_potential_acc(
-            points, r2, float(mu_hat[1]), softening=softening
-        )
-        cyl_acc_model = cart_to_cyl_acc(spec, points, acc1 + acc2)
-
-        out.append((cyl_acc_resid, cyl_acc_model))
-    return out
 
 
 # ======================================================================================
-# __main__ CHANGES (example)
+# MAIN (example)
 # ======================================================================================
+
 if __name__ == "__main__":
-    import matplotlib.pyplot as plt
-
+    # ---------------------------
     # Load mesh (EROS)
+    # ---------------------------
     vertices, faces = mesh_utility.read_pk_file("3dmeshes/eros.pk")
     vertices, faces = np.asarray(vertices), np.asarray(faces)
     DENSITY = 1.0
+    center = vertices.mean(axis=0)
 
-    # --- define TWO cylinders ---
-    spec1 = CylinderSpec(
+    # ---------------------------
+    # Define TWO cylinders
+    # ---------------------------
+    spec1 = CylinderSpec(  # noqa: F405
         center=np.array([0.0, 0.0, 0.28]),
         radius=0.10,
         height=0.50,
         rotation=np.eye(3),
         alpha=100.0,
     )
-    spec2 = CylinderSpec(
+    spec2 = CylinderSpec(  # noqa: F405
         center=np.array([0.10, -0.05, 0.20]),
-        radius=0.1,
-        height=0.5,
+        radius=0.10,
+        height=0.50,
         rotation=np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]]),
         alpha=100.0,
     )
-    spec3 = CylinderSpec(
-        center=np.array([-1.26, 0, 0]),
-        radius=0.1,
-        height=0.5,
-        rotation=np.array([[0, 0, 1], [0, 1, 0], [-1, 0, 0]]),
-        alpha=100.0,
-    )
+    specs = [spec1]  # , spec2]
 
-    specs = [spec1]  # , spec2, spec3]
+    points_list = [
+        generate_points_in_cylinder(spec1, 1200, seed=1),  # noqa: F405
+        # generate_points_in_cylinder(spec2, 1200, seed=2),  # noqa: F405
+    ]
 
-    # sample points in each cylinder
-    NUM_POINTS_1 = 1200
-    NUM_POINTS_2 = 1200
-    NUM_POINTS_3 = 1200
-    points1 = generate_points_in_cylinder(spec1, NUM_POINTS_1, seed=1)
-    points2 = generate_points_in_cylinder(spec2, NUM_POINTS_2, seed=2)
-    points3 = generate_points_in_cylinder(spec3, NUM_POINTS_3, seed=3)
-    points_list = [points1]  # , points2, points3]
-
-    # truncation
     n_n, n_m = 5, 5
 
-    # fixed mascon positions
     r1 = np.array([0.35, -0.02, 0.05])
     r2 = np.array([-0.10, 0.08, 0.02])
 
-    mu_true = np.array([5e-9, 2e-9], float)
-    mu1_true, mu2_true = float(mu_true[0]), float(mu_true[1])
-
-    # (1) Forward: poly + anomalies -> fit coeffs for BOTH cylinders
-    fwd = fit_cylinders_for_poly_plus_2fixedmascons(
-        vertices,
-        faces,
-        DENSITY,
+    # ---------------------------
+    # Build signatures (baseline + unit mascons) for BOTH cylinders
+    # ---------------------------
+    sig = build_cylinder_signatures(
+        vertices=vertices,
+        faces=faces,
+        density=DENSITY,
+        center=center,
         specs=specs,
         points_list=points_list,
         n_n=n_n,
         n_m=n_m,
         r1=r1,
         r2=r2,
-        mu1=mu1_true,
-        mu2=mu2_true,
         parallel=False,
+        softening=0.0,
         enforce_B0n_flag=True,
-        softening=0.0,
     )
-    coeffs_list = fwd["coeffs_list"]
+    mu_tot = sig["mu_tot"]
+    cCD_list = sig["cCD_list"]
+    c1_list = sig["c1_list"]
+    c2_list = sig["c2_list"]
 
-    # (2a) Inverse LSQ: use BOTH cylinders together
-    x0_mu = np.array([0, 0])
-    lb = np.array([0.0, 0.0])
-    ub = np.array([1e-6, 1e-6])
-
-    res_lsq = estimate_2mus_from_coeffs_lsq_multi(
-        coeffs_list=coeffs_list,
-        vertices=vertices,
-        faces=faces,
-        density=DENSITY,
-        specs=specs,
-        points_list=points_list,
-        n_n=n_n,
-        n_m=n_m,
-        r1=r1,
-        r2=r2,
-        x0_mu=x0_mu,
-        bounds_mu=(lb, ub),
-        parallel=False,
-        softening=0.0,
-        use_potential=True,
-        w_acc=1.0,
-        w_pot=1.0,
+    # ---------------------------
+    # FORWARD truth in coefficient space
+    # ---------------------------
+    beta_true = np.array([0.02, 0.01], float)
+    cT_list = forward_truth_coeffs_from_betas_multi(
+        beta_true, mu_tot, cCD_list, c1_list, c2_list
     )
-    mu_lsq = res_lsq.x
+    dc_obs_list = delta_coeffs_obs_multi(cT_list, cCD_list)
 
-    # (2b) Inverse MCMC: posterior using BOTH cylinders together
-    res_mcmc = estimate_2mus_from_coeffs_mcmc_multi(
-        coeffs_list=coeffs_list,
-        vertices=vertices,
-        faces=faces,
-        density=DENSITY,
-        specs=specs,
-        points_list=points_list,
-        n_n=n_n,
-        n_m=n_m,
-        r1=r1,
-        r2=r2,
-        x0_mu=mu_lsq,
-        bounds_mu=(lb, ub),
-        parallel=False,
-        softening=0.0,
-        use_potential=True,
-        w_acc=1.0,
-        w_pot=1.0,
+    # ---------------------------
+    # Covariance on coefficient residuals (1% of CD components) — STACKED
+    # ---------------------------
+    Sigma = build_sigma_from_cd_coeffs_multi(cCD_list, frac=0.01)
+
+    # ---------------------------
+    # Add noise to observed Δc_obs (optional, can be commented out)
+    # ---------------------------
+
+    rng = np.random.default_rng(123)
+    for i in range(len(dc_obs_list)):
+        noise = rng.multivariate_normal(mean=np.zeros(Sigma.shape[0]), cov=Sigma)
+        dc_obs_list[i] += noise.reshape(dc_obs_list[i].shape)
+
+    # ---------------------------
+    # INVERSE LSQ (beta)
+    # ---------------------------
+    x0_beta = np.array([0.0, 0.0], float)
+    lb = np.array([0.0, 0.0], float)
+    ub = np.array([1.0, 1.0], float)
+
+    res_lsq = estimate_betas_lsq_multi_coeffspace(
+        dc_obs_list=dc_obs_list,
+        mu_tot=mu_tot,
+        cCD_list=cCD_list,
+        c1_list=c1_list,
+        c2_list=c2_list,
+        x0_beta=x0_beta,
+        bounds_beta=(lb, ub),
+        Sigma=Sigma,
+    )
+    beta_lsq = res_lsq.x
+    res_lsq = estimate_betas_lsq_multi_coeffspace(
+        dc_obs_list=dc_obs_list,
+        mu_tot=mu_tot,
+        cCD_list=cCD_list,
+        c1_list=c1_list,
+        c2_list=c2_list,
+        x0_beta=x0_beta,
+        bounds_beta=(lb, ub),
+        Sigma=Sigma,
+    )
+    beta_lsq = res_lsq.x
+
+    def _extract_lsq_cov(res, eps=1e-30):
+        J = res.jac
+        m, n = J.shape
+        sigma2 = 2.0 * res.cost / max(m - n, 1)  # residual variance estimate
+        JTJ = J.T @ J
+        try:
+            Cov = sigma2 * np.linalg.inv(JTJ)
+        except np.linalg.LinAlgError:
+            Cov = sigma2 * np.linalg.pinv(JTJ)
+        Cov = 0.5 * (Cov + Cov.T) + eps * np.eye(n)
+        return Cov
+
+    def _print_cov_stats(tag, est, Cov, truth, eps=1e-30):
+        est = np.asarray(est, float)
+        truth = np.asarray(truth, float)
+        sig = np.sqrt(np.maximum(np.diag(Cov), 0.0))
+        pct_sig = 100.0 * sig / (np.abs(est) + eps)
+        snr = est / (sig + eps)
+        pct_err = 100.0 * (est - truth) / (np.abs(truth) + eps)
+        print(f"\n--- {tag} covariance / sigma / SNR ---")
+        print("Cov =\n", Cov)
+        print("sigma =", sig)
+        print("%sigma =", pct_sig)
+        print("SNR   =", snr)
+        print("%err  =", pct_err)
+
+    Cov_beta_lsq = _extract_lsq_cov(res_lsq)
+
+    # ---------------------------
+    # INVERSE MCMC (beta)
+    # ---------------------------
+    res_mcmc = estimate_betas_mcmc_multi_coeffspace(
+        dc_obs_list=dc_obs_list,
+        mu_tot=mu_tot,
+        cCD_list=cCD_list,
+        c1_list=c1_list,
+        c2_list=c2_list,
+        x0_beta=beta_lsq,
+        bounds_beta=(lb, ub),
+        Sigma=Sigma,
         sigma_like=None,
         nwalkers=48,
         n_burn=1500,
@@ -606,94 +701,93 @@ if __name__ == "__main__":
         thin=10,
         seed=123,
     )
-    mu_mcmc = res_mcmc.x
+    beta_mcmc = res_mcmc.x
+    Cov_beta_mcmc = res_mcmc.cov  # already returned
 
-    # ==========================
-    # PLOTS (ONLY AT THE END)
-    # ==========================
+    # ---------------------------
+    # Derived quantities + % errors
+    # ---------------------------
+    bt_true = beta_tilde(beta_true)
+    bt_lsq = beta_tilde(beta_lsq)
+    bt_mcmc = beta_tilde(beta_mcmc)
+
+    dmu_true = beta_true * mu_tot
+    dmu_lsq = beta_lsq * mu_tot
+    dmu_mcmc = beta_mcmc * mu_tot
+
+    # propagate covariance to Δμ-space
+    Cov_dmu_lsq = (mu_tot**2) * Cov_beta_lsq
+    Cov_dmu_mcmc = (mu_tot**2) * Cov_beta_mcmc
+
+    eps = 1e-30
+    beta_pct_lsq = 100.0 * (beta_lsq - beta_true) / np.maximum(np.abs(beta_true), eps)
+    beta_pct_mcmc = 100.0 * (beta_mcmc - beta_true) / np.maximum(np.abs(beta_true), eps)
+
+    dmu_pct_lsq = 100.0 * (dmu_lsq - dmu_true) / np.maximum(np.abs(dmu_true), eps)
+    dmu_pct_mcmc = 100.0 * (dmu_mcmc - dmu_true) / np.maximum(np.abs(dmu_true), eps)
+
+    # ---------------------------
+    # PLOTS (ONLY AT END)
+    # ---------------------------
     figs = []
 
-    # spectrum per cylinder
-    figs.append(
-        plot_rms_spectrum(
-            coeffs_list[0], n_n, n_m, "Cylinder #1 RMS spectrum (poly + anomalies)"
-        )
-    )
-    # figs.append(
-    #    plot_rms_spectrum(
-    #        coeffs_list[1], n_n, n_m, "Cylinder #2 RMS spectrum (poly + anomalies)"
-    #    )
-    # )
-    # figs.append(
-    #    plot_rms_spectrum(
-    #        coeffs_list[2], n_n, n_m, "Cylinder #3 RMS spectrum (poly + anomalies)"
-    #    )
-    # )
+    for i, (cCD, dc_obs) in enumerate(zip(cCD_list, dc_obs_list)):
+        figs.append(
+            plot_rms_spectrum(
+                cCD, n_n, n_m, f"Cylinder #{i+1}: baseline coeff spectrum"
+            )
+        )  # noqa: F405
+        # figs.append(
+        #    plot_rms_spectrum(
+        #        dc_obs, n_n, n_m, f"Cylinder #{i+1}: Δcoeff spectrum (obs)"
+        #    )
+        # )  # noqa: F405
 
     mascons = np.vstack([r1.reshape(1, 3), r2.reshape(1, 3)])
-    fig_shape, ax_shape = plot_shape_and_mascons_matplotlib(
+    fig_shape, _ = plot_shape_and_mascons_matplotlib(  # noqa: F405
         vertices,
         faces,
         mascons,
         title="EROS shape + fixed mascons",
         face_alpha=0.20,
-        decimate_faces=5,  # bump up if too slow
+        decimate_faces=5,
     )
     figs.append(fig_shape)
 
-    # mu comparison
     figs.append(
-        plot_mu_comparison(
-            mu_true=np.array([mu1_true, mu2_true]),
-            mu_lsq=mu_lsq,
-            mu_mcmc=mu_mcmc,
-        )
-    )
+        plot_mu_comparison(mu_true=dmu_true, mu_lsq=dmu_lsq, mu_mcmc=dmu_mcmc)
+    )  # noqa: F405
 
-    # residual hist per cylinder (acc-only mismatch)
-    res_blocks = build_cyl_acc_residual_and_model_per_cyl(
-        coeffs_list=coeffs_list,
-        vertices=vertices,
-        faces=faces,
-        density=DENSITY,
-        specs=specs,
-        points_list=points_list,
-        n_n=n_n,
-        n_m=n_m,
-        r1=r1,
-        r2=r2,
-        mu_hat=mu_mcmc,
-        parallel=False,
-        softening=0.0,
-    )
-    figs.append(
-        plot_residual_norms(
-            specs[0], points_list[0], res_blocks[0][0], res_blocks[0][1]
-        )
-    )
-    # figs.append(
-    #    plot_residual_norms(
-    #        specs[1], points_list[1], res_blocks[1][0], res_blocks[1][1]
-    #    )
-    # )
-
-    if res_mcmc.corner_fig is not None:
+    if getattr(res_mcmc, "corner_fig", None) is not None:
         figs.append(res_mcmc.corner_fig)
 
-    # Print summary
-    print("\n=== TRUE Δmu ===", np.array([mu1_true, mu2_true]))
-    print("=== LSQ  Δmu ===", mu_lsq)
-    print("=== MCMC Δmu ===", mu_mcmc)
-    print("LSQ cost =", res_lsq.cost)
-    print("MCMC cost =", res_mcmc.cost, " (using MAP sample)")
-    print("MCMC sigma_like =", res_mcmc.sigma_like)
+    # ---------------------------
+    # Summary prints
+    # ---------------------------
+    print("\n=== mu_tot (magnitude) ===", mu_tot)
 
-    pct_lsq = 100.0 * (mu_lsq - mu_true) / (np.abs(mu_true))
-    pct_mcmc = 100.0 * (mu_mcmc - mu_true) / (np.abs(mu_true))
+    print("\n=== TRUE beta ===", beta_true, " beta_tilde =", bt_true)
+    print("=== LSQ  beta ===", beta_lsq, " beta_tilde =", bt_lsq)
+    print("=== MCMC beta ===", beta_mcmc, " beta_tilde =", bt_mcmc)
 
-    print("\n=== % ERROR (LSQ)  ===", pct_lsq)
-    print("=== % ERROR (MCMC) ===", pct_mcmc)
-    print("=== |%| (LSQ)  ===", np.abs(pct_lsq))
-    print("=== |%| (MCMC) ===", np.abs(pct_mcmc))
+    print("\n=== TRUE Δμ ===", dmu_true)
+    print("=== LSQ  Δμ ===", dmu_lsq)
+    print("=== MCMC Δμ ===", dmu_mcmc)
+
+    print("\n=== % ERROR beta (LSQ)  ===", beta_pct_lsq)
+    print("=== % ERROR beta (MCMC) ===", beta_pct_mcmc)
+    print("=== % ERROR Δμ  (LSQ)  ===", dmu_pct_lsq)
+    print("=== % ERROR Δμ  (MCMC) ===", dmu_pct_mcmc)
+
+    print("\nLSQ cost  =", res_lsq.cost)
+    print("MCMC cost =", res_mcmc.cost)
+    print(
+        "MCMC sigma_like (None if using Sigma) =", getattr(res_mcmc, "sigma_like", None)
+    )
+
+    _print_cov_stats("LSQ (beta)", beta_lsq, Cov_beta_lsq, beta_true)
+    _print_cov_stats("MCMC (beta)", beta_mcmc, Cov_beta_mcmc, beta_true)
+    _print_cov_stats("LSQ (Δμ)", dmu_lsq, Cov_dmu_lsq, dmu_true)
+    _print_cov_stats("MCMC (Δμ)", dmu_mcmc, Cov_dmu_mcmc, dmu_true)
 
     plt.show()
