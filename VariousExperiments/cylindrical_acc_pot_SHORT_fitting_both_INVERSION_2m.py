@@ -107,8 +107,7 @@ def prepare_linear_system_for_cyl_acc(
     A = np.zeros((3 * N, P), float)
     b = cyl_acc.reshape(-1, order="C")
 
-    def k_mn(m, n):  # n starts at 1
-        return jn_zeros(m, n)[n - 1]
+    k_mn = lambda m, n: jn_zeros(m, n)[-1]
 
     R_alpha = spec.alpha * spec.radius
 
@@ -153,8 +152,7 @@ def prepare_linear_system_for_cyl_pot(
     A = np.zeros((N, P), float)
     b = pot.astype(float)
 
-    def k_mn(m, n):
-        return jn_zeros(m, n)[n - 1]
+    k_mn = lambda m, n: jn_zeros(m, n)[-1]
 
     R_alpha = spec.alpha * spec.radius
 

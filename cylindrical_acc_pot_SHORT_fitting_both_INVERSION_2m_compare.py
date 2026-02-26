@@ -693,14 +693,14 @@ if __name__ == "__main__":
     # ---------------------------
     # Fit points: spherical shell
     # ---------------------------
-    N_FIT = 10000
+    N_FIT = 1500
     points = sample_points_in_spherical_shell(
         N_FIT, 1.05 * Rb, 3.0 * Rb, center=center, seed=1
     )
 
     # mascon locations
-    r1 = np.array([0.35, -0.02, 0.05])
-    r2 = np.array([-0.10, 0.08, 0.02])
+    r1 = np.array([0.35, 0.0, 0.0])
+    r2 = np.array([-0.35, 0.0, 0.0])
 
     # ---------------------------
     # SH setup

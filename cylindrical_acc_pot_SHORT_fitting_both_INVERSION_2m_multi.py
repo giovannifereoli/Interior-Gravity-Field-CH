@@ -613,23 +613,31 @@ if __name__ == "__main__":
         alpha=100.0,
     )
     spec2 = CylinderSpec(  # noqa: F405
-        center=np.array([0.10, -0.05, 0.20]),
+        center=np.array([-0.1, -0.28, 0]),
         radius=0.10,
         height=0.50,
         rotation=np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]]),
         alpha=100.0,
     )
-    specs = [spec1]  # , spec2]
+    spec3 = CylinderSpec(  # noqa: F405
+        center=np.array([-0.76, 0, 0]),
+        radius=0.10,
+        height=0.50,
+        rotation=np.array([[0, 0, -1], [0, 1, 0], [1, 0, 0]]),
+        alpha=100.0,
+    )
+    specs = [spec1, spec2, spec3]
 
     points_list = [
-        generate_points_in_cylinder(spec1, 1200, seed=1),  # noqa: F405
-        # generate_points_in_cylinder(spec2, 1200, seed=2),  # noqa: F405
+        generate_points_in_cylinder(spec1, 1500, seed=1),  # noqa: F405
+        generate_points_in_cylinder(spec2, 1500, seed=1),  # noqa: F405
+        generate_points_in_cylinder(spec3, 1500, seed=1),  # noqa: F405
     ]
 
     n_n, n_m = 5, 5
 
-    r1 = np.array([0.35, -0.02, 0.05])
-    r2 = np.array([-0.10, 0.08, 0.02])
+    r1 = np.array([0.35, 0.0, 0.0])
+    r2 = np.array([-0.35, 0.0, 0.0])
 
     # ---------------------------
     # Build signatures (baseline + unit mascons) for BOTH cylinders
@@ -693,14 +701,21 @@ if __name__ == "__main__":
     # Add noise to observed Δc_obs (optional, can be commented out)
     # ---------------------------
 
+    shapes = [dc.shape for dc in dc_obs_list]
+    sizes = [dc.size for dc in dc_obs_list]
+    d = np.concatenate([dc.ravel() for dc in dc_obs_list])
+    m = (d != 0.0).astype(
+        d.dtype
+    )  # mask: don't add noise where coefficients are exactly zero
     rng = np.random.default_rng(123)
-    for i in range(len(dc_obs_list)):
-        dc = dc_obs_list[i]
-        noise = rng.multivariate_normal(
-            mean=np.zeros(Sigma.shape[0]), cov=Sigma
-        ).reshape(dc.shape)
-        mask = dc != 0.0  # Avoid adding noise to B0n coefficients!
-        dc_obs_list[i] = dc + noise * mask
+    n = rng.multivariate_normal(mean=np.zeros(d.size), cov=Sigma)
+    d_noisy = d + n * m
+    dc_obs_list_noisy = []
+    k = 0
+    for shp, ni in zip(shapes, sizes):
+        dc_obs_list_noisy.append(d_noisy[k : k + ni].reshape(shp))
+        k += ni
+    dc_obs_list = dc_obs_list_noisy
 
     # ---------------------------
     # INVERSE LSQ (beta)
@@ -884,4 +899,4 @@ if __name__ == "__main__":
     _print_cov_stats("LSQ (Δμ)", dmu_lsq, Cov_dmu_lsq, dmu_true)
     _print_cov_stats("MCMC (Δμ)", dmu_mcmc, Cov_dmu_mcmc, dmu_true)
 
-    plt.show()
+    # plt.show()
