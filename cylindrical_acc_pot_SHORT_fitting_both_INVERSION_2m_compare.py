@@ -695,7 +695,7 @@ if __name__ == "__main__":
     # ---------------------------
     N_FIT = 1500
     points = sample_points_in_spherical_shell(
-        N_FIT, 1.05 * Rb, 3.0 * Rb, center=center, seed=1
+        N_FIT, 1.0 * Rb, 2.0 * Rb, center=center, seed=1
     )
 
     # mascon locations
@@ -917,4 +917,4 @@ if __name__ == "__main__":
     _print_cov_stats("LSQ (Δμ)", dmu_lsq, Cov_dmu_lsq, dmu_true)
     _print_cov_stats("MCMC (Δμ)", dmu_mcmc, Cov_dmu_mcmc, dmu_true)
 
-    plt.show()
+    # plt.show()

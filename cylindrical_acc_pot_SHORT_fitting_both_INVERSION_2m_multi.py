@@ -75,6 +75,11 @@ from VariousExperiments.cylindrical_acc_pot_SHORT_fitting_both_INVERSION_2m impo
 # TODO: let's add realistic noise on coefficient to simulate OD. You can sample them from their covariance for instance
 # or you can put something on the design matrix to simulate correlated and colored noise and re-fit.
 
+# TODO: What’s smallest masss? Interest results is that at 0.002/0.001 the SPH breaks and the other doesnt
+
+# TODO: I believe might be better to use it together with SPH and to demonstrate that with CH you can achieve higher accuracy on
+# mascons estimation. Do a MC moving mascons around and see how small mascons you can estimate with/without CH!
+
 
 # ======================================================================================
 # Poly gravity evaluation (baseline constant-density poly) + mu_tot estimate
@@ -454,6 +459,81 @@ def estimate_betas_lsq_multi_coeffspace(
     )
 
 
+''''
+from types import SimpleNamespace
+import numpy as np
+from typing import List, Tuple, Optional
+
+
+def estimate_betas_lsq_multi_coeffspace2(
+    dc_obs_list: List[np.ndarray],
+    mu_tot: float,
+    cCD_list: List[np.ndarray],
+    c1_list: List[np.ndarray],
+    c2_list: List[np.ndarray],
+    x0_beta: np.ndarray,
+    bounds_beta: Tuple[np.ndarray, np.ndarray],
+    Sigma: Optional[np.ndarray] = None,
+):
+    """
+    PURE (whitened) linear least squares, same signature as before.
+
+    Builds stacked linear model:
+        y = stack_i(Δc_obs,i)
+        H = [h1 h2]
+          h1 = stack_i(-cCD_i + mu_tot*c1_i)
+          h2 = stack_i(-cCD_i + mu_tot*c2_i)
+
+    Solves:
+        min || L^{-1}(H beta - y) ||^2   if Sigma given (Sigma = L L^T)
+        min || H beta - y ||^2          otherwise
+
+    Returns an object that mimics scipy.optimize.least_squares output fields:
+        x, cost, fun, jac, success, message, nfev
+    """
+    # Stack observations
+    y = stack_coeffs_multi(dc_obs_list)
+
+    # Build design matrix H (M x 2)
+    h1_list = [(-cCD + mu_tot * c1) for (cCD, c1) in zip(cCD_list, c1_list)]
+    h2_list = [(-cCD + mu_tot * c2) for (cCD, c2) in zip(cCD_list, c2_list)]
+    h1 = stack_coeffs_multi(h1_list)
+    h2 = stack_coeffs_multi(h2_list)
+    H = np.column_stack([h1, h2])
+
+    # Whitening
+    if Sigma is None:
+        A = H
+        b = y
+    else:
+        Sigma = np.asarray(Sigma, float)
+        L = np.linalg.cholesky(Sigma + 1e-30 * np.eye(Sigma.shape[0]))
+        # avoid explicit inverse
+        A = np.linalg.solve(L, H)
+        b = np.linalg.solve(L, y)
+
+    # Solve linear LS
+    beta_hat, *_ = np.linalg.lstsq(A, b, rcond=None)
+
+    # Residuals in whitened space (like least_squares would return)
+    r = A @ beta_hat - b
+    cost = 0.5 * float(r @ r)
+
+    # "jac" consistent with residual definition r(beta)=A beta - b
+    jac = A
+
+    return SimpleNamespace(
+        x=beta_hat,
+        cost=cost,
+        fun=r,
+        jac=jac,
+        success=True,
+        message="Solved by explicit (whitened) linear least squares.",
+        nfev=1,
+    )
+'''
+
+
 def estimate_betas_mcmc_multi_coeffspace(
     dc_obs_list: List[np.ndarray],
     mu_tot: float,
@@ -590,6 +670,98 @@ def estimate_betas_mcmc_multi_coeffspace(
 
 
 # ======================================================================================
+# Additional Plots
+# ======================================================================================
+
+
+def plot_rms_spectrum_six_on_one(
+    coeffs_list,
+    n_n: int,
+    n_m: int,
+    labels=None,
+    title: str = "RMS spectrum (6 cylinders)",
+    xlabel: str = "Spectrum index",
+    ylabel: str = r"RMS (units of coeffs)",
+    logy: bool = True,
+    grid: bool = True,
+    legend_ncol: int = 2,
+    linewidth: float = 2.0,
+    figsize=(7.2, 4.6),
+    savepath: str | None = None,
+    dpi: int = 300,
+):
+    """
+    coeffs_list : list of 6 arrays, each the coeff vector for one cylinder
+    labels      : list of 6 strings (optional)
+    savepath    : e.g. "spectra_6cyl.pdf" or "spectra_6cyl.png"
+    """
+    coeffs_list = list(coeffs_list)
+    if len(coeffs_list) != 6:
+        raise ValueError(f"Expected 6 coefficient arrays, got {len(coeffs_list)}")
+
+    if labels is None:
+        labels = [f"Cyl {i+1}" for i in range(6)]
+    if len(labels) != 6:
+        raise ValueError(f"Expected 6 labels, got {len(labels)}")
+
+    # --- master figure (journal-ish defaults) ---
+    plt.rcParams.update(
+        {
+            "text.usetex": True,
+            "font.family": "serif",
+            "font.size": 12,
+            "axes.labelsize": 12,
+            "axes.titlesize": 13,
+            "legend.fontsize": 10,
+            "xtick.labelsize": 11,
+            "ytick.labelsize": 11,
+        }
+    )
+
+    fig, ax = plt.subplots(figsize=figsize)
+    if grid:
+        ax.grid(True, which="both", alpha=0.25)
+
+    # --- build each spectrum using your existing function, then steal its line data ---
+    for coeffs, lab in zip(coeffs_list, labels):
+        tmp_fig = plot_rms_spectrum(coeffs, n_n, n_m, title="")  # <-- YOUR util
+        tmp_ax = tmp_fig.axes[0]
+
+        # Grab the first plotted line (adjust if your function plots multiple lines)
+        if len(tmp_ax.lines) < 1:
+            plt.close(tmp_fig)
+            raise RuntimeError(
+                "plot_rms_spectrum produced no line objects. "
+                "If it uses bars/collections, tweak extraction accordingly."
+            )
+
+        x = tmp_ax.lines[0].get_xdata()
+        y = tmp_ax.lines[0].get_ydata()
+
+        # Replot on master axes
+        ax.plot(x, y, linewidth=linewidth, label=lab)
+
+        plt.close(tmp_fig)
+
+    ax.set_title(title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+
+    if logy:
+        ax.set_yscale("log")
+
+    ax.legend(frameon=True, ncol=legend_ncol)
+
+    fig.tight_layout()
+
+    # if savepath is not None:
+    #    fig.savefig(savepath, dpi=dpi, bbox_inches="tight")
+    #    print(f"[saved] {savepath}")
+
+    return fig, ax
+
+
+# ======================================================================================
 # MAIN (example)
 # ======================================================================================
 
@@ -626,12 +798,36 @@ if __name__ == "__main__":
         rotation=np.array([[0, 0, -1], [0, 1, 0], [1, 0, 0]]),
         alpha=100.0,
     )
-    specs = [spec1, spec2, spec3]
+    spec4 = CylinderSpec(
+        center=np.array([0.00, 0.00, -0.29]),
+        radius=0.10,
+        height=0.50,
+        rotation=np.array([[-1, 0, 0], [0, 1, 0], [0, 0, -1]]),
+        alpha=100.0,
+    )
+    spec5 = CylinderSpec(
+        center=np.array([0.00, 0.24, 0.00]),
+        radius=0.10,
+        height=0.50,
+        rotation=np.array([[1, 0, 0], [0, 0, 1], [0, 1, 0]]),
+        alpha=100.0,
+    )
+    spec6 = CylinderSpec(
+        center=np.array([0.79, 0.00, 0.00]),
+        radius=0.10,
+        height=0.50,
+        rotation=np.array([[0, 0, 1], [0, 1, 0], [1, 0, 0]]),
+        alpha=100.0,
+    )
+    specs = [spec1, spec2, spec3, spec4, spec5, spec6]
 
     points_list = [
         generate_points_in_cylinder(spec1, 1500, seed=1),  # noqa: F405
         generate_points_in_cylinder(spec2, 1500, seed=1),  # noqa: F405
         generate_points_in_cylinder(spec3, 1500, seed=1),  # noqa: F405
+        generate_points_in_cylinder(spec4, 1500, seed=1),  # noqa: F405
+        generate_points_in_cylinder(spec5, 1500, seed=1),  # noqa: F405
+        generate_points_in_cylinder(spec6, 1500, seed=1),  # noqa: F405
     ]
 
     n_n, n_m = 5, 5
@@ -665,7 +861,7 @@ if __name__ == "__main__":
     # ---------------------------
     # FORWARD truth in coefficient space
     # ---------------------------
-    beta_true = np.array([0.02, 0.01], float)
+    beta_true = np.array([0.002, 0.001], float)
     cT_list = forward_truth_coeffs_from_betas_multi(
         beta_true, mu_tot, cCD_list, c1_list, c2_list
     )
@@ -724,17 +920,6 @@ if __name__ == "__main__":
     lb = np.array([0.0, 0.0], float)
     ub = np.array([1.0, 1.0], float)
 
-    res_lsq = estimate_betas_lsq_multi_coeffspace(
-        dc_obs_list=dc_obs_list,
-        mu_tot=mu_tot,
-        cCD_list=cCD_list,
-        c1_list=c1_list,
-        c2_list=c2_list,
-        x0_beta=x0_beta,
-        bounds_beta=(lb, ub),
-        Sigma=Sigma,
-    )
-    beta_lsq = res_lsq.x
     res_lsq = estimate_betas_lsq_multi_coeffspace(
         dc_obs_list=dc_obs_list,
         mu_tot=mu_tot,
@@ -851,6 +1036,16 @@ if __name__ == "__main__":
         #        dc_obs, n_n, n_m, f"Cylinder #{i+1}: Δcoeff spectrum (obs)"
         #    )
         # )  # noqa: F405
+
+        # fig1, ax1 = plot_rms_spectrum_six_on_one(
+        #    coeffs_list=cCD_list,
+        #    n_n=n_n,
+        #    n_m=n_m,
+        #    labels=[f"Cylinder {i+1} (CD)" for i in range(6)],
+        #    title="Baseline coefficient RMS spectrum (6 cylinders)",
+        #    ylabel=r"RMS($c_{CD}$)",
+        #    savepath="spectrum_baseline_6cyl.pdf",
+        # )
 
     mascons = np.vstack([r1.reshape(1, 3), r2.reshape(1, 3)])
     fig_shape, _ = plot_shape_and_mascons_matplotlib(  # noqa: F405

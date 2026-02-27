@@ -145,7 +145,7 @@ def plot_shape_cylinders_mascons(
         -14.0,
     ),  # <<< PATCH: alternate view (elev=15, azim=-14)
     figsize: Tuple[float, float] = (7.4, 5.8),
-    legend_loc: str = "upper right",
+    legend_loc: str = "upper left",
     savepath: Optional[str] = None,
 ):
     V = np.asarray(vertices, float)
@@ -186,7 +186,16 @@ def plot_shape_cylinders_mascons(
     ax.add_collection3d(mesh)
 
     # ---------------- Cylinders ----------------
-    cyl_colors = ["#E6001A", "#0077BB", "#F08C00", "#2c7bb6", "#33BB44", "#AA33CC"]
+    cyl_colors = [
+        "#0072B2",  # blue
+        "#D55E00",  # vermillion
+        "#009E73",  # bluish green
+        "#CC79A7",  # reddish purple
+        "#F0E442",  # yellow
+        "#56B4E9",  # sky blue
+        "#E69F00",  # orange
+        "#000000",  # black (anchor / reference)
+    ]
     cyl_pts_all: List[np.ndarray] = []
     legend_handles: List[Line2D] = []
 
@@ -241,13 +250,16 @@ def plot_shape_cylinders_mascons(
 
         # <<< PATCH: draw each mascon with its own color and its own legend entry
         default_mascon_colors = [
-            "#E6001A",
-            "#0077BB",
-            "#F08C00",
-            "#33BB44",
-            "#AA33CC",
-            "#2c7bb6",
+            "#0072B2",  # blue
+            "#D55E00",  # vermillion
+            "#009E73",  # bluish green
+            "#CC79A7",  # reddish purple
+            "#F0E442",  # yellow
+            "#56B4E9",  # sky blue
+            "#E69F00",  # orange
+            "#000000",  # black (anchor / reference)
         ]
+
         colors = (
             list(mascon_colors) if mascon_colors is not None else default_mascon_colors
         )
@@ -325,7 +337,13 @@ def plot_shape_cylinders_mascons(
         ax.set_zlabel(r"$z\, [LU]$")
 
     if legend_handles:
-        ax.legend(handles=legend_handles, loc=legend_loc, framealpha=0.85)
+        ax.legend(
+            handles=legend_handles,
+            loc="upper left",  # anchor point on legend box
+            bbox_to_anchor=(0.85, 0.8),  # place it just outside right
+            borderaxespad=0.0,
+            framealpha=0.85,
+        )
 
     if savepath is not None:
         fig.savefig(savepath, dpi=600, bbox_inches="tight")
@@ -363,6 +381,27 @@ if __name__ == "__main__":
             height=0.50,
             rotation=np.array([[0, 0, -1], [0, 1, 0], [1, 0, 0]]),
             name="Cylinder C",
+        ),
+        CylinderSpec(
+            center=np.array([0.00, 0.00, -0.29]),
+            radius=0.10,
+            height=0.50,
+            rotation=np.array([[-1, 0, 0], [0, 1, 0], [0, 0, -1]]),
+            name="Cylinder D",
+        ),
+        CylinderSpec(
+            center=np.array([0.00, 0.24, 0.00]),
+            radius=0.10,
+            height=0.50,
+            rotation=np.array([[1, 0, 0], [0, 0, 1], [0, 1, 0]]),
+            name="Cylinder E",
+        ),
+        CylinderSpec(
+            center=np.array([0.79, 0.00, 0.00]),
+            radius=0.10,
+            height=0.50,
+            rotation=np.array([[0, 0, 1], [0, 1, 0], [1, 0, 0]]),
+            name="Cylinder F",
         ),
     ]
 

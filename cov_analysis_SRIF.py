@@ -258,13 +258,119 @@ def compute_dynamical_matrix(position, fitted_params, n_n, n_m, j_mn_cache):
     return A
 
 
-def compute_measurement_partials(position, n_state, fx=1000, fy=1000):
+def compute_measurement_partials(
+    position,
+    velocity,
+    n_state,
+    fx=1000.0,
+    fy=1000.0,
+    sigma_rr=1e-6,
+    sigma_pix=0.5,
+    sigma_line=0.5,
+    eps=1e-12,
+):
+    """
+    Jacobian H and noise covariance R for:
+        [range-rate, pixel, line]
+    measurements to CYLINDER_CENTER.
+
+    Measurement model:
+      1) range-rate:  \dot{rho} = (r_rel · v_rel) / rho
+         with r_rel = r_L - r_cam,  v_rel = v_L - v_cam
+         Here landmark is fixed => v_L = 0
+
+      2) pixel: xp = fx * dx / dz
+      3) line : yp = fy * dy / dz
+
+    State ordering assumption (common):
+      x = [r_cam(3), v_cam(3), ...params...]
+    So H has shape (3, n_state) and fills columns:
+      0:3 for position, 3:6 for velocity.
+
+    Args:
+        position: (3,) camera position in inertial frame.
+        velocity: (3,) camera velocity in inertial frame.
+        n_state: total state dimension.
+        fx, fy: focal lengths in pixels.
+        sigma_rr: 1-sigma range-rate noise (same units as rr).
+        sigma_pix, sigma_line: 1-sigma image noise [pixels].
+        eps: small number for numerical safety.
+
+    Returns:
+        H: (3, n_state) Jacobian wrt the state.
+        R: (3, 3) measurement noise covariance.
+    """
+    # Relative position from camera to landmark
+    r_rel = np.asarray(CYLINDER_CENTER, float) - np.asarray(position, float)
+    dx, dy, dz = r_rel
+    rho_sq = float(np.dot(r_rel, r_rel))
+    rho = np.sqrt(max(rho_sq, eps))
+
+    # Relative velocity (landmark fixed in inertial frame)
+    v_rel = -np.asarray(velocity, float)  # v_L - v_cam = 0 - v_cam
+
+    # Pixel/line projections (simple pinhole, no distortion)
+    dz_safe = dz if abs(dz) > eps else np.sign(dz) * eps + (dz == 0.0) * eps
+    xp = fx * dx / dz_safe
+    yp = fy * dy / dz_safe
+
+    # Range-rate
+    rr = float(np.dot(r_rel, v_rel) / rho)
+
+    # Initialize H
+    H = np.zeros((3, n_state), dtype=float)
+
+    # ---------- range-rate partials ----------
+    # rr = (r_rel · v_rel) / rho
+    # Let s = r_rel · v_rel
+    s = float(np.dot(r_rel, v_rel))
+
+    # d(rr)/d(r_rel) = v_rel/rho - (s/rho^3) * r_rel
+    drr_drrel = (v_rel / rho) - (s / (rho**3 + eps)) * r_rel
+
+    # d(rr)/d(v_rel) = r_rel / rho
+    drr_dvrel = r_rel / rho
+
+    # Chain to camera state:
+    # r_rel = r_L - r_cam  => d(r_rel)/d(r_cam) = -I
+    # v_rel = v_L - v_cam  => d(v_rel)/d(v_cam) = -I
+    H[0, 0] = -drr_drrel[0]
+    H[0, 1] = -drr_drrel[1]
+    H[0, 2] = -drr_drrel[2]
+
+    if n_state >= 6:
+        H[0, 3] = -drr_dvrel[0]
+        H[0, 4] = -drr_dvrel[1]
+        H[0, 5] = -drr_dvrel[2]
+
+    # ---------- pixel partials ----------
+    # xp = fx * dx/dz, with dx = x_L - x_cam, dz = z_L - z_cam
+    # d(xp)/d(x_cam) = fx * d(dx/dz)/d(x_cam) = fx * (-1/dz)
+    # d(xp)/d(z_cam) = fx * d(dx/dz)/d(z_cam) = fx * (dx/dz^2)
+    H[1, 0] = -fx / dz_safe
+    H[1, 2] = fx * dx / (dz_safe**2)
+
+    # ---------- line partials ----------
+    # yp = fy * dy/dz
+    H[2, 1] = -fy / dz_safe
+    H[2, 2] = fy * dy / (dz_safe**2)
+
+    # Measurement noise covariance
+    R = np.diag([sigma_rr**2, sigma_pix**2, sigma_line**2]).astype(float)
+
+    return H, R
+
+
+def compute_measurement_partials_opnav_range(
+    position, velocity, n_state, fx=1000, fy=1000
+):
     """
     Compute the measurement model Jacobian H and noise covariance R
     for range + optical navigation (pixel, line) measurements of CYLINDER_CENTER.
 
     Args:
         position: Camera position in inertial frame [x, y, z].
+        velocity: Camera velocity in inertial frame [x, y, z].
         n_state: State dimension (6 + params).
         fx, fy: Focal lengths in pixels.
 
@@ -309,12 +415,13 @@ def compute_measurement_partials(position, n_state, fx=1000, fy=1000):
     return H, R
 
 
-def compute_measurement_partials2(position, n_state):
+def compute_measurement_partials_radec_range(position, velocity, n_state):
     """
     Compute the measurement model Jacobian H and noise covariance R for range and angular measurements.
 
     Args:
         position: Cartesian position [x, y, z].
+        velocity: Cartesian velocity [x, y, z].
         n_state: Total state dimension (6 + 2*n_n*n_m).
 
     Returns:
@@ -525,11 +632,7 @@ if __name__ == "__main__":
     I_n = np.eye(n_state)
 
     # Precompute measurement whitening matrix
-    _, R_meas = compute_measurement_partials(state[:3, 1], n_state)
-    SRI = cholesky(np.linalg.inv(R_meas), lower=False)
-
-    # Precompute measurement whitening matrix
-    _, R_meas = compute_measurement_partials(state[:3, 1], n_state)
+    _, R_meas = compute_measurement_partials(state[:3, 1], state[3:6, 1], n_state)
     SRI = cholesky(np.linalg.inv(R_meas), lower=False)
 
     sigma_a = 1e-9  # <-- tune this (LU/s^2). start conservative (bigger) then decrease.
@@ -545,7 +648,7 @@ if __name__ == "__main__":
         R_sqrt = srif_time_update_with_snc(R_sqrt, Phi, Gamma, Qtilde)
 
         # Measurement update
-        H, R_meas = compute_measurement_partials(state[:3, i], n_state)
+        H, R_meas = compute_measurement_partials(state[:3, i], state[3:6, i], n_state)
 
         # (optional but recommended) refresh whitening each step if R_meas changes
         SRI = cholesky(np.linalg.inv(R_meas), lower=False)
