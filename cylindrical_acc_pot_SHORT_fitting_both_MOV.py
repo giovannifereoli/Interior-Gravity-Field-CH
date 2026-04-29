@@ -568,6 +568,51 @@ def plot_power_spectrum_by_order(A, B, n_n, n_m):
     plt.title("RMS Coefficient Spectrum by Order", pad=12)
     plt.savefig("Images/rms_spectrum_by_order.pdf", dpi=1200, bbox_inches="tight")
 
+    # Function to plot power spectrum by degree
+
+
+def plot_power_spectrum_by_degree(A, B, n_n, n_m):
+    """
+    Plot the RMS amplitude of coefficients A and B per degree n in semilogarithmic scale.
+
+    Args:
+        A, B: Coefficient matrices of shape (n_m, n_n).
+        n_n: Number of terms in the n (degree) series.
+        n_m: Number of terms in the m (order) series.
+    """
+
+    plt.figure(figsize=(12, 8))
+
+    # Compute RMS amplitude per degree n
+    rms_by_n = np.zeros(n_n)
+    for n in range(n_n):
+        rms_by_n[n] = np.sqrt(
+            np.sum(A[: min(n + 1, n_m), n] ** 2 + B[: min(n + 1, n_m), n] ** 2)
+        )
+
+    plt.semilogy(
+        range(n_n),
+        rms_by_n,
+        marker="o",
+        linestyle="-",
+        color=COLOR_PALETTE[0],
+        label=r"$\sqrt{\sum_m (A_{mn}^2 + B_{mn}^2)}$",
+    )
+
+    plt.xlabel("Degree $n$ (-)", labelpad=10)
+    plt.ylabel("RMS Amplitude per Degree (log scale)", labelpad=10)
+    plt.grid(True, linestyle="--", which="both", linewidth=0.7, alpha=0.8)
+    plt.minorticks_on()
+    plt.legend(
+        loc="best",
+        frameon=True,
+        fancybox=True,
+        edgecolor="black",
+        fontsize=14,
+    )
+    plt.title("RMS Coefficient Spectrum by Degree", pad=12)
+    plt.savefig("Images/rms_spectrum_by_degree.pdf", dpi=1200, bbox_inches="tight")
+
 
 # Function to plot RMS uncertainty per order m using the covariance matrix
 def plot_uncertainty_power_spectrum(cov_matrix, n_n, n_m):
@@ -749,10 +794,10 @@ def plot_power_spectrum_with_empirical_cov(
 
 # Call the functions
 A, B = print_fitted_parameters(fitted_params, n_n, n_m)
-plot_power_spectrum_with_empirical_cov(A, B, cov_matrix, n_n, n_m, False)
+# plot_power_spectrum_with_empirical_cov(A, B, cov_matrix, n_n, n_m, False)
 # plot_coefficients_semilogy(A, B, n_n, n_m)
 # plot_coefficient_matrices(A, B)
-# plot_power_spectrum_by_order(A, B, n_n, n_m)
+plot_power_spectrum_by_order(A, B, n_n, n_m)
 # plot_uncertainty_power_spectrum(cov_matrix, n_n, n_m)
 
 
