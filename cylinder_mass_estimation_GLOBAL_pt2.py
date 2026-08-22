@@ -5,17 +5,29 @@ Author: Giovanni Fereoli / experiment build
 
 Question (different from pt1)
 -----------------------------
-pt1 showed that ONE near-surface CH cylinder resolves ONE mascon sitting under
+pt1 showed that ONE near-surface CH cylinder resolves ONE anomaly sitting under
 it.  But a real body has many mass concentrations at unknown, scattered
 locations.  A single cylinder only helps whatever is beneath it.
 
     Does SH + a NETWORK of CH cylinders (near-surface data all around the body)
-    let us estimate the mass ratio and position of MANY, arbitrarily placed
-    mascons — where SH alone, and SH + a single cylinder, cannot?
+    let us estimate the mass fraction and position of MANY, arbitrarily placed
+    anomalies — where SH alone, and SH + a single cylinder, cannot?
+
+Interior model (same as pt1)
+----------------------------
+The mass lives in the CONSTANT-DENSITY POLYHEDRON scaled by β̃ = 1 − Σβ; the
+mascons are the localized DEPARTURES from homogeneity, β_j = m_j/M*, positive
+for an excess and negative for a deficit.  Every design matrix below is
+therefore a contrast against the constant-density model — what is fitted is the
+discrepancy ΔU = U_measured − U_CD — and there is no Σβ = 1 pseudo-observation,
+because the mass budget is structural.  Note what this changes about the
+experiment: pt1's "core" mascon was standing in for the bulk, so here the deep
+mascon is a genuine deep ANOMALY, and the noise is referred to the full measured
+field (bulk included), which the anomalies perturb by only a few per cent.
 
 Idea
 ----
-Place ~6 mascons at scattered interior locations of Eros.  Build a NETWORK of
+Place ~6 anomalies at scattered interior locations of Eros.  Build a NETWORK of
 CH cylinders on the surface (each a patch of near-surface / low-altitude data,
 represented by its own Bessel–Fourier expansion).  The cylinders are put on the
 parts of the surface that lie INSIDE the Brillouin sphere (the sides / waist),
@@ -27,16 +39,16 @@ Three observation models are compared:
     A1 : SH + ONE CH cylinder       (pt1-style, single near-surface patch)
     AN : SH + the CH NETWORK        (all cylinders' coefficients)
 
-Because a mascon's localized signature is captured by whatever cylinder is near
-it, the NETWORK constrains every mascon; the single cylinder constrains only its
-neighbour; SH alone leaves them degenerate.
+Because an anomaly's localized signature is captured by whatever cylinder is
+near it, the NETWORK constrains every anomaly; the single cylinder constrains
+only its neighbour; SH alone leaves them degenerate.
 
-Both observables are linear in the mascon masses (mass-ratio experiment =
-linear LS), and nonlinear in a mascon's position (position experiment = TRF).
-All heavy machinery (Legendre, Stokes design, Bessel basis, fits) is reused
-from `cylinder_mass_estimation_GLOBAL` (imported as G).
+Both observables are linear in β (mass-fraction experiment = linear LS), and
+nonlinear in an anomaly's position (position experiment = TRF).  All heavy
+machinery (Legendre, Stokes design, Bessel basis, the constant-density bulk,
+fits) is reused from `cylinder_mass_estimation_GLOBAL` (imported as G).
 
-Units: Eros normalized (LU), total mass M = 1, G = 1.
+Units: Eros normalized (LU), total mass M* = 1, G = 1.
 """
 
 from __future__ import annotations
@@ -118,9 +130,12 @@ def build_network(V, F, tm, n_cyl=6, radius=0.12, height=0.32, n_pts=180,
 
 def place_mascons(net, seed=2):
     """
-    Scatter mascons for the experiment: one near-surface mascon under each of
-    the first (n_cyl-1) cylinders, plus one DEEP core mascon (the hard case that
-    no near-surface patch sits close to).  Returns names, positions, mass ratios.
+    Scatter ANOMALIES for the experiment: one near-surface anomaly under each of
+    the first (n_cyl-1) cylinders, plus one DEEP anomaly at the centre (the hard
+    case that no near-surface patch sits close to).  Returns names, positions and
+    truth mass fractions β_j = m_j/M* — a few per cent each, mixed signs
+    (over- and under-dense), NOT ratios summing to one: the remaining
+    β̃ = 1 − Σβ stays in the constant-density polyhedron.
     """
     names, pos = [], []
     for i, c in enumerate(net[:-1]):
@@ -130,8 +145,8 @@ def place_mascons(net, seed=2):
     pos.append(np.array([0.08, 0.0, 0.0]))
     pos = np.array(pos)
     rng = np.random.default_rng(seed)
-    f = rng.uniform(0.6, 1.4, len(pos))
-    f = f / f.sum()  # mass ratios sum to 1
+    f = rng.uniform(0.015, 0.05, len(pos)) * rng.choice([-1.0, 1.0], len(pos))
+    f[-1] = abs(f[-1])  # the deep one is a dense core
     return names, pos, f
 
 
@@ -145,13 +160,23 @@ def _axis_label(d):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def ch_blocks_for(P, net, ch_modes, eps, f_true):
-    """(A_ch, sigma) for every cylinder in the network — mascon→CH coefficients."""
+def ch_blocks_for(P, net, ch_modes, eps, f_true, bulk):
+    """
+    (A_ch, sigma) for every cylinder in the network — β → CH coefficients.
+
+    A_ch fits the Bessel–Fourier basis to the near-surface field of the CONTRAST
+    (mass at p_j minus the same mass spread through the body), i.e. to ΔU.  The
+    noise, though, is the relative precision of the FULL measured field: sigma is
+    eps × RMS of the CH coefficients of bulk + anomalies, because that is what
+    the instrument senses before the known constant-density part is removed.
+    """
     blocks = []
     for c in net:
-        A_ch = G.ch_coeff_design(P, c["obs"], c["cyl"], ch_modes)
-        sig = eps * float(np.sqrt(np.mean((A_ch @ f_true) ** 2)))
-        blocks.append((A_ch, sig))
+        Phi = G.cyl_basis(c["cyl"], c["obs"], *ch_modes)
+        pinv = np.linalg.pinv(Phi)
+        A_ch = pinv @ G.A_field_contrast(P, c["obs"], bulk)
+        y_ch = pinv @ G.field_total(f_true, P, c["obs"], bulk)
+        blocks.append((A_ch, eps * float(np.sqrt(np.mean(y_ch ** 2)))))
     return blocks
 
 
@@ -160,15 +185,21 @@ def ch_blocks_for(P, net, ch_modes, eps, f_true):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _pos_forward_net(posj, j, P, masses, Lmax, Rref, ch_data):
+def _pos_forward_net(posj, j, P, masses, Lmax, Rref, ch_data, bulk):
+    """
+    Full forward model β̃·CD + Σ β_k pt_k with only anomaly j's position free.
+    The bulk term is an additive constant here (β̃ is fixed with the masses), but
+    it is written out so the forward model is the one the parameterization
+    defines rather than a mascons-in-vacuum stand-in.
+    """
     positions = P.copy()
     positions[j] = posj
-    y_sh = np.zeros(len(G.sh_stokes_of_point(positions[0], 2, Lmax, Rref)))
+    y_sh = G.bulk_fraction(masses) * bulk.stokes(2, Lmax, Rref)
     for mk, pk in zip(masses, positions):
         y_sh = y_sh + mk * G.sh_stokes_of_point(pk, 2, Lmax, Rref)
     blocks = [y_sh]
     for pinvPhi, obs in ch_data:  # each cylinder's CH coefficients
-        field = np.zeros(4 * len(obs))
+        field = G.bulk_fraction(masses) * bulk.field(obs)
         for mk, pk in zip(masses, positions):
             field = field + mk * G.point_mass_field(pk, obs)
         blocks.append(pinvPhi @ field)
@@ -176,12 +207,12 @@ def _pos_forward_net(posj, j, P, masses, Lmax, Rref, ch_data):
 
 
 def position_mc_net(
-    j, P, f_true, net, ch_modes, Lmax, Rref, sig_sh, sig_ch_list, use_net,
+    j, P, f_true, net, ch_modes, Lmax, Rref, sig_sh, sig_ch_list, use_net, bulk,
     bounds=None, n_mc=60, seed=13, start_jitter=0.02,
 ):
     """
-    Monte-Carlo NONLINEAR least-squares (scipy TRF) recovery of mascon j's
-    position; masses & other positions fixed.  `use_net`=False → SH only;
+    Monte-Carlo NONLINEAR least-squares (scipy TRF) recovery of anomaly j's
+    position; mass fractions & other positions fixed.  `use_net`=False → SH only;
     True → SH + whole network.  Each draw fits noisy data starting from a small
     random offset (`start_jitter`) about the truth, within `bounds` (which keep
     the solver on the body so a weakly-constrained near-central mascon degrades
@@ -196,12 +227,12 @@ def position_mc_net(
             ch_data.append((np.linalg.pinv(Phi), c["obs"]))
             sig_blocks.append(s)
     p_true = P[j].copy()
-    truth = _pos_forward_net(p_true, j, P, f_true, Lmax, Rref, ch_data)
+    truth = _pos_forward_net(p_true, j, P, f_true, Lmax, Rref, ch_data, bulk)
     if bounds is None:
         bounds = (-np.inf, np.inf)
 
     def resid(posj, data):
-        model = _pos_forward_net(posj, j, P, f_true, Lmax, Rref, ch_data)
+        model = _pos_forward_net(posj, j, P, f_true, Lmax, Rref, ch_data, bulk)
         return np.concatenate([(m - d) / s for m, d, s in zip(model, data, sig_blocks)])
 
     rng = np.random.default_rng(seed + j)
@@ -220,31 +251,34 @@ def position_mc_net(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def run(Lmax_sh=6, eps=0.02, sig_M=1e-3, ch_modes=(6, 6), n_cyl=6,
+def run(Lmax_sh=6, eps=0.02, ch_modes=(6, 6), n_cyl=6,
         n_mc=300, n_mc_pos=60, outdir="Images", verbose=True):
     V, F, tm, Rb = G.load_eros()
     Rref = Rb
     net = build_network(V, F, tm, n_cyl=n_cyl)
     names, P, f_true = place_mascons(net)
+    bulk = G.Bulk(V, F)
+    beta_bulk = G.bulk_fraction(f_true)
     n_m = len(P)
 
     if verbose:
         print(SEP)
-        print("  PART 2 — SH + CH NETWORK for arbitrary interior mascons (Eros)")
+        print("  PART 2 — SH + CH NETWORK for arbitrary interior anomalies (Eros)")
         print(SEP)
         print(f"  Brillouin R* = {Rb:.3f} LU | {n_cyl} network cylinders | "
-              f"{n_m} mascons")
+              f"{n_m} anomalies")
+        print(f"  BULK: constant-density polyhedron, β̃ = 1 − Σβ = {beta_bulk:.3f} of M*")
         for nm, p, fr in zip(names, P, f_true):
-            print(f"    {nm:16s} p={np.round(p,3)}  f={fr:.3f}  |r|={np.linalg.norm(p):.2f}")
+            print(f"    {nm:16s} p={np.round(p,3)}  β={fr:+.3f}  |r|={np.linalg.norm(p):.2f}")
 
-    # ── observable design blocks ────────────────────────────────────────────
-    A_sh = G.A_stokes(P, 2, Lmax_sh, Rref)
-    A_M = np.ones((1, n_m))
-    sig_sh = eps * float(np.sqrt(np.mean((A_sh @ f_true) ** 2)))
-    ch_blocks = ch_blocks_for(P, net, ch_modes, eps, f_true)   # per-cylinder
+    # ── observable design blocks (all of them CONTRASTS vs the bulk) ────────
+    A_sh = G.A_stokes_contrast(P, bulk, 2, Lmax_sh, Rref)
+    sig_sh = eps * float(np.sqrt(np.mean(
+        G.stokes_total(f_true, P, bulk, 2, Lmax_sh, Rref) ** 2)))
+    ch_blocks = ch_blocks_for(P, net, ch_modes, eps, f_true, bulk)  # per-cylinder
     sig_ch_list = [s for _, s in ch_blocks]
 
-    base = [(A_sh, sig_sh), (A_M, sig_M)]
+    base = [(A_sh, sig_sh)]
     # net[0] and net[1] are the two most-opposite cylinders (farthest-point order)
     cases = {
         "SH only": base,
@@ -253,10 +287,11 @@ def run(Lmax_sh=6, eps=0.02, sig_M=1e-3, ch_modes=(6, 6), n_cyl=6,
         f"SH + {n_cyl}-CH network": base + ch_blocks,
     }
 
-    # ── EXPERIMENT A — MASS RATIOS (positions fixed) ────────────────────────
+    # ── EXPERIMENT A — MASS FRACTIONS (positions fixed) ─────────────────────
     if verbose:
-        print(f"\n{'-'*72}\n  A) MASS-RATIO recovery (1σ over {n_mc} MC draws)\n{'-'*72}")
-        print(f"  {'mascon':16s} " + " ".join(f"{k:>14s}" for k in cases))
+        print(f"\n{'-'*72}\n  A) MASS-FRACTION recovery (1σ on β_j over {n_mc} MC "
+              f"draws)\n{'-'*72}")
+        print(f"  {'anomaly':16s} " + " ".join(f"{k:>14s}" for k in cases))
     sig_by_case = {}
     for k, blocks in cases.items():
         mc = G.monte_carlo_fit(blocks, f_true, n_mc=n_mc)
@@ -268,7 +303,7 @@ def run(Lmax_sh=6, eps=0.02, sig_M=1e-3, ch_modes=(6, 6), n_cyl=6,
         print(f"  network gain vs SH: min={gains.min():.0f}× median={np.median(gains):.0f}× "
               f"max={gains.max():.0f}×")
 
-    # ── EXPERIMENT B — POSITION of arbitrary mascons (masses fixed) ─────────
+    # ── EXPERIMENT B — POSITION of arbitrary anomalies (masses fixed) ───────
     if verbose:
         print(f"\n{'-'*72}\n  B) POSITION recovery ({n_mc_pos} MC draws): SH vs {n_cyl}-CH network\n{'-'*72}")
     pos_rms = {"SH only": np.zeros(n_m), "network": np.zeros(n_m)}
@@ -276,10 +311,10 @@ def run(Lmax_sh=6, eps=0.02, sig_M=1e-3, ch_modes=(6, 6), n_cyl=6,
     pos_bounds = (V.min(0) - 0.05, V.max(0) + 0.05)  # keep the solver on the body
     for j in range(n_m):
         cloudA = position_mc_net(j, P, f_true, net, ch_modes, Lmax_sh, Rref,
-                                 sig_sh, sig_ch_list, use_net=False,
+                                 sig_sh, sig_ch_list, False, bulk,
                                  bounds=pos_bounds, n_mc=n_mc_pos)
         cloudN = position_mc_net(j, P, f_true, net, ch_modes, Lmax_sh, Rref,
-                                 sig_sh, sig_ch_list, use_net=True,
+                                 sig_sh, sig_ch_list, True, bulk,
                                  bounds=pos_bounds, n_mc=n_mc_pos)
         pos_rms["SH only"][j] = np.sqrt(np.mean(np.sum((cloudA - P[j]) ** 2, axis=1)))
         pos_rms["network"][j] = np.sqrt(np.mean(np.sum((cloudN - P[j]) ** 2, axis=1)))
@@ -290,6 +325,7 @@ def run(Lmax_sh=6, eps=0.02, sig_M=1e-3, ch_modes=(6, 6), n_cyl=6,
                   f"→ {pos_rms['SH only'][j]/pos_rms['network'][j]:.0f}× tighter")
 
     res = dict(V=V, F=F, Rb=Rb, net=net, names=names, P=P, f_true=f_true,
+               bulk=bulk, beta_bulk=beta_bulk,
                n_cyl=n_cyl, cases=list(cases.keys()), sig_by_case=sig_by_case,
                pos_rms=pos_rms, pos_clouds=pos_clouds)
     make_plots(res, outdir=outdir)
@@ -321,8 +357,9 @@ def make_plots(res, outdir="Images"):
     for nm, p in zip(names, P):
         ax.text(p[0], p[1], p[2], "  " + nm.split()[0], fontsize=8)
     ax.scatter([], [], color="crimson", label=f"{n_cyl} CH cylinders")
-    ax.scatter([], [], color="k", label="mascons")
-    ax.set_title(f"Eros + {len(P)} scattered mascons\n+ CH network ({n_cyl} cylinders)")
+    ax.scatter([], [], color="k", label="anomalies")
+    ax.set_title(f"Eros: constant-density bulk (β̃ = {res['beta_bulk']:.2f})"
+                 f" + {len(P)} anomalies\n+ CH network ({n_cyl} cylinders)")
     ax.set_xlabel("x [LU]"); ax.set_ylabel("y [LU]"); ax.set_zlabel("z [LU]")
     try:
         ax.set_box_aspect([1, 1, 1])
@@ -333,7 +370,7 @@ def make_plots(res, outdir="Images"):
     fig.savefig(os.path.join(outdir, "global_pt2_fig1_geometry.png"),
                 dpi=180, bbox_inches="tight")
 
-    # ---- FIG 2: mass-ratio uncertainty per mascon, 4 cases -----------------
+    # ---- FIG 2: mass-fraction uncertainty per anomaly, 4 cases -------------
     fig, ax = plt.subplots(figsize=(14, 5.8))
     cases = res["cases"]  # SH / 1CH / 2CH / network
     sig = res["sig_by_case"]
@@ -347,9 +384,9 @@ def make_plots(res, outdir="Images"):
     ax.set_yscale("log")
     ax.set_xticks(x)
     ax.set_xticklabels([n.replace(" ", "\n", 1) for n in names], fontsize=8)
-    ax.set_ylabel(r"mass-ratio 1$\sigma$ uncertainty $\sigma_f$")
-    ax.set_title("Mass-ratio recovery: SH → +1 CH → +2 CH (opposite) → CH network\n"
-                 "(each added cylinder constrains the mascons it covers; "
+    ax.set_ylabel(r"mass-fraction 1$\sigma$ uncertainty $\sigma_\beta$")
+    ax.set_title("Mass-fraction recovery: SH → +1 CH → +2 CH (opposite) → CH network\n"
+                 "(each added cylinder constrains the anomalies it covers; "
                  "the full network constrains ALL)")
     gains = sig[cases[0]] / sig[cases[3]]
     for i in range(len(P)):
@@ -360,7 +397,7 @@ def make_plots(res, outdir="Images"):
     fig.savefig(os.path.join(outdir, "global_pt2_fig2_massratio.png"),
                 dpi=180, bbox_inches="tight")
 
-    # ---- FIG 3: position recovery per mascon, SH vs network ----------------
+    # ---- FIG 3: position recovery per anomaly, SH vs network ---------------
     fig, ax = plt.subplots(figsize=(13, 5.6))
     pr = res["pos_rms"]
     ax.bar(x - 0.2, pr["SH only"], 0.4, color=COLOR[2], edgecolor="k", label="SH only")
@@ -370,7 +407,7 @@ def make_plots(res, outdir="Images"):
     ax.set_xticks(x)
     ax.set_xticklabels([n.replace(" ", "\n", 1) for n in names], fontsize=8)
     ax.set_ylabel("position RMS error [LU]")
-    ax.set_title("Position recovery of arbitrary mascons: SH vs CH network")
+    ax.set_title("Position recovery of arbitrary anomalies: SH vs CH network")
     g = pr["SH only"] / pr["network"]
     for i in range(len(P)):
         ax.text(x[i] + 0.2, pr["network"][i], f"{g[i]:.0f}×", ha="center",
@@ -386,7 +423,6 @@ if __name__ == "__main__":
     res = run(
         Lmax_sh=6,
         eps=0.02,
-        sig_M=1e-3,
         ch_modes=(6, 6),
         n_cyl=6,
         n_mc=300,

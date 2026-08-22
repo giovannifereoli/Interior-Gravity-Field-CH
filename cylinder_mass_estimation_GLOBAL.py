@@ -10,38 +10,61 @@ alone — because cylindrical harmonics sit close to the surface and therefore
 carry localized, near-surface information that global spherical harmonics smear
 out?
 
-Model
------
-Eros interior is modelled by a FEW mascons (the natural low-order picture of a
-bilobate body): two lobe mascons carrying the bulk mass, plus one small
-near-surface anomaly under a chosen spot.  The unknowns are their mass ratios
-f_j = m_j / M (Σ f_j = 1, with the total mass M = GM known from tracking).  We
-also localize the near-surface anomaly (position recovery).
+Model  —  a SCALED CONSTANT-DENSITY BULK plus localized anomalies
+-----------------------------------------------------------------
+The interior is NOT a cloud of mascons that sums to the total mass.  It is the
+constant-density polyhedron of the shape model, scaled by β̃, plus a few
+localized mascons that carry the departures from homogeneity:
+
+    U_T(r) = β̃ · U_CD(r) + Σ_j β_j · U_pt(r; p_j),     β_j = m_j / M* ,
+
+with M* = GM known from tracking (M* = 1 in normalized units).  The mass budget
+β̃ M* + Σ_j m_j = M* fixes the bulk scale outright,
+
+    β̃ = 1 − Σ_j β_j ,
+
+so β̃ is NOT an independent unknown, the total mass is exact by construction, and
+the old "Σ f = 1 known to σ_M" pseudo-observation disappears.  The estimated
+vector is β = {β_j}: β_j > 0 is an over-dense concentration, β_j < 0 a mass
+deficit.  Only the product m_j = Δρ_j v_j enters the field, so the mass fraction
+— not the density contrast — is the identifiable parameter.
+
+Substituting β̃ isolates the DISCREPANCY between the measured field and the
+constant-density model, which is what the estimator actually fits:
+
+    ΔU(r) = U_T(r) − U_CD(r) = Σ_j β_j [ U_pt(r; p_j) − U_CD(r) ] ,
+
+so every design column is a CONTRAST against the homogeneous body.  Here Eros
+carries one shallow anomaly under the +z pole (the CH target, whose position is
+recovered too) and two deep ones in the lobes.
 
 Physical mechanism
 ------------------
-The two deep lobes are a LOW-degree (quadrupole-scale) feature — spherical
-harmonics constrain them well.  The small near-surface anomaly writes its
-signature mostly into HIGH-degree coefficients that are truncated/noisy from
-orbit, so SH is nearly blind to it and it stays degenerate with the bulk.
-Interior cylindrical harmonics converge inside the Brillouin sphere right down
-to the surface (where exterior SH diverges); low-altitude data over a cylinder
-above the anomaly, represented by CH, injects exactly the local information SH
-is missing — resolving the anomaly's mass ratio and position.
+A deep anomaly is a LOW-degree (quadrupole-scale) feature — spherical harmonics
+constrain it well.  The small near-surface anomaly writes its signature mostly
+into HIGH-degree coefficients that are truncated/noisy from orbit, so SH is
+nearly blind to it and it stays degenerate with the bulk.  Interior cylindrical
+harmonics converge inside the Brillouin sphere right down to the surface (where
+exterior SH diverges); low-altitude data over a cylinder above the anomaly,
+represented by CH, injects exactly the local information SH is missing —
+resolving the anomaly's mass fraction and position.
 
-Both observables are LINEAR in the mascon masses, so mass-ratio recovery is a
-linear Gaussian inverse problem with an exact posterior covariance.  Position
-recovery is nonlinear and handled by a linearized (Fisher) covariance.
+Both observables are LINEAR in β, so mass-fraction recovery is a linear Gaussian
+inverse problem with an exact posterior covariance.  Position recovery is
+nonlinear and handled by a linearized (Fisher) covariance.
 
 Truth / units
 -------------
-Eros shape (`3dmeshes/eros.pk`), normalized units (LU), total mass M = 1.
+Eros shape (`3dmeshes/eros.pk`), normalized units (LU), total mass M* = 1.  The
+bulk observables are computed from the shape once and to machine precision: its
+Stokes coefficients by exact tetrahedral quadrature of the solid harmonics (the
+integrand is a polynomial), its near-surface field by polyhedral_gravity.
 
-Two observables
----------------
+Two observables  (both fitted as DISCREPANCIES from the constant-density model)
+--------------------------------------------------------------------------------
   A (SH)     : fully-normalized Stokes coefficients C̄_nm, S̄_nm, degree 2..L_SH,
-               each known to σ_SH, PLUS the total mass (Σ f = 1) known to σ_M
-               (the global gravity field from tracking).
+               each known to σ_SH (the global gravity field from tracking).  No
+               total-mass row: the budget is enforced by β̃ = 1 − Σβ.
   B (SH+CH)  : the above  PLUS  the near-surface gravitational field (potential +
                acceleration) in a cylinder just above the anomaly, KNOWN TO
                σ_FIELD and usable only through the CH model that can represent it.
@@ -51,8 +74,8 @@ Two observables
 
 Experiments
 -----------
-  1. MASS RATIO.  Posterior σ on each mascon's mass ratio, SH vs SH+CH — the
-     near-surface anomaly gains the most.
+  1. MASS FRACTION.  Posterior σ on each anomaly's β_j (and on the derived bulk
+     fraction β̃), SH vs SH+CH — the near-surface anomaly gains the most.
   2. POSITION.  The near-surface anomaly's location; linearized position
      covariance (error ellipsoid), SH vs SH+CH.
 
@@ -63,6 +86,7 @@ SH (exterior) unit-mass Stokes basis, mass at (r,φ,λ), ref radius R*:
 CH (interior) basis in a cylinder (axis ẑ, radius R_cyl, extension α):
     U_mn = J_m(k_mn ρ) e^{-k_mn z} {cos,sin}(mφ),   k_mn = j_{m,n}/(α R_cyl)
 Point mass at p, field at x:  U = Gm/|x-p|,  g = -Gm (x-p)/|x-p|³   (G=1 in LU).
+Constant-density bulk, unit mass:  C̄_nm = (1/Vol) ∫_body (r/R*)^n P̄_nm cos mλ dV.
 """
 
 from __future__ import annotations
@@ -83,6 +107,13 @@ try:
 except Exception:
     _HAVE_TRIMESH = False
 
+try:
+    from polyhedral_gravity import Polyhedron, PolyhedronIntegrity, GravityEvaluable
+
+    _HAVE_PG = True
+except Exception:
+    _HAVE_PG = False
+
 # ── plotting ────────────────────────────────────────────────────────────────
 COLOR = ["#E6001A", "#F08C00", "#0077BB", "#1a9641", "#762a83"]
 mpl.rcParams.update(
@@ -96,6 +127,7 @@ mpl.rcParams.update(
     }
 )
 G = 1.0  # gravitational constant in normalized units
+G_SI = 6.67430e-11  # polyhedral_gravity works in SI; divided out to get G = 1
 SEP = "=" * 70
 
 
@@ -144,6 +176,48 @@ def fully_normalized_legendre(nmax: int, x: float) -> np.ndarray:
             )
             P[n, m] = a * x * P[n - 1, m] - b * P[n - 2, m]
     return P
+
+
+def fully_normalized_legendre_v(nmax: int, x) -> np.ndarray:
+    """Vectorized `fully_normalized_legendre`: same recursions, (nmax+1, nmax+1, N)."""
+    x = np.atleast_1d(np.asarray(x, float))
+    P = np.zeros((nmax + 1, nmax + 1, x.size))
+    P[0, 0] = 1.0
+    if nmax == 0:
+        return P
+    sx = np.sqrt(np.maximum(0.0, 1.0 - x * x))
+    for m in range(1, nmax + 1):
+        P[m, m] = math.sqrt((2.0 * m + 1.0) / (2.0 * m)) * sx * P[m - 1, m - 1]
+    for m in range(0, nmax):
+        P[m + 1, m] = math.sqrt(2.0 * m + 3.0) * x * P[m, m]
+    for m in range(0, nmax + 1):
+        for n in range(m + 2, nmax + 1):
+            a = math.sqrt(((2 * n + 1) * (2 * n - 1)) / ((n - m) * (n + m)))
+            b = math.sqrt(
+                ((2 * n + 1) * (n + m - 1) * (n - m - 1))
+                / ((2 * n - 3) * (n - m) * (n + m))
+            )
+            P[n, m] = a * x * P[n - 1, m] - b * P[n - 2, m]
+    return P
+
+
+def sh_stokes_basis(pts, Lmin, Lmax, Rref):
+    """
+    Vectorized `sh_stokes_of_point`: row i is the unit-mass Stokes signature of a
+    point mass at pts[i], in the SAME coefficient order.  (N, n_coeff)
+    """
+    pts = np.atleast_2d(np.asarray(pts, float))
+    r = np.linalg.norm(pts, axis=1)
+    lam = np.arctan2(pts[:, 1], pts[:, 0])
+    Pb = fully_normalized_legendre_v(Lmax, pts[:, 2] / r)
+    cols = []
+    for n in range(Lmin, Lmax + 1):
+        rr = (r / Rref) ** n
+        for m in range(0, n + 1):
+            base = rr * Pb[n, m]
+            cols.append(base * np.cos(m * lam))
+            cols.append(base * np.sin(m * lam))
+    return np.column_stack(cols)
 
 
 def sh_stokes_of_point(p, Lmin, Lmax, Rref):
@@ -249,25 +323,190 @@ def ch_projector(Phi):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# SECTION 2b — THE CONSTANT-DENSITY BULK (the polyhedron carries the mass)
+# ═══════════════════════════════════════════════════════════════════════════
+# The interior is NOT a cloud of mascons that sums to the total mass.  It is the
+# constant-density SHAPE MODEL scaled by β̃, plus N localized mascons carrying
+# the departures from homogeneity,
+#
+#     U_T(r) = β̃ · U_CD(r) + Σ_j β_j · U_pt(r; p_j),      β_j = m_j / M* ,
+#
+# and the mass budget β̃ M* + Σ_j m_j = M* fixes the bulk scale outright,
+#
+#     β̃ = 1 − Σ_j β_j ,
+#
+# so β̃ is NOT an independent unknown and the total mass is M* by construction —
+# the old "Σ f = 1 known to σ_M" pseudo-observation is gone with it.  What is
+# left to estimate is β = {β_j}.  Substituting β̃ isolates the discrepancy
+# between the measured field and the constant-density model,
+#
+#     ΔU(r) = U_T(r) − U_CD(r) = Σ_j β_j [ U_pt(r; p_j) − U_CD(r) ] ,
+#
+# which is what every design matrix below is: column j is a CONTRAST, the
+# signature of taking a fraction β_j out of the homogeneous body and
+# concentrating it at p_j.  β_j > 0 is a local excess (over-dense), β_j < 0 a
+# deficit (under-dense); only the product m_j = Δρ_j v_j is identifiable, so the
+# fraction, not the density contrast, is the estimated parameter.
+#
+# Both pieces of U_CD are computed once from the shape, to machine precision:
+#   Stokes    — the integrand (r/R*)^n P̄_nm(sinφ){cos,sin}(mλ) is a solid
+#               harmonic, i.e. a homogeneous POLYNOMIAL of degree n, so a
+#               tetrahedral Gauss rule of degree ≥ n is exact (no model error).
+#   near-field— polyhedral_gravity (Werner–Scheeres), which converges right down
+#               to the surface where the SH series does not.
+
+
+def _gauss01(n):
+    """n-point Gauss–Legendre nodes/weights mapped to [0, 1]."""
+    x, w = np.polynomial.legendre.leggauss(n)
+    return 0.5 * (x + 1.0), 0.5 * w
+
+
+@dataclass
+class Bulk:
+    """
+    Constant-density polyhedron normalized to UNIT total mass (G = 1, M* = 1).
+
+    `stokes()` and `field()` return the observables of the WHOLE bulk at unit
+    mass; the model uses them scaled by β̃ = 1 − Σβ.  Both are cached, because
+    the network experiments ask for the same cylinders over and over.
+    """
+
+    V: np.ndarray
+    F: np.ndarray
+
+    def __post_init__(self):
+        self.V = np.asarray(self.V, float)
+        self.F = np.asarray(self.F, int)
+        a, b, c = self.V[self.F[:, 0]], self.V[self.F[:, 1]], self.V[self.F[:, 2]]
+        # signed volume of the tetrahedron (origin, a, b, c) — the sum is the
+        # polyhedron volume for any closed, consistently wound mesh
+        self._tet = np.einsum("ij,ij->i", a, np.cross(b, c)) / 6.0
+        self.volume = float(self._tet.sum())
+        self._sh, self._fd, self._ev = {}, {}, None
+
+    # ── near-surface field ─────────────────────────────────────────────────
+    def field(self, obs):
+        """
+        [U; ax; ay; az] of the unit-mass constant-density body at `obs` — the
+        same stacking and sign convention (U > 0, a = +∇U) as `point_mass_field`
+        and `cyl_basis`, so bulk, mascons and CH basis share one space.
+        """
+        obs = np.atleast_2d(np.asarray(obs, float))
+        key = obs.tobytes()
+        if key not in self._fd:
+            if self._ev is None:
+                if not _HAVE_PG:
+                    raise RuntimeError(
+                        "polyhedral_gravity is required for the constant-density "
+                        "bulk field (pip install polyhedral-gravity)"
+                    )
+                self._ev = GravityEvaluable(
+                    Polyhedron(
+                        polyhedral_source=(self.V, self.F),
+                        density=1.0 / self.volume,  # unit total mass
+                        integrity_check=PolyhedronIntegrity.DISABLE,
+                    )
+                )
+            res = self._ev(computation_points=obs, parallel=True)
+            U = np.array([r[0] for r in res]) / G_SI  # SI G divided out → G = 1
+            g = np.array([r[1] for r in res]) / G_SI
+            self._fd[key] = np.concatenate([U, g[:, 0], g[:, 1], g[:, 2]])
+        return self._fd[key]
+
+    # ── Stokes coefficients ────────────────────────────────────────────────
+    def stokes(self, Lmin, Lmax, Rref, chunk=200_000):
+        """
+        Fully-normalized Stokes coefficients of the unit-mass constant-density
+        polyhedron, in the ordering of `sh_stokes_of_point`:
+
+            C̄_nm = (1/Vol) ∫_body (r/R*)^n P̄_nm(sinφ) cos mλ dV
+
+        Each tetrahedron (origin, v0, v1, v2) is integrated with a Duffy-mapped
+        tensor Gauss rule; the integrand is a polynomial of degree ≤ Lmax and the
+        map contributes (1−u)²(1−v), so `ng` points per direction integrate
+        degree 2·ng−1 ≥ Lmax+2 EXACTLY.  Signed volumes make the decomposition
+        valid for a concave body whatever the origin.
+        """
+        key = (Lmin, Lmax, round(float(Rref), 12))
+        if key in self._sh:
+            return self._sh[key]
+        ng = max(3, (Lmax + 4) // 2)
+        u, wu = _gauss01(ng)
+        UU, VV, WW = np.meshgrid(u, u, u, indexing="ij")
+        Wq = (
+            wu[:, None, None] * wu[None, :, None] * wu[None, None, :]
+            * (1.0 - UU) ** 2 * (1.0 - VV)
+        ).ravel()
+        l1 = UU.ravel()
+        l2 = (VV * (1.0 - UU)).ravel()
+        l3 = (WW * (1.0 - UU) * (1.0 - VV)).ravel()
+        a, b, c = self.V[self.F[:, 0]], self.V[self.F[:, 1]], self.V[self.F[:, 2]]
+        acc, step = None, max(1, chunk // len(Wq))
+        for s0 in range(0, len(self.F), step):
+            sl = slice(s0, s0 + step)
+            pts = (
+                a[sl][:, None, :] * l1[None, :, None]
+                + b[sl][:, None, :] * l2[None, :, None]
+                + c[sl][:, None, :] * l3[None, :, None]
+            )  # (n_tet, n_quad, 3)
+            B = sh_stokes_basis(pts.reshape(-1, 3), Lmin, Lmax, Rref)
+            w = (6.0 * self._tet[sl][:, None] * Wq[None, :]).ravel()
+            acc = w @ B if acc is None else acc + w @ B
+        self._sh[key] = acc / self.volume
+        return self._sh[key]
+
+
+def bulk_fraction(beta):
+    """β̃ = 1 − Σβ : the fraction of M* left in the homogeneous polyhedron."""
+    return 1.0 - float(np.sum(beta))
+
+
+def A_stokes_contrast(positions, bulk, Lmin, Lmax, Rref):
+    """
+    Design matrix of the SH DISCREPANCY, ΔCS = A β.  Column j is
+    [ Stokes of a unit mass at p_j ] − [ Stokes of the same mass spread through
+    the body ] — the signature of a density CONTRAST, not of mass in vacuum.
+    """
+    return (A_stokes(positions, Lmin, Lmax, Rref)
+            - bulk.stokes(Lmin, Lmax, Rref)[:, None])
+
+
+def A_field_contrast(positions, obs, bulk):
+    """Same contrast, in the near-surface field [U; ax; ay; az]:  Δfield = A β."""
+    return A_field(positions, obs) - bulk.field(obs)[:, None]
+
+
+def stokes_total(beta, positions, bulk, Lmin, Lmax, Rref):
+    """Full Stokes vector of the truth model  β̃·CD + Σ β_j pt_j."""
+    return (bulk.stokes(Lmin, Lmax, Rref)
+            + A_stokes_contrast(positions, bulk, Lmin, Lmax, Rref) @ beta)
+
+
+def field_total(beta, positions, obs, bulk):
+    """Full near-surface field of the truth model  β̃·CD + Σ β_j pt_j."""
+    return bulk.field(obs) + A_field_contrast(positions, obs, bulk) @ beta
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # SECTION 3 — INFORMATION / COVARIANCE
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def fisher_masses(
-    A_sh, sig_sh, A_fd=None, P_ch=None, sig_fd=None, sig_M=1e-4, prior_sigma=1.0
-):
+def fisher_masses(A_sh, sig_sh, A_fd=None, P_ch=None, sig_fd=None,
+                  prior_sigma=1.0):
     """
-    Fisher information for the mascon mass-ratio vector f (M = 1 ⇒ f are ratios).
-      SH  : (A_shᵀ A_sh)/σ_sh²                     Stokes coefficients, deg 2..L
-      M   : (1 1ᵀ)/σ_M²                            known total mass  Σ f = 1
-      CH  : (A_fdᵀ P_ch A_fd)/σ_fd²                near-surface field the CH model sees
-    A weak Gaussian prior keeps everything finite; with a few well-separated
-    mascons the SH+total-mass block is already well-posed.
+    Fisher information for the anomaly mass-fraction vector β.
+      SH  : (A_shᵀ A_sh)/σ_sh²        Stokes DISCREPANCY, deg 2..L
+      CH  : (A_fdᵀ P_ch A_fd)/σ_fd²   near-surface field DISCREPANCY the CH model sees
+    Both design matrices must be the contrast ones (`A_stokes_contrast`,
+    `A_field_contrast`).  There is no total-mass block any more: the budget
+    β̃ = 1 − Σβ is enforced structurally by the parameterization, not by a
+    pseudo-observation.  A weak Gaussian prior keeps everything finite.
     """
     n = A_sh.shape[1]
     Fi = np.eye(n) / prior_sigma**2
     Fi = Fi + (A_sh.T @ A_sh) / sig_sh**2
-    Fi = Fi + np.ones((n, n)) / sig_M**2  # total-mass (GM) constraint
     if A_fd is not None:
         Fi = Fi + (A_fd.T @ (P_ch @ A_fd)) / sig_fd**2
     return Fi
@@ -278,19 +517,23 @@ def posterior_sigma(Fi):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# SECTION 4 — MASCON MODEL (few physical mascons)
+# SECTION 4 — THE ANOMALIES (contrasts on top of the constant-density bulk)
 # ═══════════════════════════════════════════════════════════════════════════
 
-# name, position [LU], truth mass ratio.  Index 0 is the near-surface anomaly
-# (the CH target); 1,2 are the two lobes carrying the bulk mass.
+# name, position [LU], truth mass fraction β_j = m_j / M*.  The bulk of the mass
+# is NOT here — it is in the constant-density polyhedron, which keeps
+# β̃ = 1 − Σβ = 0.96 of M*.  These are the departures from homogeneity:
+# β_j > 0 an over-dense concentration, β_j < 0 a mass deficit.  Index 0 is the
+# shallow anomaly (the CH target); 1 and 2 sit deep in the two lobes.
 MASCONS = [
-    ("near-surface anomaly", np.array([0.00, 0.00, 0.22]), 0.06),
-    ("+x big lobe", np.array([0.42, 0.00, 0.00]), 0.54),
-    ("-x small lobe", np.array([-0.45, 0.00, 0.00]), 0.40),
+    ("near-surface anomaly", np.array([0.00, 0.00, 0.22]), 0.03),
+    ("+x lobe excess", np.array([0.42, 0.00, 0.00]), 0.05),
+    ("-x lobe deficit", np.array([-0.45, 0.00, 0.00]), -0.04),
 ]
 
 
 def mascon_arrays():
+    """names, positions, truth mass FRACTIONS β (not ratios summing to one)."""
     names = [m[0] for m in MASCONS]
     P = np.array([m[1] for m in MASCONS])
     f = np.array([m[2] for m in MASCONS])
@@ -322,9 +565,12 @@ def stokes_power_spectrum(p, Lmax, Rref):
 
 def position_covariance(idx, P, obs, cyl, ch_modes, sig_sh, sig_fd, Lmax, Rref, P_ch):
     """
-    Linearized position covariance of mascon `idx`, with its truth mass, from
-    SH-only and SH+CH.  Position partials by central differences.  (Other mascon
-    masses / positions held fixed — the near-surface anomaly is the target.)
+    Linearized position covariance of anomaly `idx`, with its truth mass
+    fraction, from SH-only and SH+CH.  Position partials by central differences.
+    (Other masses / positions held fixed — the near-surface anomaly is the
+    target.)  The bulk term β̃·U_CD does not move with p, so it drops out of
+    ∂y/∂p entirely: only the σ's carry its (large) presence, through the
+    relative-precision rule.
     """
     _, _, f = mascon_arrays()
     p0, mass = P[idx].copy(), f[idx]
@@ -355,16 +601,18 @@ def position_covariance(idx, P, obs, cyl, ch_modes, sig_sh, sig_fd, Lmax, Rref, 
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def ch_coeff_design(P, obs, cyl, ch_modes):
+def ch_coeff_design(P, obs, cyl, ch_modes, bulk):
     """
-    Mascon-mass → CYLINDRICAL-HARMONIC coefficient design matrix.
-    For a unit mass at each mascon we evaluate its near-surface field and fit the
-    Bessel–Fourier basis Φ by least squares (exactly as the reference script fits
-    CH coefficients to the sampled field): c_j = Φ⁺ f_j.  A_ch = Φ⁺ A_field.
+    β → CYLINDRICAL-HARMONIC coefficient design matrix.
+    For each anomaly we evaluate the near-surface field of the CONTRAST (unit
+    mass at p_j minus the same mass spread through the body) and fit the
+    Bessel–Fourier basis Φ by least squares, exactly as the reference script fits
+    CH coefficients to a sampled field: A_ch = Φ⁺ A_field_contrast.  Fitting the
+    contrast is the near-surface form of ΔU: the constant-density field is known
+    from the shape and subtracted before the anomalies are estimated.
     """
     Phi = cyl_basis(cyl, obs, *ch_modes)
-    A_fd = A_field(P, obs)
-    return np.linalg.pinv(Phi) @ A_fd  # (n_ch, n_mascon)
+    return np.linalg.pinv(Phi) @ A_field_contrast(P, obs, bulk)  # (n_ch, n_anom)
 
 
 def ls_fit_once(blocks, m_true, rng):
@@ -390,22 +638,21 @@ def monte_carlo_fit(blocks, m_true, n_mc=400, seed=7):
     return np.array([ls_fit_once(blocks, m_true, rng) for _ in range(n_mc)])
 
 
-def detection_sweep(A_sh, sig_sh, A_ch, sig_ch, A_M, sig_M, f_base, mu_grid,
+def detection_sweep(A_sh, sig_sh, A_ch, sig_ch, f_base, mu_grid,
                     n_mc=250, seed=11):
     """
     Smallest detectable anomaly with vs without the cylinder.  Sweeps the true
-    anomaly mass ratio (index 0) over `mu_grid`, keeps the two lobes fixed, and
-    for each value runs the LS fit (SH-only and SH+CH) over noise.  Returns, per
-    grid value, the recovered anomaly mean and scatter for both cases.
+    shallow-anomaly fraction β_0 over `mu_grid`, keeps the two deep anomalies
+    fixed (the bulk takes up the slack, β̃ = 1 − Σβ), and for each value runs the
+    LS fit (SH-only and SH+CH) over noise.  Returns, per grid value, the
+    recovered anomaly mean and scatter for both cases.
     """
     out = {k: [] for k in ("muA", "sdA", "muB", "sdB")}
     for mu in mu_grid:
         m_true = f_base.copy()
         m_true[0] = mu
-        A = monte_carlo_fit([(A_sh, sig_sh), (A_M, sig_M)], m_true, n_mc, seed)
-        B = monte_carlo_fit(
-            [(A_sh, sig_sh), (A_ch, sig_ch), (A_M, sig_M)], m_true, n_mc, seed
-        )
+        A = monte_carlo_fit([(A_sh, sig_sh)], m_true, n_mc, seed)
+        B = monte_carlo_fit([(A_sh, sig_sh), (A_ch, sig_ch)], m_true, n_mc, seed)
         out["muA"].append(A[:, 0].mean()); out["sdA"].append(A[:, 0].std())
         out["muB"].append(B[:, 0].mean()); out["sdB"].append(B[:, 0].std())
     for k in out:
@@ -413,7 +660,7 @@ def detection_sweep(A_sh, sig_sh, A_ch, sig_ch, A_M, sig_M, f_base, mu_grid,
     out["mu_grid"] = np.asarray(mu_grid)
     # 3σ detection threshold = smallest true anomaly whose recovery exceeds 3×scatter
     def thr(mu, sd):
-        floor = np.median(sd)  # scatter is ~flat in the mass ratio (linear problem)
+        floor = np.median(sd)  # scatter is ~flat in the fraction (linear problem)
         return 3.0 * floor
     out["thr_A"] = thr(out["mu_grid"], out["sdA"])
     out["thr_B"] = thr(out["mu_grid"], out["sdB"])
@@ -426,18 +673,21 @@ def detection_sweep(A_sh, sig_sh, A_ch, sig_ch, A_M, sig_M, f_base, mu_grid,
 # (Experiment 1 — masses free, positions fixed — is the linear fit above.)
 
 
-def _pos_forward(pos0, masses, lobe_pos, Lmax, Rref, obs, pinvPhi, use_ch):
+def _pos_forward(pos0, masses, lobe_pos, Lmax, Rref, obs, pinvPhi, use_ch, bulk):
     """
-    Forward observables when ONLY the anomaly position pos0=(x,y,z) is unknown;
-    all three masses and the two lobe positions are fixed/known.
+    Forward observables when ONLY the shallow anomaly's position pos0=(x,y,z) is
+    unknown; all three mass fractions and the two deep positions are known.  The
+    model is the full field β̃·CD + Σ β_j pt_j — the bulk is an additive constant
+    here (β̃ is fixed with the masses), present so the forward model is the same
+    one the paper writes down.
     """
     positions = [pos0, lobe_pos[0], lobe_pos[1]]
-    y_sh = np.zeros(len(sh_stokes_of_point(positions[0], 2, Lmax, Rref)))
+    y_sh = bulk_fraction(masses) * bulk.stokes(2, Lmax, Rref)
     for mj, pj in zip(masses, positions):
         y_sh = y_sh + mj * sh_stokes_of_point(pj, 2, Lmax, Rref)
     blocks = [y_sh]
     if use_ch:
-        field = np.zeros(4 * len(obs))
+        field = bulk_fraction(masses) * bulk.field(obs)
         for mj, pj in zip(masses, positions):
             field = field + mj * point_mass_field(pj, obs)
         blocks.append(pinvPhi @ field)
@@ -445,21 +695,22 @@ def _pos_forward(pos0, masses, lobe_pos, Lmax, Rref, obs, pinvPhi, use_ch):
 
 
 def _pos_residual(pos0, data_blocks, sig_blocks, masses, lobe_pos, Lmax, Rref,
-                  obs, pinvPhi, use_ch):
-    model = _pos_forward(pos0, masses, lobe_pos, Lmax, Rref, obs, pinvPhi, use_ch)
+                  obs, pinvPhi, use_ch, bulk):
+    model = _pos_forward(pos0, masses, lobe_pos, Lmax, Rref, obs, pinvPhi,
+                         use_ch, bulk)
     return np.concatenate([(mo - da) / s for mo, da, s in
                            zip(model, data_blocks, sig_blocks)])
 
 
 def position_mc(
-    P, f_true, obs, cyl, ch_modes, Lmax, Rref, sig_sh, sig_ch,
-    use_ch, n_mc=150, seed=21, start_offset=0.03,
+    P, f_true, obs, cyl, ch_modes, Lmax, Rref, sig_sh, sig_ch, bulk,
+    use_ch=False, n_mc=150, seed=21, start_offset=0.03,
 ):
     """
     EXPERIMENT 2 — Monte-Carlo NONLINEAR least-squares recovery of the anomaly
-    POSITION (x, y, z) with all masses FIXED at truth.  Each draw builds noisy
-    data, starts from a guess offset by `start_offset` LU, and fits (scipy TRF).
-    Returns recovered positions (n_mc, 3).
+    POSITION (x, y, z) with all mass fractions FIXED at truth.  Each draw builds
+    noisy data, starts from a guess offset by `start_offset` LU, and fits (scipy
+    TRF).  Returns recovered positions (n_mc, 3).
     """
     Phi = cyl_basis(cyl, obs, *ch_modes)
     pinvPhi = np.linalg.pinv(Phi)
@@ -467,7 +718,7 @@ def position_mc(
     lobe_pos = [P[1], P[2]]
     pos_true = P[0].copy()
     truth_blocks = _pos_forward(pos_true, masses, lobe_pos, Lmax, Rref, obs,
-                                pinvPhi, use_ch)
+                                pinvPhi, use_ch, bulk)
     sig_blocks = [sig_sh, sig_ch][: len(truth_blocks)]
 
     rng = np.random.default_rng(seed)
@@ -479,7 +730,7 @@ def position_mc(
         sol = least_squares(
             _pos_residual, pos0, method="trf",
             args=(data, sig_blocks, masses, lobe_pos, Lmax, Rref, obs, pinvPhi,
-                  use_ch),
+                  use_ch, bulk),
             xtol=1e-12, ftol=1e-12, max_nfev=400,
         )
         out.append(sol.x)
@@ -489,7 +740,6 @@ def position_mc(
 def run_experiment(
     Lmax_sh=6,
     eps=0.02,
-    sig_M=1e-3,
     ch_modes=(8, 8),
     n_cyl_pts=200,
     n_mc=400,
@@ -499,25 +749,33 @@ def run_experiment(
 ):
     """
     `eps` is the RELATIVE measurement precision applied EQUALLY to both
-    observables: σ_SH = eps·RMS(truth Stokes), σ_field = eps·RMS(truth
-    near-surface field).  Same fractional data quality on the global SH field
-    and the local near-surface field, so the comparison reflects geometry, not
-    the (different) natural units of the two observables.
+    observables: σ_SH = eps·RMS(FULL truth Stokes), σ_field = eps·RMS(FULL truth
+    near-surface field) — "full" meaning the measured field, bulk included, since
+    that is what an instrument or an OD solution actually senses.  Same
+    fractional data quality on the global SH field and the local near-surface
+    field, so the comparison reflects geometry, not the (different) natural units
+    of the two observables.  What is FITTED is the discrepancy between that
+    measurement and the known constant-density model.
     """
     V, F, tm, Rb = load_eros()
     Rref = Rb
     zmax = V[:, 2].max()
     names, P, f_true = mascon_arrays()
+    bulk = Bulk(V, F)
+    beta_bulk = bulk_fraction(f_true)
     target = 0  # near-surface anomaly
 
     if verbose:
         print(SEP)
         print("  Interior-density recovery: SH  vs  SH+CH   (Eros, normalized units)")
         print(SEP)
-        print(f"  Brillouin R* = {Rb:.3f} LU,  z_max = {zmax:.3f} LU")
-        print("  mascons (truth mass ratios):")
+        print(f"  Brillouin R* = {Rb:.3f} LU,  z_max = {zmax:.3f} LU,  "
+              f"volume = {bulk.volume:.4f} LU³")
+        print(f"  BULK: constant-density polyhedron, β̃ = 1 − Σβ = {beta_bulk:.3f} "
+              f"of M*  (C̄20 = {bulk.stokes(2, Lmax_sh, Rref)[0]:+.4f})")
+        print("  anomalies (truth mass fractions β_j, + = excess, − = deficit):")
         for nm, p, fr in zip(names, P, f_true):
-            print(f"    {nm:22s} p={np.round(p,3)}  f={fr:.3f}  depth={zmax-p[2]:.3f}")
+            print(f"    {nm:22s} p={np.round(p,3)}  β={fr:+.3f}  depth={zmax-p[2]:.3f}")
 
     # cylinder of near-surface data over the anomaly (+z pole)
     cyl = Cylinder(center=np.array([0.0, 0.0, zmax + 0.005]), radius=0.12, height=0.40)
@@ -525,31 +783,42 @@ def run_experiment(
     obs = obs[~inside_body(tm, V, F, obs)]
     r_obs = np.linalg.norm(obs, axis=1)
 
-    A_sh = A_stokes(P, 2, Lmax_sh, Rref)
-    A_fd = A_field(P, obs)
+    # DISCREPANCY designs: every column is (point mass at p_j) − (same mass
+    # spread through the body), so β is estimated against the constant-density
+    # model rather than against vacuum.
+    A_sh = A_stokes_contrast(P, bulk, 2, Lmax_sh, Rref)
+    A_fd = A_field_contrast(P, obs, bulk)
     Phi = cyl_basis(cyl, obs, *ch_modes)
     P_ch = ch_projector(Phi)
 
-    # fair, unit-independent noise: same relative precision on both observables
-    sig_sh = eps * float(np.sqrt(np.mean((A_sh @ f_true) ** 2)))
-    sig_fd = eps * float(np.sqrt(np.mean((A_fd @ f_true) ** 2)))
-    # total mass (GM) known to a realistic fixed precision (decoupled from eps);
-    # results saturate for σ_M ≲ 1e-3, so this is the conservative regime.
+    # fair, unit-independent noise: same relative precision on both observables,
+    # referred to the FULL measured field (bulk + anomalies), not to the small
+    # discrepancy that is being estimated.
+    y_sh_tot = stokes_total(f_true, P, bulk, 2, Lmax_sh, Rref)
+    y_fd_tot = field_total(f_true, P, obs, bulk)
+    sig_sh = eps * float(np.sqrt(np.mean(y_sh_tot ** 2)))
+    sig_fd = eps * float(np.sqrt(np.mean(y_fd_tot ** 2)))
     if verbose:
         print(f"  cylinder over anomaly: {len(obs)} vacuum pts, "
               f"|r|∈[{r_obs.min():.2f},{r_obs.max():.2f}] ⊂ Brillouin {Rb:.2f}")
-        print(f"  observables: SH deg 2..{Lmax_sh} ({A_sh.shape[0]} coeffs) + total mass"
-              f" | CH modes {ch_modes} ({Phi.shape[1]} cols)")
-        print(f"  noise: relative eps={eps} → σ_SH={sig_sh:.2e}, σ_field={sig_fd:.2e}")
+        print(f"  observables: SH deg 2..{Lmax_sh} ({A_sh.shape[0]} coeffs)"
+              f" | CH modes {ch_modes} ({Phi.shape[1]} cols)"
+              f"  [no Σβ=1 row — the mass budget is structural]")
+        print(f"  noise: relative eps={eps} on the FULL field → σ_SH={sig_sh:.2e}, "
+              f"σ_field={sig_fd:.2e}")
+        print(f"  discrepancy / full field:  SH "
+              f"{np.sqrt(np.mean((A_sh @ f_true)**2)) / np.sqrt(np.mean(y_sh_tot**2)):.3f}"
+              f"   near-surface "
+              f"{np.sqrt(np.mean((A_fd @ f_true)**2)) / np.sqrt(np.mean(y_fd_tot**2)):.3f}")
 
-    # ── PART 1 — mass ratios ────────────────────────────────────────────────
-    Fi_A = fisher_masses(A_sh, sig_sh, sig_M=sig_M)
-    Fi_B = fisher_masses(A_sh, sig_sh, A_fd, P_ch, sig_fd, sig_M=sig_M)
+    # ── PART 1 — mass fractions ────────────────────────────────────────────────
+    Fi_A = fisher_masses(A_sh, sig_sh)
+    Fi_B = fisher_masses(A_sh, sig_sh, A_fd, P_ch, sig_fd)
     sdA, sdB = posterior_sigma(Fi_A), posterior_sigma(Fi_B)
     improve = sdA / sdB
     if verbose:
-        print(f"\n{'-'*70}\n  PART 1 — MASS-RATIO UNCERTAINTY (1σ on f_j)\n{'-'*70}")
-        print(f"  {'mascon':22s} {'depth':>6} {'σ_SH':>10} {'σ_SH+CH':>10} {'gain':>7}")
+        print(f"\n{'-'*70}\n  PART 1 — MASS-FRACTION UNCERTAINTY (1σ on β_j)\n{'-'*70}")
+        print(f"  {'anomaly':22s} {'depth':>6} {'σ_SH':>10} {'σ_SH+CH':>10} {'gain':>7}")
         for nm, p, a, b in zip(names, P, sdA, sdB):
             print(f"  {nm:22s} {zmax-p[2]:6.3f} {a:10.2e} {b:10.2e} {a/b:6.1f}×")
 
@@ -558,44 +827,45 @@ def run_experiment(
         target, P, obs, cyl, ch_modes, sig_sh, sig_fd, Lmax_sh, Rref, P_ch
     )
     if verbose:
-        print(f"\n{'-'*70}\n  PART 2 — POSITION OF NEAR-SURFACE ANOMALY (f={f_true[target]:.3f})\n{'-'*70}")
+        print(f"\n{'-'*70}\n  PART 2 — POSITION OF NEAR-SURFACE ANOMALY "
+              f"(β={f_true[target]:+.3f})\n{'-'*70}")
         print(f"  position 1σ RMS:  SH={posA['rms']:.3e} LU   SH+CH={posB['rms']:.3e} LU"
               f"   → {posA['rms']/posB['rms']:.0f}× tighter")
 
-    # ══ EXPERIMENT 1 — MASS RATIOS (all positions FIXED) ═══════════════════
-    # Monte-Carlo linear least squares on coefficient observables, exactly like
-    # the reference code: SH Stokes + total mass (Case A), plus fitted CH
-    # coefficients (Case B).  The three mascon positions are held at truth.
-    A_ch = ch_coeff_design(P, obs, cyl, ch_modes)
-    A_M = np.ones((1, len(P)))
-    sig_ch = eps * float(np.sqrt(np.mean((A_ch @ f_true) ** 2)))
-    blocksA = [(A_sh, sig_sh), (A_M, sig_M)]
-    blocksB = [(A_sh, sig_sh), (A_ch, sig_ch), (A_M, sig_M)]
+    # ══ EXPERIMENT 1 — MASS FRACTIONS (all positions FIXED) ════════════════
+    # Monte-Carlo linear least squares on coefficient observables: SH Stokes
+    # discrepancy (Case A), plus the fitted CH coefficients of the near-surface
+    # discrepancy (Case B).  The three anomaly positions are held at truth, and
+    # the bulk fraction β̃ = 1 − Σβ follows from the fit rather than being fitted.
+    A_ch = ch_coeff_design(P, obs, cyl, ch_modes, bulk)
+    sig_ch = eps * float(np.sqrt(np.mean((np.linalg.pinv(Phi) @ y_fd_tot) ** 2)))
+    blocksA = [(A_sh, sig_sh)]
+    blocksB = [(A_sh, sig_sh), (A_ch, sig_ch)]
     mcA = monte_carlo_fit(blocksA, f_true, n_mc=n_mc)
     mcB = monte_carlo_fit(blocksB, f_true, n_mc=n_mc)
     fitA = dict(mean=mcA.mean(0), std=mcA.std(0), samples=mcA,
-                Mtot_mean=mcA.sum(1).mean(), Mtot_std=mcA.sum(1).std())
+                bulk_mean=(1.0 - mcA.sum(1)).mean(), bulk_std=(1.0 - mcA.sum(1)).std())
     fitB = dict(mean=mcB.mean(0), std=mcB.std(0), samples=mcB,
-                Mtot_mean=mcB.sum(1).mean(), Mtot_std=mcB.sum(1).std())
+                bulk_mean=(1.0 - mcB.sum(1)).mean(), bulk_std=(1.0 - mcB.sum(1)).std())
     if verbose:
-        print(f"\n{'='*70}\n  EXPERIMENT 1 — MASS RATIOS, positions FIXED "
+        print(f"\n{'='*70}\n  EXPERIMENT 1 — MASS FRACTIONS, positions FIXED "
               f"({n_mc} draws)\n{'='*70}")
         print(f"  {'quantity':22s} {'truth':>8} | {'SH: mean±std':>20} {'err%':>6}"
               f" | {'SH+CH: mean±std':>20} {'err%':>6}")
         for k, nm in enumerate(names):
             ta = f"{fitA['mean'][k]:+.4f}±{fitA['std'][k]:.4f}"
             tb = f"{fitB['mean'][k]:+.4f}±{fitB['std'][k]:.4f}"
-            ea = 100 * abs(fitA['mean'][k] - f_true[k]) / f_true[k]
-            eb = 100 * abs(fitB['mean'][k] - f_true[k]) / f_true[k]
-            print(f"  {nm:22s} {f_true[k]:8.3f} | {ta:>20} {ea:5.1f}% | {tb:>20} {eb:5.1f}%")
-        ta = f"{fitA['Mtot_mean']:+.4f}±{fitA['Mtot_std']:.4f}"
-        tb = f"{fitB['Mtot_mean']:+.4f}±{fitB['Mtot_std']:.4f}"
-        print(f"  {'TOTAL MASS':22s} {f_true.sum():8.3f} | {ta:>20} {'':5} | {tb:>20}")
+            ea = 100 * abs(fitA['mean'][k] - f_true[k]) / abs(f_true[k])
+            eb = 100 * abs(fitB['mean'][k] - f_true[k]) / abs(f_true[k])
+            print(f"  {nm:22s} {f_true[k]:+8.3f} | {ta:>20} {ea:5.1f}% | {tb:>20} {eb:5.1f}%")
+        ta = f"{fitA['bulk_mean']:+.4f}±{fitA['bulk_std']:.4f}"
+        tb = f"{fitB['bulk_mean']:+.4f}±{fitB['bulk_std']:.4f}"
+        print(f"  {'BULK β̃ = 1 − Σβ':21s} {beta_bulk:+8.3f} | {ta:>20} {'':5} | {tb:>20}")
 
     # smallest detectable anomaly (part of Experiment 1: positions fixed)
     f_base = f_true.copy()
-    mu_grid = np.logspace(-4.5, -0.7, 16)  # true anomaly mass ratio sweep
-    det = detection_sweep(A_sh, sig_sh, A_ch, sig_ch, A_M, sig_M, f_base, mu_grid,
+    mu_grid = np.logspace(-4.5, -0.7, 16)  # true anomaly mass-fraction sweep
+    det = detection_sweep(A_sh, sig_sh, A_ch, sig_ch, f_base, mu_grid,
                           n_mc=max(150, n_mc // 2))
     if verbose:
         print(f"\n  smallest detectable anomaly (3σ fit scatter):")
@@ -605,14 +875,14 @@ def run_experiment(
 
     # ══ EXPERIMENT 2 — ANOMALY POSITION (all masses FIXED) ═════════════════
     # Monte-Carlo NONLINEAR least squares for the anomaly's (x,y,z); the three
-    # mass ratios are held at truth.  Nothing is estimated jointly with mass.
+    # mass fractions are held at truth.  Nothing is estimated jointly with mass.
     if verbose:
         print(f"\n{'='*70}\n  EXPERIMENT 2 — ANOMALY POSITION, masses FIXED "
               f"({n_mc_nl} draws)\n{'='*70}")
     posA_nl = position_mc(P, f_true, obs, cyl, ch_modes, Lmax_sh, Rref,
-                          sig_sh, sig_ch, use_ch=False, n_mc=n_mc_nl)
+                          sig_sh, sig_ch, bulk, use_ch=False, n_mc=n_mc_nl)
     posB_nl = position_mc(P, f_true, obs, cyl, ch_modes, Lmax_sh, Rref,
-                          sig_sh, sig_ch, use_ch=True, n_mc=n_mc_nl)
+                          sig_sh, sig_ch, bulk, use_ch=True, n_mc=n_mc_nl)
     pos_rmsA = float(np.sqrt(np.mean(np.sum((posA_nl - P[target]) ** 2, axis=1))))
     pos_rmsB = float(np.sqrt(np.mean(np.sum((posB_nl - P[target]) ** 2, axis=1))))
     nl = dict(nlA=posA_nl, nlB=posB_nl, pos_rmsA=pos_rmsA, pos_rmsB=pos_rmsB)
@@ -629,7 +899,8 @@ def run_experiment(
 
     res = dict(
         V=V, F=F, Rb=Rb, zmax=zmax, cyl=cyl, obs=obs, P=P, names=names,
-        f_true=f_true, target=target, sdA=sdA, sdB=sdB, improve=improve,
+        f_true=f_true, bulk=bulk, beta_bulk=beta_bulk,
+        target=target, sdA=sdA, sdB=sdB, improve=improve,
         posA=posA, posB=posB, spec_shallow=spec_shallow, spec_lobe=spec_lobe,
         fitA=fitA, fitB=fitB, det=det, nl=nl,
         Lmax_sh=Lmax_sh, ch_modes=ch_modes, sig_sh=sig_sh, sig_fd=sig_fd,
@@ -674,7 +945,7 @@ def make_plots(res, outdir="Images"):
     cyl, obs, names = res["cyl"], res["obs"], res["names"]
     tgt = res["target"]
 
-    # ---- FIG 1: geometry + Stokes spectrum + mass-ratio bars ----------------
+    # ---- FIG 1: geometry + Stokes spectrum + mass-fraction bars ----------------
     fig = plt.figure(figsize=(18, 5.4))
 
     ax = fig.add_subplot(1, 3, 1, projection="3d")
@@ -689,7 +960,8 @@ def make_plots(res, outdir="Images"):
         sz = 240 if i == tgt else 120
         ax.scatter(*p, c="k", s=sz, marker=mk)
         ax.text(p[0], p[1], p[2], "  " + nm.split()[0], fontsize=8)
-    ax.set_title("Eros interior model:\ntwo lobes + a near-surface anomaly")
+    ax.set_title(f"Eros interior model: constant-density bulk\n"
+                 f"(β̃ = {res['beta_bulk']:.2f}) + {len(P)} anomalies")
     ax.set_xlabel("x [LU]"); ax.set_ylabel("y [LU]"); ax.set_zlabel("z [LU]")
     try:
         ax.set_box_aspect([1, 1, 1])
@@ -699,11 +971,12 @@ def make_plots(res, outdir="Images"):
 
     ax = fig.add_subplot(1, 3, 2)
     degs = np.arange(len(res["spec_shallow"]))
-    ax.semilogy(degs, res["spec_shallow"], "-o", color=COLOR[0], label="near-surface anomaly")
-    ax.semilogy(degs, res["spec_lobe"], "-s", color=COLOR[2], label="deep lobe")
+    ax.semilogy(degs, res["spec_shallow"], "-o", color=COLOR[0],
+                label=names[res["target"]])
+    ax.semilogy(degs, res["spec_lobe"], "-s", color=COLOR[2], label=names[1])
     ax.axvspan(2, res["Lmax_sh"], color="0.85", label=f"observed SH (≤{res['Lmax_sh']})")
     ax.set_xlabel("SH degree n"); ax.set_ylabel("Stokes signature (RMS per degree)")
-    ax.set_title("Where each mascon's signature lives")
+    ax.set_title("Where each anomaly's signature lives")
     ax.grid(True, which="both", alpha=0.3); ax.legend(fontsize=9)
 
     ax = fig.add_subplot(1, 3, 3)
@@ -713,8 +986,8 @@ def make_plots(res, outdir="Images"):
     ax.set_yscale("log")
     ax.set_xticks(xpos)
     ax.set_xticklabels([n.replace(" ", "\n", 1) for n in names], fontsize=8)
-    ax.set_ylabel(r"mass-ratio 1σ uncertainty  $\sigma_{f}$")
-    ax.set_title("Mass-ratio recovery")
+    ax.set_ylabel(r"mass-fraction 1σ uncertainty  $\sigma_{\beta}$")
+    ax.set_title("Mass-fraction recovery")
     for i in range(len(names)):
         ax.text(i, res["sdB"][i], f"{res['improve'][i]:.0f}×", ha="center",
                 va="bottom", fontsize=9, fontweight="bold")
@@ -772,22 +1045,22 @@ def make_plots(res, outdir="Images"):
     fig.savefig(os.path.join(outdir, "global_fig2_position.png"),
                 dpi=180, bbox_inches="tight")
 
-    # ---- FIG 3: EXPERIMENT 1 — mass-ratio fit + detection --------------------
+    # ---- FIG 3: EXPERIMENT 1 — mass-fraction fit + detection --------------------
     fitA, fitB, det = res["fitA"], res["fitB"], res["det"]
     ft = res["f_true"]
     fig, axes = plt.subplots(1, 3, figsize=(19, 5.4))
-    fig.suptitle("EXPERIMENT 1 — mass ratios, positions fixed "
+    fig.suptitle("EXPERIMENT 1 — mass fractions, positions fixed "
                  f"({len(fitA['samples'])} MC draws)", fontweight="bold", y=1.02)
 
     # (a) actual-fit recovery ERROR (RMS = bias⊕scatter) per quantity, log scale
     ax = axes[0]
-    labels = [n.replace(" ", "\n", 1) for n in names] + ["TOTAL\nmass"]
+    labels = [n.replace(" ", "\n", 1) for n in names] + ["BULK\n$\\tilde\\beta$"]
     xpos = np.arange(len(labels))
-    truth = np.concatenate([ft, [ft.sum()]])
-    meanA = np.concatenate([fitA["mean"], [fitA["Mtot_mean"]]])
-    stdA = np.concatenate([fitA["std"], [fitA["Mtot_std"]]])
-    meanB = np.concatenate([fitB["mean"], [fitB["Mtot_mean"]]])
-    stdB = np.concatenate([fitB["std"], [fitB["Mtot_std"]]])
+    truth = np.concatenate([ft, [res["beta_bulk"]]])
+    meanA = np.concatenate([fitA["mean"], [fitA["bulk_mean"]]])
+    stdA = np.concatenate([fitA["std"], [fitA["bulk_std"]]])
+    meanB = np.concatenate([fitB["mean"], [fitB["bulk_mean"]]])
+    stdB = np.concatenate([fitB["std"], [fitB["bulk_std"]]])
     # RMS error about truth = sqrt(bias^2 + scatter^2)
     rmsA = np.sqrt((meanA - truth) ** 2 + stdA**2)
     rmsB = np.sqrt((meanB - truth) ** 2 + stdB**2)
@@ -799,11 +1072,11 @@ def make_plots(res, outdir="Images"):
         ax.text(i + w / 2, rmsB[i], f"{rmsA[i]/rmsB[i]:.0f}×", ha="center",
                 va="bottom", fontsize=9, fontweight="bold")
     ax.set_xticks(xpos); ax.set_xticklabels(labels, fontsize=9)
-    ax.set_ylabel("mass-ratio recovery RMS error")
+    ax.set_ylabel("mass-fraction recovery RMS error")
     ax.set_title("Recovery error (bias ⊕ MC scatter)")
     ax.grid(True, axis="y", which="both", alpha=0.3); ax.legend(fontsize=10)
 
-    # (b) the MC DISTRIBUTION of the recovered ANOMALY mass ratio (zoomed)
+    # (b) the MC DISTRIBUTION of the recovered ANOMALY mass fraction (zoomed)
     ax = axes[1]
     sA, sB = fitA["samples"][:, 0], fitB["samples"][:, 0]  # anomaly (index 0)
     lo, hi = ft[0] - 5 * sA.std(), ft[0] + 5 * sA.std()
@@ -813,9 +1086,9 @@ def make_plots(res, outdir="Images"):
             label=f"SH + CH (σ={sB.std():.1e})")
     ax.axvline(ft[0], color="k", ls="--", lw=2, label="truth")
     ax.set_xlim(lo, hi)
-    ax.set_xlabel(r"recovered anomaly mass ratio $\hat f_0$")
+    ax.set_xlabel(r"recovered anomaly mass fraction $\hat\beta_0$")
     ax.set_ylabel("MC count")
-    ax.set_title(f"Anomaly mass-ratio MC distribution\n({sA.std()/sB.std():.0f}× narrower "
+    ax.set_title(f"Anomaly mass-fraction MC distribution\n({sA.std()/sB.std():.0f}× narrower "
                  f"with CH; lobes & total unchanged)")
     ax.legend(fontsize=9, loc="upper right")
 
@@ -832,7 +1105,7 @@ def make_plots(res, outdir="Images"):
     ax.axhline(det["thr_B"], color=COLOR[0], ls=":", lw=1.5,
                label=f"SH+CH 3σ floor = {det['thr_B']:.1e}")
     ax.set_xscale("log"); ax.set_yscale("log")
-    ax.set_xlabel("true anomaly mass ratio  $\\mu$")
+    ax.set_xlabel(r"true anomaly mass fraction  $\beta_0$")
     ax.set_ylabel(r"recovered anomaly  $|\hat\mu|$")
     ax.set_title(f"Smallest detectable anomaly "
                  f"({det['thr_A']/det['thr_B']:.0f}× smaller with CH)")
@@ -908,7 +1181,6 @@ if __name__ == "__main__":
     res = run_experiment(
         Lmax_sh=6,        # observable spherical-harmonic degree (tracking limit)
         eps=0.02,         # relative measurement precision (same on SH & field)
-        sig_M=1e-3,       # total-mass (GM) precision (realistic; result saturates)
         ch_modes=(8, 8),  # (n_m, n_n) cylindrical-harmonic truncation
         n_cyl_pts=200,
         n_mc=400,         # noise draws for the linear mass fit

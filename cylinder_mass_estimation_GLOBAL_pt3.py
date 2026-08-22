@@ -36,17 +36,28 @@ interior, using pt2's estimation machinery:
     SH-SIG    max sigma_g(r)                  uses: geometry + P_SH
     FISHER    max det(DeltaF(s))              uses: geometry + both basis sets
 
+INTERIOR MODEL (as in pt1/pt2)
+------------------------------
+The mass is in the CONSTANT-DENSITY POLYHEDRON scaled by beta_tilde = 1 - sum
+beta; the mascons are the localized departures from homogeneity, beta_j = m_j/M*,
+positive for an excess and negative for a deficit.  Everything estimated is a
+contrast against that constant-density model, and there is no sum-beta = 1
+pseudo-observation.  This matters most for criterion (1): with the bulk in the
+truth field, eps(r) = |g_truth - g_SH,L| is the truncation error of the SHAPE
+with the anomalies as a small perturbation on top — so it is even less of an
+interior map than it was before.
+
 FAIRNESS (this is the whole experiment — read this)
 ---------------------------------------------------
-pt2 put a mascon under every farthest-point cylinder, which would rig this race.
-Here the truth mascons are drawn at RANDOM inside the body (rejection sampling,
-fixed seed), independent of every strategy, deliberately including deep ones and
-shallow ones under the long-axis tips where no cylinder is allowed to go.  All
-four strategies choose from one common candidate pool and are subject to the
-same minimum-separation constraint, so only the SCORE differs.
+pt2 put an anomaly under every farthest-point cylinder, which would rig this
+race.  Here the truth anomalies are drawn at RANDOM inside the body (rejection
+sampling, fixed seed), independent of every strategy, deliberately including deep
+ones and shallow ones under the long-axis tips where no cylinder is allowed to
+go.  All four strategies choose from one common candidate pool and are subject to
+the same minimum-separation constraint, so only the SCORE differs.
 
-Metrics: per-mascon mass-ratio sigma_f, its geometric mean, and the WORST-CASE
-sigma_f over mascons (the coverage question), plus nonlinear position recovery.
+Metrics: per-anomaly mass-fraction sigma_beta, its geometric mean, and the
+WORST-CASE sigma_beta (the coverage question), plus nonlinear position recovery.
 The whole race is then repeated over several independent random interiors,
 because a single draw cannot rank placement rules.
 
@@ -61,19 +72,31 @@ WHAT COMES OUT (Eros, L=6, 6 cylinders, 5 mascons)
    directional information.  It only becomes a map once P_SH has real structure
    (here: a Fisher inverse with a tracking coverage gap), and even then the
    radial trend has to be removed before the gap is what gets selected.
-3. On any ONE interior some criterion usually beats farthest-point (here FISHER,
-   1.38× on worst-case sigma_f).  Averaged over 8 independent interiors, none of
-   them does — every ratio straddles 1 and the ranking flips between draws.
-   Even spacing is the optimal hedge when the mascons are unknown.
-=> Farthest-point sampling stands.  The adaptive ideas are worth one sentence,
-   which the script prints at the end, and not a second optimizer.
+3. The raw SH-error criterion DOES beat farthest-point, and the win survives
+   averaging: 7/8 independent interiors, median 1.56x on worst-case sigma_beta
+   (FISHER close behind, 1.50x, 7/8).  The detrended criteria, which throw the
+   radial signal away, do not.
+4. But that win is not adaptivity.  With the constant-density bulk in the truth
+   field, eps(r) is dominated by the SHAPE's degree>L truncation error — the
+   Spearman correlation between the bulk-only and full eps maps is 0.98 — so the
+   selected network barely moves between interiors (the script prints the
+   fraction of shared sites).  What the criterion really says is "go to the
+   lowest points, where the degree-L model is worst": a better GEOMETRIC rule,
+   precomputable from the shape and the truncation degree with no interior
+   knowledge at all.
+=> Report it as an SH-truncation-error placement map, with farthest-point as the
+   safe interior-agnostic default.  The script prints whichever verdict the
+   numbers support, and the sentence to go with it.
+   (Historical note: with the older mascons-in-vacuum truth — no bulk — eps(r)
+   was an interior artefact and NOTHING beat farthest-point.  The parameterization
+   is what changed the answer, which is itself worth knowing.)
 
-Everything heavy (Legendre, Stokes design, Bessel basis, fits) is reused from
-`cylinder_mass_estimation_GLOBAL` (as G) and `..._GLOBAL_pt2` (as P2); this file
-adds only the SH field synthesis (needed for the error/uncertainty maps) and the
-placement criteria.
+Everything heavy (Legendre, Stokes design, Bessel basis, the constant-density
+bulk, fits) is reused from `cylinder_mass_estimation_GLOBAL` (as G) and
+`..._GLOBAL_pt2` (as P2); this file adds only the SH field synthesis (needed for
+the error/uncertainty maps) and the placement criteria.
 
-Units: Eros normalized (LU), total mass M = 1, G = 1.
+Units: Eros normalized (LU), total mass M* = 1, G = 1.
 """
 
 from __future__ import annotations
@@ -181,13 +204,25 @@ def sh_meas_basis(pts, Lmin, Lmax, Rref):
     return np.vstack([B, dB[:, 0, :], dB[:, 1, :], dB[:, 2, :]])
 
 
-def stokes_vector(P, f, Lmin, Lmax, Rref):
-    """Stokes coefficients of the mascon set (the 'estimated' SH model)."""
-    return G.A_stokes(P, Lmin, Lmax, Rref) @ f
+def stokes_vector(P, f, Lmin, Lmax, Rref, bulk=None):
+    """
+    Stokes coefficients of the interior model (the 'estimated' SH field).
+    With `bulk` this is the full β̃·CD + Σ β_j pt_j; bulk=None degenerates to
+    mascons in vacuum, which is only used by the self-test.
+    """
+    if bulk is None:
+        return G.A_stokes(P, Lmin, Lmax, Rref) @ f
+    return G.stokes_total(f, P, bulk, Lmin, Lmax, Rref)
 
 
-def truth_field(pts, P, f):
-    """Exact mascon potential and acceleration at pts → (U (N,), g (N,3))."""
+def truth_field(pts, P, f, bulk=None):
+    """
+    Exact potential and acceleration of the interior model at pts → (U, g).
+    With `bulk`, the constant-density polyhedron scaled by β̃ = 1 − Σβ is
+    included — and it DOMINATES: the anomalies perturb it by a few per cent.
+    That matters here, because eps = |g_truth − g_SH,L| then maps the SH
+    truncation error of the SHAPE, not of a mascon cloud in vacuum.
+    """
     pts = np.atleast_2d(np.asarray(pts, float))
     n = len(pts)
     U = np.zeros(n)
@@ -196,6 +231,10 @@ def truth_field(pts, P, f):
         pm = m_j * G.point_mass_field(p_j, pts)
         U += pm[:n]
         g += pm[n:].reshape(3, n).T
+    if bulk is not None:
+        fb = G.bulk_fraction(f) * bulk.field(pts)
+        U += fb[:n]
+        g += fb[n:].reshape(3, n).T
     return U, g
 
 
@@ -204,15 +243,20 @@ def truth_field(pts, P, f):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def map_sh_error(pts, P, f, Lmax, Rref):
+def map_sh_error(pts, P, f, Lmax, Rref, bulk=None):
     """
     IDEA 1a — SH MODEL ERROR.  eps(r) = |g_truth(r) - g_SH,L(r)| : where the
     degree-L expansion fails to represent the real field.  In a mission this is
     fed by crossover / tracking residuals instead of a simulated truth.
+
+    With the bulk included, both sides carry it — the truth exactly, the model
+    through the bulk's own Stokes coefficients — so what is left is the genuine
+    degree > L truncation error, which for a shape like Eros is mostly the
+    SHAPE's, with the anomalies as a small perturbation on top.
     """
-    c = stokes_vector(P, f, 0, Lmax, Rref)
+    c = stokes_vector(P, f, 0, Lmax, Rref, bulk=bulk)
     g_sh = sh_grad_basis(pts, 0, Lmax, Rref) @ c
-    _, g_true = truth_field(pts, P, f)
+    _, g_true = truth_field(pts, P, f, bulk=bulk)
     return np.linalg.norm(g_true - g_sh, axis=1)
 
 
@@ -409,11 +453,13 @@ def network_at(sites, tm, V, F, n_pts=180, seed=2):
 def place_mascons_random(V, tm, n_shallow=4, n_deep=1, seed=5, min_sep=0.20,
                          shallow_max=0.09, deep_min=0.17, n_try=6000):
     """
-    Rejection-sample mascons uniformly inside the body: `n_shallow` shallow ones
-    (depth < shallow_max, anywhere on the body — including under the long-axis
-    tips, where the candidate pool has no site) and `n_deep` deep ones (the case
-    no near-surface patch can see).  Mass ratios uniform(0.6,1.4), normalized.
-    Depth = distance to the nearest surface vertex.
+    Rejection-sample ANOMALIES uniformly inside the body: `n_shallow` shallow
+    ones (depth < shallow_max, anywhere on the body — including under the
+    long-axis tips, where the candidate pool has no site) and `n_deep` deep ones
+    (the case no near-surface patch can see).  Truth mass fractions
+    β_j = m_j/M* are a few per cent with mixed signs (over- and under-dense);
+    they do NOT sum to one — the remaining β̃ = 1 − Σβ stays in the
+    constant-density polyhedron.  Depth = distance to the nearest surface vertex.
     """
     rng = np.random.default_rng(seed)
     lo, hi = V.min(0), V.max(0)
@@ -436,8 +482,7 @@ def place_mascons_random(V, tm, n_shallow=4, n_deep=1, seed=5, min_sep=0.20,
     dep = cKDTree(V).query(P)[0]
     order = np.argsort(dep)                       # shallowest first
     P, dep = P[order], dep[order]
-    f = rng.uniform(0.6, 1.4, len(P))
-    f = f / f.sum()
+    f = rng.uniform(0.015, 0.05, len(P)) * rng.choice([-1.0, 1.0], len(P))
     names = [f"m{i} (d={d:.2f})" for i, d in enumerate(dep)]
     return names, P, f, dep
 
@@ -447,7 +492,7 @@ def place_mascons_random(V, tm, n_shallow=4, n_deep=1, seed=5, min_sep=0.20,
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def run(Lmax_sh=6, eps=0.02, sig_M=1e-3, ch_modes=(6, 6), n_cyl=6, n_cand=140,
+def run(Lmax_sh=6, eps=0.02, ch_modes=(6, 6), n_cyl=6, n_cand=140,
         n_pts=180, n_mc=300, n_mc_pos=30, kaula_K=1e-2, gap_lon=(40.0, 150.0),
         do_position=True, n_sweep=8, outdir="Images", verbose=True):
     t0 = time.time()
@@ -455,7 +500,10 @@ def run(Lmax_sh=6, eps=0.02, sig_M=1e-3, ch_modes=(6, 6), n_cyl=6, n_cand=140,
     Rref = Rb
 
     # ── truth interior — independent of every placement strategy ────────────
+    #    (anomalies on top of the constant-density bulk, which keeps β̃ = 1 − Σβ)
     names, P, f_true, depth = place_mascons_random(V, tm)
+    bulk = G.Bulk(V, F)
+    beta_bulk = G.bulk_fraction(f_true)
     n_m = len(P)
 
     # ── common candidate pool ───────────────────────────────────────────────
@@ -468,16 +516,17 @@ def run(Lmax_sh=6, eps=0.02, sig_M=1e-3, ch_modes=(6, 6), n_cyl=6, n_cand=140,
         print(SEP)
         print(f"  Brillouin R* = {Rb:.3f} LU | candidate sites {len(cand)}/{n_cand} "
               f"({n_cand-len(cand)} dropped as too buried) | {n_cyl} cylinders "
-              f"| {n_m} mascons")
+              f"| {n_m} anomalies")
+        print(f"  BULK: constant-density polyhedron, β̃ = 1 − Σβ = {beta_bulk:.3f} of M*")
         for nm, p, fr in zip(names, P, f_true):
-            print(f"    {nm:14s} p={np.round(p,3)}  f={fr:.3f}  "
+            print(f"    {nm:14s} p={np.round(p,3)}  β={fr:+.3f}  "
                   f"|r|={np.linalg.norm(p):.2f}")
 
     # ── the criterion maps, on the candidate pool ───────────────────────────
     P_kaula = kaula_covariance(Lmax_sh, K=kaula_K)
     P_track, obs_track = tracking_covariance(Lmax_sh, Rref, gap_lon=gap_lon,
                                              K=kaula_K)
-    err_raw = map_sh_error(lift, P, f_true, Lmax_sh, Rref)
+    err_raw = map_sh_error(lift, P, f_true, Lmax_sh, Rref, bulk=bulk)
     err_det = detrend_radial(err_raw, lift)
     sig_kau = map_sh_sigma(lift, Lmax_sh, Rref, P_kaula)   # diagnostic (radial)
     sig_trk = map_sh_sigma(lift, Lmax_sh, Rref, P_track)
@@ -543,16 +592,18 @@ def run(Lmax_sh=6, eps=0.02, sig_M=1e-3, ch_modes=(6, 6), n_cyl=6, n_cand=140,
             print(f"    {k:16s} sites {np.sort(i)}  ({same}/{n_cyl} shared with FPS, "
                   f"mean NN spacing {np.mean(d):.3f} LU)")
 
-    # ── observables (pt1/pt2 rule: equal RELATIVE precision eps) ─────────────
-    A_sh = G.A_stokes(P, 2, Lmax_sh, Rref)
-    A_M = np.ones((1, n_m))
-    sig_sh = eps * float(np.sqrt(np.mean((A_sh @ f_true) ** 2)))
-    base = [(A_sh, sig_sh), (A_M, sig_M)]
+    # ── observables (pt1/pt2 rule: equal RELATIVE precision eps on the FULL
+    #    measured field; every design matrix is a contrast against the bulk, and
+    #    there is no Σβ = 1 row — the mass budget is structural) ──────────────
+    A_sh = G.A_stokes_contrast(P, bulk, 2, Lmax_sh, Rref)
+    sig_sh = eps * float(np.sqrt(np.mean(
+        G.stokes_total(f_true, P, bulk, 2, Lmax_sh, Rref) ** 2)))
+    base = [(A_sh, sig_sh)]
 
     cases = {"SH only": base}
     sig_ch = {}
     for k, net in nets.items():
-        blocks = P2.ch_blocks_for(P, net, ch_modes, eps, f_true)
+        blocks = P2.ch_blocks_for(P, net, ch_modes, eps, f_true, bulk)
         sig_ch[k] = [s for _, s in blocks]
         cases[k] = base + blocks
 
@@ -560,9 +611,9 @@ def run(Lmax_sh=6, eps=0.02, sig_M=1e-3, ch_modes=(6, 6), n_cyl=6, n_cand=140,
     sig_by_case = {k: G.monte_carlo_fit(b, f_true, n_mc=n_mc).std(0)
                    for k, b in cases.items()}
     if verbose:
-        print(f"\n{'-'*78}\n  A) MASS-RATIO sigma_f  ({n_mc} MC least-squares fits)"
-              f"\n{'-'*78}")
-        print(f"  {'mascon':14s} " + " ".join(f"{k:>16s}" for k in cases))
+        print(f"\n{'-'*78}\n  A) MASS-FRACTION sigma_beta  ({n_mc} MC least-squares "
+              f"fits)\n{'-'*78}")
+        print(f"  {'anomaly':14s} " + " ".join(f"{k:>16s}" for k in cases))
         for i, nm in enumerate(names):
             print(f"  {nm:14s} " + " ".join(f"{sig_by_case[k][i]:16.2e}" for k in cases))
         print(f"  {'-'*76}")
@@ -586,12 +637,12 @@ def run(Lmax_sh=6, eps=0.02, sig_M=1e-3, ch_modes=(6, 6), n_cyl=6, n_cand=140,
             rms = np.zeros(n_m)
             for j in range(n_m):
                 cloud = P2.position_mc_net(j, P, f_true, net, ch_modes, Lmax_sh,
-                                           Rref, sig_sh, sig_list, use_net=use,
+                                           Rref, sig_sh, sig_list, use, bulk,
                                            bounds=pos_bounds, n_mc=n_mc_pos)
                 rms[j] = np.sqrt(np.mean(np.sum((cloud - P[j]) ** 2, axis=1)))
             pos_rms[k] = rms
         if verbose:
-            print(f"  {'mascon':14s} " + " ".join(f"{k:>16s}" for k in cases))
+            print(f"  {'anomaly':14s} " + " ".join(f"{k:>16s}" for k in cases))
             for i, nm in enumerate(names):
                 print(f"  {nm:14s} " + " ".join(f"{pos_rms[k][i]:16.2e}" for k in cases))
             print(f"  {'-'*76}")
@@ -600,81 +651,101 @@ def run(Lmax_sh=6, eps=0.02, sig_M=1e-3, ch_modes=(6, 6), n_cyl=6, n_cand=140,
 
     res = dict(V=V, F=F, tm=tm, Rb=Rb, surf=surf, cand=cand, lift=lift, picks=picks,
                nets=nets, names=names, P=P, f_true=f_true, depth=depth,
+               bulk=bulk, beta_bulk=beta_bulk,
                err_raw=err_raw, err_det=err_det, sig_kau=sig_kau,
                sig_trk=sig_trk, sig_det=sig_det, obs_track=obs_track,
                gap_lon=gap_lon, sc_fis=sc_fis, sc_tr=sc_tr,
                cases=list(cases.keys()), sig_by_case=sig_by_case,
                pos_rms=pos_rms, n_cyl=n_cyl, min_sep=min_sep, Lmax_sh=Lmax_sh)
-    sweep = None
+    sweep, stab = None, None
     if n_sweep > 1:
-        sweep = robustness_sweep(res, eps=eps, sig_M=sig_M, ch_modes=ch_modes,
-                                 Lmax_sh=Lmax_sh, n_pts=n_pts, n_mc=n_mc,
-                                 seeds=tuple(21 + i for i in range(n_sweep)),
-                                 verbose=verbose)
-        res["sweep"] = sweep
+        sweep, stab = robustness_sweep(res, eps=eps, ch_modes=ch_modes,
+                                       Lmax_sh=Lmax_sh, n_pts=n_pts, n_mc=n_mc,
+                                       seeds=tuple(21 + i for i in range(n_sweep)),
+                                       verbose=verbose)
+        res["sweep"], res["stability"] = sweep, stab
     make_plots(res, outdir=outdir)
     if verbose:
-        verdict(res, sweep=sweep)
+        verdict(res, sweep=sweep, stability=stab)
         print(f"\n  [{time.time()-t0:.1f} s]")
     return res
 
 
-def robustness_sweep(res, eps=0.02, sig_M=1e-3, ch_modes=(6, 6), Lmax_sh=6,
+def robustness_sweep(res, eps=0.02, ch_modes=(6, 6), Lmax_sh=6,
                      n_pts=180, n_mc=300, seeds=(21, 22, 23, 24, 25, 26, 27, 28),
                      verbose=True):
     """
-    Repeat the mass-ratio race over several INDEPENDENT random interiors.
+    Repeat the mass-fraction race over several INDEPENDENT random interiors.
 
     A single draw cannot settle "is adaptive placement worth it?" — the winner
-    could be an accident of where the mascons happened to land.  Only the two
+    could be an accident of where the anomalies happened to land.  Only the two
     eps-based criteria depend on the interior, so the candidate pool, the Fisher
     scan, the sigma_g map and their three networks are computed once and reused;
-    per seed only the eps maps, their networks and the fits are redone.
-    Returns {strategy: array of worst-case sigma_f ratios vs FPS}.
+    per seed only the eps maps, their networks and the fits are redone.  (With
+    the constant-density bulk in the truth field, even those two barely move: the
+    SH truncation error is now dominated by the SHAPE, and the anomalies only
+    perturb it — one more reason not to expect an interior-adaptive win.)
+    Returns {strategy: array of worst-case sigma_beta ratios vs FPS}.
     """
     V, F, tm, Rb = res["V"], res["F"], res["tm"], res["Rb"]
+    bulk = res["bulk"]
     cand, lift, n_cyl, min_sep = res["cand"], res["lift"], res["n_cyl"], res["min_sep"]
     fixed = {k: res["picks"][k] for k in
              ("FPS (geometry)", "SH-SIG detrend", "FISHER logdet")}
     fixed_nets = {k: res["nets"][k] for k in fixed}
     ratios = {k: [] for k in res["cases"]}
+    sites = {"SH-ERR raw": [], "SH-ERR detrend": []}   # do the picks even move?
     if verbose:
         print(f"\n{SEP}\n  ROBUSTNESS — {len(seeds)} independent random interiors\n{SEP}")
     for sd in seeds:
         _, P, f_true, _ = place_mascons_random(V, tm, seed=sd)
-        err_raw = map_sh_error(lift, P, f_true, Lmax_sh, Rb)
+        err_raw = map_sh_error(lift, P, f_true, Lmax_sh, Rb, bulk=bulk)
         nets = dict(fixed_nets)
         for key, score in (("SH-ERR raw", err_raw),
                            ("SH-ERR detrend", detrend_radial(err_raw, lift))):
             idx = greedy_by_score(cand, score, n_cyl, min_sep)
+            sites[key].append(set(idx.tolist()))
             nets[key] = network_at(cand[idx], tm, V, F, n_pts=n_pts)
-        A_sh = G.A_stokes(P, 2, Lmax_sh, Rb)
-        sig_sh = eps * float(np.sqrt(np.mean((A_sh @ f_true) ** 2)))
-        base = [(A_sh, sig_sh), (np.ones((1, len(P))), sig_M)]
+        A_sh = G.A_stokes_contrast(P, bulk, 2, Lmax_sh, Rb)
+        sig_sh = eps * float(np.sqrt(np.mean(
+            G.stokes_total(f_true, P, bulk, 2, Lmax_sh, Rb) ** 2)))
+        base = [(A_sh, sig_sh)]
         wc = {}
         for k in ratios:
             blocks = base if k == "SH only" else \
-                base + P2.ch_blocks_for(P, nets[k], ch_modes, eps, f_true)
+                base + P2.ch_blocks_for(P, nets[k], ch_modes, eps, f_true, bulk)
             wc[k] = G.monte_carlo_fit(blocks, f_true, n_mc=n_mc).std(0).max()
         for k in ratios:
             ratios[k].append(wc["FPS (geometry)"] / wc[k])
     ratios = {k: np.asarray(v) for k, v in ratios.items()}
+    # site stability: fraction of each draw's cylinders shared with the first
+    # draw's.  Near 1 means the "adaptive" criterion is not actually adapting.
+    stab = {k: float(np.mean([len(a & v[0]) / n_cyl for a in v]))
+            for k, v in sites.items() if v}
     if verbose:
-        print("  worst-case sigma_f improvement over FPS, across interiors")
+        print("  worst-case sigma_beta improvement over FPS, across interiors")
         print(f"  {'strategy':18s} {'median':>9s} {'min':>9s} {'max':>9s} "
               f"{'# draws better':>16s}")
         for k, v in ratios.items():
             print(f"  {k:18s} {np.median(v):8.2f}× {v.min():8.2f}× {v.max():8.2f}× "
                   f"{int((v > 1).sum()):11d}/{len(v)}")
-    return ratios
+        print("\n  site stability (fraction of cylinders shared with the first "
+              "interior's pick):")
+        for k, f in stab.items():
+            print(f"    {k:18s} {f:.2f}")
+        print("    ⇒ with the constant-density bulk in the truth field, eps(r) is "
+              "dominated by the\n      SHAPE's degree>L truncation error, so the "
+              "eps-based 'adaptive' networks barely\n      move between interiors: "
+              "any win they show is a better GEOMETRIC rule, not adaptivity.")
+    return ratios, stab
 
 
-def verdict(res, sweep=None):
+def verdict(res, sweep=None, stability=None):
     """Turn the numbers into the sentence the paper actually needs."""
     sig, cases = res["sig_by_case"], res["cases"]
     ref = "FPS (geometry)"
     print(f"\n{SEP}\n  VERDICT — is adaptive placement worth a second optimizer?\n{SEP}")
-    print(f"  {'strategy':18s} {'geo-mean sig_f':>15s} {'worst sig_f':>13s} "
+    print(f"  {'strategy':18s} {'geo-mean sig_b':>15s} {'worst sig_b':>13s} "
           f"{'vs FPS (worst)':>16s}")
     for k in cases:
         gm = np.exp(np.mean(np.log(sig[k])))
@@ -691,33 +762,59 @@ def verdict(res, sweep=None):
         gain = float(np.median(sweep[best]))
         n_dr = len(sweep[best])
         nb = int((sweep[best] > 1).sum())
-        print(f"  Over {n_dr} independent interiors, however, the best criterion is "
-              f"{best} at a\n  MEDIAN {gain:.2f}× (winning only {nb}/{n_dr} draws) — "
-              f"and every criterion's ratio\n  straddles 1, so the ranking flips from "
-              f"one interior to the next.")
-        if gain < 1.2:
+        survives = gain >= 1.2 and nb >= 0.75 * n_dr
+        moves = None if stability is None else stability.get(best)
+        print(f"  Over {n_dr} independent interiors the best criterion is {best} at a"
+              f"\n  MEDIAN {gain:.2f}× (winning {nb}/{n_dr} draws)" +
+              ("." if survives else
+               " — and the ratios straddle 1, so the\n  ranking flips from one interior "
+               "to the next."))
+        if not survives:
             print("\n  → CONCLUSION.  None of the SH-aware criteria beats farthest-point\n"
                   "    sampling once you average over interiors: single-draw wins are\n"
                   "    noise, not signal.  Two reasons, both visible above:\n"
                   "      • taken literally, every criterion is a near-perfect proxy for\n"
                   "        radius (|rho| > 0.93), so it stacks cylinders on the low waist\n"
                   "        and loses the coverage that makes a network work;\n"
-                  "      • what a network needs is to be NEAR EVERY mascon, and with the\n"
-                  "        mascons unknown, even spacing is the optimal hedge.\n"
+                  "      • what a network needs is to be NEAR EVERY anomaly, and with the\n"
+                  "        anomalies unknown, even spacing is the optimal hedge.\n"
                   "    Farthest-point sampling is therefore the right choice for the\n"
                   "    paper — geometric, deterministic, reproducible — and adaptive\n"
                   "    placement belongs in one forward-looking sentence.")
         else:
-            print("\n  → CONCLUSION.  Adaptive placement gives a gain that survives\n"
-                  "    averaging over interiors; worth reporting as a second, SH-aware\n"
-                  "    placement mode.")
+            print(f"\n  → CONCLUSION.  The win SURVIVES averaging: {best} beats\n"
+                  f"    farthest-point on {nb}/{n_dr} independent interiors.  But read what\n"
+                  f"    it actually is before calling it adaptive placement:")
+            if moves is not None:
+                print(f"      • its network barely moves between interiors "
+                      f"({moves:.0%} of the\n        cylinders are shared with the first "
+                      f"draw's pick), because with the\n        constant-density bulk in "
+                      f"the truth field eps(r) is dominated by the\n        SHAPE's "
+                      f"degree>L truncation error, not by the anomalies;")
+            print("      • and it correlates with radius at |rho| > 0.93, i.e. it says\n"
+                  "        'go to the lowest points, where the degree-L model is worst'.\n"
+                  "    So this is a better GEOMETRIC rule — precomputable from the shape\n"
+                  "    and the SH degree alone, with no interior knowledge — rather than a\n"
+                  "    criterion that adapts to the interior.  Report it as such: an\n"
+                  "    SH-truncation-error placement map, farthest-point as the safe\n"
+                  "    interior-agnostic default.")
     else:
         print("  (run with n_sweep > 1: a single interior cannot rank placement rules)")
-    print("\n  Suggested sentence:\n"
-          '    "More sophisticated placement strategies could exploit the SH solution,\n'
-          '     for example by selecting cylinders in regions of large SH uncertainty or\n'
-          '     by maximizing the incremental Fisher information provided by candidate\n'
-          '     cylinders. Such adaptive placement is beyond the scope of this work."')
+    if sweep is not None and gain >= 1.2 and nb >= 0.75 * n_dr:
+        print("\n  Suggested sentence:\n"
+              '    "Cylinder sites are chosen by farthest-point sampling of the\n'
+              '     inside-Brillouin surface.  Selecting instead the sites at which the\n'
+              '     degree-L spherical-harmonic model departs most from the\n'
+              '     constant-density field tightens the worst-case mass-fraction\n'
+              '     uncertainty by a further factor of roughly %.1f; since that map is\n'
+              '     fixed by the shape and the truncation degree, it requires no\n'
+              '     knowledge of the interior."' % gain)
+    else:
+        print("\n  Suggested sentence:\n"
+              '    "More sophisticated placement strategies could exploit the SH solution,\n'
+              '     for example by selecting cylinders in regions of large SH uncertainty or\n'
+              '     by maximizing the incremental Fisher information provided by candidate\n'
+              '     cylinders. Such adaptive placement is beyond the scope of this work."')
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -807,7 +904,7 @@ def make_plots(res, outdir="Images"):
     fig.savefig(os.path.join(outdir, "global_pt3_fig1_criteria.png"),
                 dpi=180, bbox_inches="tight")
 
-    # ---- FIG 2: mass-ratio recovery, all strategies ------------------------
+    # ---- FIG 2: mass-fraction recovery, all strategies ---------------------
     cases, sig = res["cases"], res["sig_by_case"]
     has_sweep = "sweep" in res
     ncol = 3 if has_sweep else 2
@@ -822,7 +919,7 @@ def make_plots(res, outdir="Images"):
                edgecolor="k", lw=0.5, label=k)
     a1.set_yscale("log"); a1.set_xticks(x)
     a1.set_xticklabels([n.replace(" ", "\n") for n in names], fontsize=8)
-    a1.set_ylabel(r"mass-ratio 1$\sigma$ uncertainty $\sigma_f$")
+    a1.set_ylabel(r"mass-fraction 1$\sigma$ uncertainty $\sigma_\beta$")
     a1.set_title("Mass-ratio recovery per mascon (mascons sorted shallow → deep)")
     a1.grid(True, axis="y", which="both", alpha=0.3); a1.legend(fontsize=8)
 
@@ -833,7 +930,7 @@ def make_plots(res, outdir="Images"):
     a2.bar(xx + 0.2, wc, 0.4, color=COLOR[0], edgecolor="k", label="worst case")
     a2.set_yscale("log"); a2.set_xticks(xx)
     a2.set_xticklabels([_SHORT.get(k, k) for k in cases], fontsize=8)
-    a2.set_ylabel(r"$\sigma_f$")
+    a2.set_ylabel(r"$\sigma_\beta$")
     a2.set_title("Aggregate on THIS interior:\ncoverage is the worst-case bar")
     a2.grid(True, axis="y", which="both", alpha=0.3); a2.legend(fontsize=8)
 
@@ -853,7 +950,7 @@ def make_plots(res, outdir="Images"):
         a3.set_yscale("log")
         a3.set_xticks(range(len(keys)))
         a3.set_xticklabels([_SHORT.get(k, k) for k in keys], fontsize=8)
-        a3.set_ylabel(r"worst-case $\sigma_f$ improvement over FPS")
+        a3.set_ylabel(r"worst-case $\sigma_\beta$ improvement over FPS")
         a3.set_title(f"Across {len(sw[keys[0]])} independent interiors\n"
                      "(bar = median; below the line = worse than geometry)")
         a3.grid(True, axis="y", which="both", alpha=0.3); a3.legend(fontsize=8)
@@ -918,12 +1015,32 @@ def _selftest(verbose=True):
     sp_grad = float(np.ptp(s_kau) / np.mean(s_kau))
     assert sp_pot < 1e-12, f"Kaula sigma_U is not radial ({sp_pot:.1e})"
     assert sp_grad < 1e-5, f"Kaula sigma_g is not radial ({sp_grad:.1e})"
+    # 4) the constant-density bulk: unit mass and centre of mass at the origin
+    #    are exact properties of the quadrature, and the two INDEPENDENT paths to
+    #    its field — tetrahedral-quadrature Stokes + SH synthesis, and
+    #    polyhedral_gravity — must agree outside the Brillouin sphere to the
+    #    degree-L truncation.  This pins both the unit-mass normalization of
+    #    `Bulk.stokes` and the SI-G division inside `Bulk.field`.
+    Vb, Fb, tmb, Rb = G.load_eros()
+    bulk = G.Bulk(Vb, Fb)
+    c01 = bulk.stokes(0, 1, Rb)
+    assert abs(c01[0] - 1.0) < 1e-12, f"bulk mass != 1 ({c01[0]})"
+    assert np.max(np.abs(c01[2:])) < 1e-9, "bulk centre of mass is not the origin"
+    q = rng.normal(size=(12, 3))
+    q = 3.0 * Rb * q / np.linalg.norm(q, axis=1)[:, None]
+    U_q = sh_pot_basis(q, 0, 6, Rb) @ bulk.stokes(0, 6, Rb)
+    U_p = bulk.field(q)[: len(q)]
+    eb = float(np.max(np.abs(U_q - U_p) / np.abs(U_p)))
+    assert eb < 5e-3, f"bulk Stokes vs polyhedral_gravity disagree ({eb:.1e})"
     if verbose:
         print(f"  selftest OK — SH synthesis vs exact mascon field: "
               f"|dU|/U = {eU:.1e}, |dg|/g = {eg:.1e}")
         print(f"  selftest OK — degree-only covariance ⇒ isotropic map: "
               f"sigma_U radial to {sp_pot:.1e} (exact), "
               f"sigma_g to {sp_grad:.1e} (central-difference limited)")
+        print(f"  selftest OK — constant-density bulk: mass = {c01[0]:.12f}, "
+              f"|COM| < 1e-9, quadrature Stokes vs polyhedral_gravity at 3R* "
+              f"agree to {eb:.1e} (degree-6 truncation)")
 
 
 if __name__ == "__main__":
@@ -931,7 +1048,6 @@ if __name__ == "__main__":
     res = run(
         Lmax_sh=6,
         eps=0.02,
-        sig_M=1e-3,
         ch_modes=(6, 6),
         n_cyl=6,
         n_cand=140,
