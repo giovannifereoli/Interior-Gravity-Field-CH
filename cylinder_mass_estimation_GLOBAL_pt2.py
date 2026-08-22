@@ -164,19 +164,21 @@ def ch_blocks_for(P, net, ch_modes, eps, f_true, bulk):
     """
     (A_ch, sigma) for every cylinder in the network — β → CH coefficients.
 
-    A_ch fits the Bessel–Fourier basis to the near-surface field of the CONTRAST
-    (mass at p_j minus the same mass spread through the body), i.e. to ΔU.  The
-    noise, though, is the relative precision of the FULL measured field: sigma is
-    eps × RMS of the CH coefficients of bulk + anomalies, because that is what
-    the instrument senses before the known constant-density part is removed.
+    The inner fit of the Bessel–Fourier basis to the sampled field is UNWEIGHTED
+    (c = Φ⁺ field); A_ch is that fit applied to the CONTRAST field (mass at p_j
+    minus the same mass spread through the body), i.e. to ΔU.  The weights enter
+    on the COEFFICIENTS: sigma is `G.od_sigma` of the CH coefficients of the FULL
+    measured field (bulk + anomalies) — one sigma per coefficient, since that is
+    what the instrument delivers before the known constant-density part is
+    removed.
     """
     blocks = []
     for c in net:
         Phi = G.cyl_basis(c["cyl"], c["obs"], *ch_modes)
-        pinv = np.linalg.pinv(Phi)
+        pinv = np.linalg.pinv(Phi)                      # unweighted inner fit
         A_ch = pinv @ G.A_field_contrast(P, c["obs"], bulk)
         y_ch = pinv @ G.field_total(f_true, P, c["obs"], bulk)
-        blocks.append((A_ch, eps * float(np.sqrt(np.mean(y_ch ** 2)))))
+        blocks.append((A_ch, G.od_sigma(y_ch, eps)))
     return blocks
 
 
@@ -268,13 +270,14 @@ def run(Lmax_sh=6, eps=0.02, ch_modes=(6, 6), n_cyl=6,
         print(f"  Brillouin R* = {Rb:.3f} LU | {n_cyl} network cylinders | "
               f"{n_m} anomalies")
         print(f"  BULK: constant-density polyhedron, β̃ = 1 − Σβ = {beta_bulk:.3f} of M*")
+        print(f"  weights: OD-like σ_i = {eps}·|coeff_i| (floor 10% of RMS); the inner "
+              f"Φ-to-field fit is unweighted")
         for nm, p, fr in zip(names, P, f_true):
             print(f"    {nm:16s} p={np.round(p,3)}  β={fr:+.3f}  |r|={np.linalg.norm(p):.2f}")
 
     # ── observable design blocks (all of them CONTRASTS vs the bulk) ────────
     A_sh = G.A_stokes_contrast(P, bulk, 2, Lmax_sh, Rref)
-    sig_sh = eps * float(np.sqrt(np.mean(
-        G.stokes_total(f_true, P, bulk, 2, Lmax_sh, Rref) ** 2)))
+    sig_sh = G.od_sigma(G.stokes_total(f_true, P, bulk, 2, Lmax_sh, Rref), eps)
     ch_blocks = ch_blocks_for(P, net, ch_modes, eps, f_true, bulk)  # per-cylinder
     sig_ch_list = [s for _, s in ch_blocks]
 
@@ -367,7 +370,7 @@ def make_plots(res, outdir="Images"):
         pass
     ax.legend(fontsize=9, loc="upper left")
     fig.tight_layout()
-    fig.savefig(os.path.join(outdir, "global_pt2_fig1_geometry.png"),
+    fig.savefig(os.path.join(outdir, "global_pt2_fig1_geometry.pdf"),
                 dpi=180, bbox_inches="tight")
 
     # ---- FIG 2: mass-fraction uncertainty per anomaly, 4 cases -------------
@@ -394,7 +397,7 @@ def make_plots(res, outdir="Images"):
                 va="bottom", fontsize=8, fontweight="bold")
     ax.grid(True, axis="y", which="both", alpha=0.3); ax.legend(fontsize=9)
     fig.tight_layout()
-    fig.savefig(os.path.join(outdir, "global_pt2_fig2_massratio.png"),
+    fig.savefig(os.path.join(outdir, "global_pt2_fig2_massratio.pdf"),
                 dpi=180, bbox_inches="tight")
 
     # ---- FIG 3: position recovery per anomaly, SH vs network ---------------
@@ -414,7 +417,7 @@ def make_plots(res, outdir="Images"):
                 va="bottom", fontsize=8, fontweight="bold")
     ax.grid(True, axis="y", which="both", alpha=0.3); ax.legend(fontsize=9)
     fig.tight_layout()
-    fig.savefig(os.path.join(outdir, "global_pt2_fig3_position.png"),
+    fig.savefig(os.path.join(outdir, "global_pt2_fig3_position.pdf"),
                 dpi=180, bbox_inches="tight")
     plt.show()
 
@@ -430,6 +433,6 @@ if __name__ == "__main__":
         outdir="Images",
         verbose=True,
     )
-    print("\nSaved: Images/global_pt2_fig1_geometry.png, "
-          "global_pt2_fig2_massratio.png, global_pt2_fig3_position.png")
+    print("\nSaved: Images/global_pt2_fig1_geometry.pdf, "
+          "global_pt2_fig2_massratio.pdf, global_pt2_fig3_position.pdf")
     print("Done.")

@@ -63,14 +63,23 @@ integrand is a polynomial), its near-surface field by polyhedral_gravity.
 Two observables  (both fitted as DISCREPANCIES from the constant-density model)
 --------------------------------------------------------------------------------
   A (SH)     : fully-normalized Stokes coefficients C̄_nm, S̄_nm, degree 2..L_SH,
-               each known to σ_SH (the global gravity field from tracking).  No
-               total-mass row: the budget is enforced by β̃ = 1 − Σβ.
-  B (SH+CH)  : the above  PLUS  the near-surface gravitational field (potential +
-               acceleration) in a cylinder just above the anomaly, KNOWN TO
-               σ_FIELD and usable only through the CH model that can represent it.
-               Its information is the field Fisher projected onto the CH span,
-               P_CH = Φ(ΦᵀΦ)⁻¹Φᵀ  (Φ = Bessel–Fourier basis at the cylinder
-               points): the part of the near-surface field CH can actually model.
+               the global gravity field from tracking.  No total-mass row: the
+               budget is enforced by β̃ = 1 − Σβ.
+  B (SH+CH)  : the above  PLUS  the CH coefficients of the near-surface field
+               (potential + acceleration) in a cylinder just above the anomaly,
+               obtained by an UNWEIGHTED fit of the Bessel–Fourier basis Φ to the
+               sampled field, c = Φ⁺ field.  Only the part of the near-surface
+               field that Φ can represent survives that fit — the projector
+               P_CH = Φ(ΦᵀΦ)⁻¹Φᵀ says how much (printed as a diagnostic).
+
+Weights  (see `od_sigma`)
+-------------------------
+Estimation happens in COEFFICIENT space and is weighted there, per coefficient:
+σ_i = eps·max(|coefficient_i|, floor), an OD-like "each coefficient known to a
+fixed fraction of itself, above an absolute noise floor".  The inner fit that
+manufactures the CH coefficients from field samples is deliberately unweighted.
+The analytic covariance (Parts 1–2) and the Monte-Carlo fits (Experiments 1–2)
+are fed the SAME (A, σ) blocks, so they describe one and the same estimator.
 
 Experiments
 -----------
@@ -489,26 +498,73 @@ def field_total(beta, positions, obs, bulk):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# SECTION 3 — INFORMATION / COVARIANCE
+# SECTION 3 — OBSERVATION WEIGHTS, INFORMATION / COVARIANCE
 # ═══════════════════════════════════════════════════════════════════════════
+# TWO least-squares problems live in this code and they are weighted DIFFERENTLY
+# on purpose:
+#
+#   1. Building the CH coefficients from sampled field values (Φ c = field).
+#      UNWEIGHTED ordinary least squares — c = Φ⁺ field.  The field samples are
+#      a synthetic product of one instrument over one small patch; there is no
+#      per-sample error model to impose, and imposing one would just be a knob.
+#
+#   2. Estimating the mass fractions β from the COEFFICIENT discrepancies.
+#      WEIGHTED, with a per-coefficient σ that imitates an OD solution: each
+#      coefficient is delivered to a fixed FRACTION of its own magnitude, with an
+#      absolute noise floor below which the solution cannot resolve anything.
+#      This is the V that whitens the cost — one σ per coefficient, not one σ per
+#      block, so a strong low-degree term and a weak high-degree one are not
+#      given the same absolute weight.
 
 
-def fisher_masses(A_sh, sig_sh, A_fd=None, P_ch=None, sig_fd=None,
-                  prior_sigma=1.0):
+def od_sigma(cs, eps, floor_frac=0.1):
     """
-    Fisher information for the anomaly mass-fraction vector β.
-      SH  : (A_shᵀ A_sh)/σ_sh²        Stokes DISCREPANCY, deg 2..L
-      CH  : (A_fdᵀ P_ch A_fd)/σ_fd²   near-surface field DISCREPANCY the CH model sees
-    Both design matrices must be the contrast ones (`A_stokes_contrast`,
-    `A_field_contrast`).  There is no total-mass block any more: the budget
-    β̃ = 1 − Σβ is enforced structurally by the parameterization, not by a
-    pseudo-observation.  A weak Gaussian prior keeps everything finite.
+    OD-like 1σ for a measured coefficient vector `cs`:
+
+        σ_i = eps · max( |cs_i| , floor_frac · RMS(cs) )
+
+    The first branch is "every coefficient is known to eps of itself" — the
+    relative precision an orbit-determination solution quotes.  The second is the
+    absolute noise floor: an OD solution cannot resolve a coefficient far below
+    the scale of the field it is fitting, and without it the entries that are
+    identically zero by construction (the S̄_n0 sine terms) would carry infinite
+    weight.  `cs` must be the FULL measured vector (bulk + anomalies), since that
+    is what the instrument delivers before the constant-density model is removed.
+
+    Caveat worth stating in a paper: constant relative precision across all
+    degrees is optimistic at high degree, where a real OD solution degrades
+    faster than the signal does.  A degree-dependent rule slots in here.
     """
-    n = A_sh.shape[1]
+    cs = np.asarray(cs, float)
+    floor = floor_frac * float(np.sqrt(np.mean(cs ** 2)))
+    return eps * np.maximum(np.abs(cs), floor)
+
+
+def _col(sig):
+    """σ as a column so `A / _col(σ)` whitens rows for scalar OR per-row σ."""
+    s = np.asarray(sig, float)
+    return s if s.ndim == 0 else s[:, None]
+
+
+def fisher_masses(blocks, prior_sigma=1.0):
+    """
+    Fisher information for the anomaly mass-fraction vector β, built from the
+    SAME (A, σ) coefficient blocks the Monte-Carlo fit uses:
+
+        F = Σ_blocks  A_wᵀ A_w ,     A_w = A / σ   (row-wise; σ may be a vector)
+
+    so the analytic covariance of Parts 1–2 and the actual fits of Experiments
+    1–2 are guaranteed to describe one and the same estimator.  Every design
+    matrix must be a contrast one (`A_stokes_contrast`, `ch_coeff_design`).
+    There is no total-mass block: the budget β̃ = 1 − Σβ is enforced structurally
+    by the parameterization, not by a pseudo-observation.  A weak Gaussian prior
+    keeps everything finite.
+    """
+    n = blocks[0][0].shape[1]
     Fi = np.eye(n) / prior_sigma**2
-    Fi = Fi + (A_sh.T @ A_sh) / sig_sh**2
-    if A_fd is not None:
-        Fi = Fi + (A_fd.T @ (P_ch @ A_fd)) / sig_fd**2
+    for A, sig in blocks:
+        Aw = A / _col(sig)
+        Fi = Fi + Aw.T @ Aw
     return Fi
 
 
@@ -563,14 +619,17 @@ def stokes_power_spectrum(p, Lmax, Rref):
     return np.asarray(out)
 
 
-def position_covariance(idx, P, obs, cyl, ch_modes, sig_sh, sig_fd, Lmax, Rref, P_ch):
+def position_covariance(idx, P, obs, cyl, ch_modes, sig_sh, sig_ch, Lmax, Rref,
+                        pinvPhi):
     """
     Linearized position covariance of anomaly `idx`, with its truth mass
-    fraction, from SH-only and SH+CH.  Position partials by central differences.
-    (Other masses / positions held fixed — the near-surface anomaly is the
-    target.)  The bulk term β̃·U_CD does not move with p, so it drops out of
-    ∂y/∂p entirely: only the σ's carry its (large) presence, through the
-    relative-precision rule.
+    fraction, from SH-only and SH+CH.  Position partials by central differences,
+    in the same COEFFICIENT space and with the same per-coefficient weights as
+    the fits: the CH partial is Φ⁺ ∂(field)/∂p, i.e. the position sensitivity of
+    the coefficients the unweighted inner fit would return.  (Other masses /
+    positions held fixed — the near-surface anomaly is the target.)  The bulk
+    term β̃·U_CD does not move with p, so it drops out of ∂y/∂p entirely: only
+    the σ's carry its (large) presence, through the relative-precision rule.
     """
     _, _, f = mascon_arrays()
     p0, mass = P[idx].copy(), f[idx]
@@ -585,9 +644,11 @@ def position_covariance(idx, P, obs, cyl, ch_modes, sig_sh, sig_fd, Lmax, Rref, 
         return J
 
     Jsh = jac(lambda p: sh_stokes_of_point(p, 2, Lmax, Rref), A_stokes(P, 2, Lmax, Rref).shape[0])
-    Fi_A = Jsh.T @ Jsh / sig_sh**2
-    Jfd = jac(lambda p: point_mass_field(p, obs), 4 * len(obs))
-    Fi_B = Fi_A + Jfd.T @ (P_ch @ Jfd) / sig_fd**2
+    Jsh_w = Jsh / _col(sig_sh)
+    Fi_A = Jsh_w.T @ Jsh_w
+    Jch = pinvPhi @ jac(lambda p: point_mass_field(p, obs), 4 * len(obs))
+    Jch_w = Jch / _col(sig_ch)
+    Fi_B = Fi_A + Jch_w.T @ Jch_w
 
     def summ(Fi):
         C = np.linalg.inv(Fi)
@@ -606,10 +667,13 @@ def ch_coeff_design(P, obs, cyl, ch_modes, bulk):
     β → CYLINDRICAL-HARMONIC coefficient design matrix.
     For each anomaly we evaluate the near-surface field of the CONTRAST (unit
     mass at p_j minus the same mass spread through the body) and fit the
-    Bessel–Fourier basis Φ by least squares, exactly as the reference script fits
-    CH coefficients to a sampled field: A_ch = Φ⁺ A_field_contrast.  Fitting the
-    contrast is the near-surface form of ΔU: the constant-density field is known
-    from the shape and subtracted before the anomalies are estimated.
+    Bessel–Fourier basis Φ by ORDINARY (unweighted) least squares, exactly as the
+    reference script fits CH coefficients to a sampled field:
+    A_ch = Φ⁺ A_field_contrast.  The weighting deliberately enters one level up,
+    on the COEFFICIENTS (see `od_sigma`), not on the field samples that produce
+    them.  Fitting the contrast is the near-surface form of ΔU: the
+    constant-density field is known from the shape and subtracted before the
+    anomalies are estimated.
     """
     Phi = cyl_basis(cyl, obs, *ch_modes)
     return np.linalg.pinv(Phi) @ A_field_contrast(P, obs, bulk)  # (n_ch, n_anom)
@@ -617,15 +681,17 @@ def ch_coeff_design(P, obs, cyl, ch_modes, bulk):
 
 def ls_fit_once(blocks, m_true, rng):
     """
-    One weighted (whitened) linear least-squares fit of the mascon masses from
-    noisy coefficient observables, in the style of the reference code:
-        minimize Σ_blocks || (A m − y)/σ ||² ,   y = A m_true + N(0, σ).
-    `blocks` is a list of (A, σ).  Returns the recovered mass vector.
+    One weighted (whitened) linear least-squares fit of the mass fractions from
+    noisy coefficient observables:
+        minimize Σ_blocks || (A β − y)/σ ||² ,   y = A β_true + N(0, σ).
+    `blocks` is a list of (A, σ), where σ is the PER-COEFFICIENT vector from
+    `od_sigma` (a scalar still works and means an isotropic block).  Returns the
+    recovered mass-fraction vector.
     """
     As, ys = [], []
     for A, sig in blocks:
         y = A @ m_true + rng.normal(0.0, sig, size=A.shape[0])
-        As.append(A / sig)
+        As.append(A / _col(sig))
         ys.append(y / sig)
     Aw, yw = np.vstack(As), np.concatenate(ys)
     m_hat, *_ = np.linalg.lstsq(Aw, yw, rcond=None)
@@ -749,13 +815,14 @@ def run_experiment(
 ):
     """
     `eps` is the RELATIVE measurement precision applied EQUALLY to both
-    observables: σ_SH = eps·RMS(FULL truth Stokes), σ_field = eps·RMS(FULL truth
-    near-surface field) — "full" meaning the measured field, bulk included, since
-    that is what an instrument or an OD solution actually senses.  Same
-    fractional data quality on the global SH field and the local near-surface
-    field, so the comparison reflects geometry, not the (different) natural units
-    of the two observables.  What is FITTED is the discrepancy between that
-    measurement and the known constant-density model.
+    observables, PER COEFFICIENT: σ_i = eps·|coefficient_i| with a noise floor
+    (see `od_sigma`), on the FULL measured coefficients (bulk included, since
+    that is what an OD solution actually delivers).  Same fractional data quality
+    on the global Stokes coefficients and on the local CH coefficients, so the
+    comparison reflects geometry, not the (different) natural units of the two.
+    What is FITTED is the discrepancy between that measurement and the known
+    constant-density model.  The inner fit that produces the CH coefficients from
+    field samples is unweighted; the weights live here, on the coefficients.
     """
     V, F, tm, Rb = load_eros()
     Rref = Rb
@@ -789,31 +856,39 @@ def run_experiment(
     A_sh = A_stokes_contrast(P, bulk, 2, Lmax_sh, Rref)
     A_fd = A_field_contrast(P, obs, bulk)
     Phi = cyl_basis(cyl, obs, *ch_modes)
-    P_ch = ch_projector(Phi)
+    pinvPhi = np.linalg.pinv(Phi)          # the UNWEIGHTED inner CH fit
+    A_ch = ch_coeff_design(P, obs, cyl, ch_modes, bulk)
 
-    # fair, unit-independent noise: same relative precision on both observables,
-    # referred to the FULL measured field (bulk + anomalies), not to the small
-    # discrepancy that is being estimated.
+    # OD-like per-coefficient noise on the FULL measured coefficients (bulk +
+    # anomalies), the same relative rule on both observables.
     y_sh_tot = stokes_total(f_true, P, bulk, 2, Lmax_sh, Rref)
     y_fd_tot = field_total(f_true, P, obs, bulk)
-    sig_sh = eps * float(np.sqrt(np.mean(y_sh_tot ** 2)))
-    sig_fd = eps * float(np.sqrt(np.mean(y_fd_tot ** 2)))
+    y_ch_tot = pinvPhi @ y_fd_tot
+    sig_sh = od_sigma(y_sh_tot, eps)
+    sig_ch = od_sigma(y_ch_tot, eps)
+    blocksA = [(A_sh, sig_sh)]                      # SH only
+    blocksB = [(A_sh, sig_sh), (A_ch, sig_ch)]      # SH + CH
     if verbose:
         print(f"  cylinder over anomaly: {len(obs)} vacuum pts, "
               f"|r|∈[{r_obs.min():.2f},{r_obs.max():.2f}] ⊂ Brillouin {Rb:.2f}")
+        d_fd = A_fd @ f_true
+        rep_ch = float(np.linalg.norm(ch_projector(Phi) @ d_fd) / np.linalg.norm(d_fd))
         print(f"  observables: SH deg 2..{Lmax_sh} ({A_sh.shape[0]} coeffs)"
               f" | CH modes {ch_modes} ({Phi.shape[1]} cols)"
               f"  [no Σβ=1 row — the mass budget is structural]")
-        print(f"  noise: relative eps={eps} on the FULL field → σ_SH={sig_sh:.2e}, "
-              f"σ_field={sig_fd:.2e}")
+        print(f"  weights: OD-like σ_i = {eps}·|coeff_i| (floor 10% of RMS)  →  "
+              f"σ_SH ∈ [{sig_sh.min():.2e}, {sig_sh.max():.2e}], "
+              f"σ_CH ∈ [{sig_ch.min():.2e}, {sig_ch.max():.2e}]")
+        print(f"  inner CH fit (Φ c = field) is UNWEIGHTED; its span captures "
+              f"{rep_ch:.3f} of the near-surface discrepancy")
         print(f"  discrepancy / full field:  SH "
               f"{np.sqrt(np.mean((A_sh @ f_true)**2)) / np.sqrt(np.mean(y_sh_tot**2)):.3f}"
               f"   near-surface "
-              f"{np.sqrt(np.mean((A_fd @ f_true)**2)) / np.sqrt(np.mean(y_fd_tot**2)):.3f}")
+              f"{np.sqrt(np.mean(d_fd**2)) / np.sqrt(np.mean(y_fd_tot**2)):.3f}")
 
     # ── PART 1 — mass fractions ────────────────────────────────────────────────
-    Fi_A = fisher_masses(A_sh, sig_sh)
-    Fi_B = fisher_masses(A_sh, sig_sh, A_fd, P_ch, sig_fd)
+    Fi_A = fisher_masses(blocksA)
+    Fi_B = fisher_masses(blocksB)
     sdA, sdB = posterior_sigma(Fi_A), posterior_sigma(Fi_B)
     improve = sdA / sdB
     if verbose:
@@ -824,7 +899,7 @@ def run_experiment(
 
     # ── PART 2 — position of the near-surface anomaly ───────────────────────
     posA, posB = position_covariance(
-        target, P, obs, cyl, ch_modes, sig_sh, sig_fd, Lmax_sh, Rref, P_ch
+        target, P, obs, cyl, ch_modes, sig_sh, sig_ch, Lmax_sh, Rref, pinvPhi
     )
     if verbose:
         print(f"\n{'-'*70}\n  PART 2 — POSITION OF NEAR-SURFACE ANOMALY "
@@ -837,10 +912,6 @@ def run_experiment(
     # discrepancy (Case A), plus the fitted CH coefficients of the near-surface
     # discrepancy (Case B).  The three anomaly positions are held at truth, and
     # the bulk fraction β̃ = 1 − Σβ follows from the fit rather than being fitted.
-    A_ch = ch_coeff_design(P, obs, cyl, ch_modes, bulk)
-    sig_ch = eps * float(np.sqrt(np.mean((np.linalg.pinv(Phi) @ y_fd_tot) ** 2)))
-    blocksA = [(A_sh, sig_sh)]
-    blocksB = [(A_sh, sig_sh), (A_ch, sig_ch)]
     mcA = monte_carlo_fit(blocksA, f_true, n_mc=n_mc)
     mcB = monte_carlo_fit(blocksB, f_true, n_mc=n_mc)
     fitA = dict(mean=mcA.mean(0), std=mcA.std(0), samples=mcA,
@@ -861,6 +932,31 @@ def run_experiment(
         ta = f"{fitA['bulk_mean']:+.4f}±{fitA['bulk_std']:.4f}"
         tb = f"{fitB['bulk_mean']:+.4f}±{fitB['bulk_std']:.4f}"
         print(f"  {'BULK β̃ = 1 − Σβ':21s} {beta_bulk:+8.3f} | {ta:>20} {'':5} | {tb:>20}")
+
+    # ── COEFFICIENT SPECTRA: homogeneous vs heterogeneous, pre/post fit ────
+    # The whole parameterization in one picture.  The HOMOGENEOUS body gives
+    # CS_CD (SH) and Φ⁺·U_CD (CH); the HETEROGENEOUS truth adds the anomalies;
+    # their difference ΔCS is the only thing the estimator ever sees, and it has
+    # to stand above the per-coefficient noise σ.  One noisy realization is then
+    # fitted so the post-fit model and residual can be shown against the data.
+    rng_sp = np.random.default_rng(99)
+    d_sh, d_ch = A_sh @ f_true, A_ch @ f_true          # = CS_hetero − CS_homog
+    dat_sh = d_sh + rng_sp.normal(0.0, sig_sh)
+    dat_ch = d_ch + rng_sp.normal(0.0, sig_ch)
+    Aw = np.vstack([A_sh / sig_sh[:, None], A_ch / sig_ch[:, None]])
+    yw = np.concatenate([dat_sh / sig_sh, dat_ch / sig_ch])
+    beta_hat, *_ = np.linalg.lstsq(Aw, yw, rcond=None)
+    spectra = dict(
+        sh=dict(homog=bulk.stokes(2, Lmax_sh, Rref), hetero=y_sh_tot, diff=d_sh,
+                sigma=sig_sh, data=dat_sh, model=A_sh @ beta_hat),
+        ch=dict(homog=pinvPhi @ bulk.field(obs), hetero=y_ch_tot, diff=d_ch,
+                sigma=sig_ch, data=dat_ch, model=A_ch @ beta_hat),
+        beta_hat=beta_hat, Lmin=2, Lmax=Lmax_sh, ch_modes=ch_modes,
+    )
+    if verbose:
+        snr = lambda d, sg: float(np.sqrt(np.mean((d / sg) ** 2)))
+        print(f"\n  discrepancy-to-noise per coefficient (RMS of ΔCS/σ):"
+              f"  SH {snr(d_sh, sig_sh):.1f}   CH {snr(d_ch, sig_ch):.1f}")
 
     # smallest detectable anomaly (part of Experiment 1: positions fixed)
     f_base = f_true.copy()
@@ -902,8 +998,8 @@ def run_experiment(
         f_true=f_true, bulk=bulk, beta_bulk=beta_bulk,
         target=target, sdA=sdA, sdB=sdB, improve=improve,
         posA=posA, posB=posB, spec_shallow=spec_shallow, spec_lobe=spec_lobe,
-        fitA=fitA, fitB=fitB, det=det, nl=nl,
-        Lmax_sh=Lmax_sh, ch_modes=ch_modes, sig_sh=sig_sh, sig_fd=sig_fd,
+        fitA=fitA, fitB=fitB, det=det, nl=nl, spectra=spectra,
+        Lmax_sh=Lmax_sh, ch_modes=ch_modes, sig_sh=sig_sh, sig_ch=sig_ch,
     )
     make_plots(res, outdir=outdir)
     return res
@@ -993,7 +1089,7 @@ def make_plots(res, outdir="Images"):
                 va="bottom", fontsize=9, fontweight="bold")
     ax.legend(fontsize=9)
     fig.tight_layout()
-    fig.savefig(os.path.join(outdir, "global_fig1_massratio.png"),
+    fig.savefig(os.path.join(outdir, "global_fig1_massratio.pdf"),
                 dpi=180, bbox_inches="tight")
 
     # ---- FIG 2: position error ellipses over the Eros cross-section ---------
@@ -1042,7 +1138,7 @@ def make_plots(res, outdir="Images"):
         fontweight="bold",
     )
     fig.tight_layout(rect=[0, 0, 1, 0.95])
-    fig.savefig(os.path.join(outdir, "global_fig2_position.png"),
+    fig.savefig(os.path.join(outdir, "global_fig2_position.pdf"),
                 dpi=180, bbox_inches="tight")
 
     # ---- FIG 3: EXPERIMENT 1 — mass-fraction fit + detection --------------------
@@ -1112,7 +1208,7 @@ def make_plots(res, outdir="Images"):
     ax.grid(True, which="both", alpha=0.3); ax.legend(fontsize=8, loc="upper left")
 
     fig.tight_layout()
-    fig.savefig(os.path.join(outdir, "global_fig3_lsfit_detection.png"),
+    fig.savefig(os.path.join(outdir, "global_fig3_lsfit_detection.pdf"),
                 dpi=180, bbox_inches="tight")
 
     # ---- FIG 4: EXPERIMENT 2 — anomaly POSITION recovery (masses fixed) ------
@@ -1168,8 +1264,85 @@ def make_plots(res, outdir="Images"):
         fontweight="bold",
     )
     fig.tight_layout(rect=[0, 0, 1, 0.95])
-    fig.savefig(os.path.join(outdir, "global_fig4_nonlinear_mc.png"),
+    fig.savefig(os.path.join(outdir, "global_fig4_nonlinear_mc.pdf"),
                 dpi=180, bbox_inches="tight")
+    # ---- FIG 5: coefficient spectra — homogeneous vs heterogeneous, pre/post fit
+    sp = res["spectra"]
+    Lmin, Lmax = sp["Lmin"], sp["Lmax"]
+    n_m, n_n = sp["ch_modes"]
+    # block boundaries: SH by degree n (2(n+1) entries each), CH by order m
+    sh_edges, acc = [], 0
+    for n in range(Lmin, Lmax + 1):
+        acc += 2 * (n + 1)
+        sh_edges.append(acc)
+    ch_edges = [2 * n_n * (m + 1) for m in range(n_m)]
+
+    fig, axes = plt.subplots(2, 2, figsize=(17.5, 9.5))
+    fig.suptitle("Coefficient spectra: homogeneous body vs heterogeneous truth, "
+                 "and the fit of their difference", fontweight="bold", y=0.99)
+
+    for col, (key, name, edges, elab) in enumerate([
+        ("sh", f"SPHERICAL harmonics (degree {Lmin}..{Lmax})", sh_edges, "n"),
+        ("ch", f"CYLINDRICAL harmonics (modes {n_m}×{n_n})", ch_edges, "m"),
+    ]):
+        d = sp[key]
+        idx = np.arange(len(d["homog"]))
+
+        # (top) magnitudes: what the two bodies produce, and what separates them
+        # (entries that are identically zero — the S̄_n0 sine terms — are masked
+        #  so the log axis breaks the line instead of plunging to -inf)
+        _m = lambda v: np.where(np.abs(v) == 0, np.nan, np.abs(v))
+        ax = axes[0, col]
+        ax.semilogy(idx, _m(d["homog"]), lw=1.5, color="0.45",
+                    label="homogeneous  |CS$_{CD}$|")
+        ax.semilogy(idx, _m(d["hetero"]), lw=4.0, color=COLOR[2], alpha=0.40,
+                    solid_capstyle="round", label="heterogeneous  |CS$_T$|")
+        ax.semilogy(idx, _m(d["diff"]), lw=1.5, color=COLOR[0],
+                    label=r"difference  |$\Delta$CS| (what is fitted)")
+        ax.semilogy(idx, d["sigma"], lw=1.4, ls="--", color="k",
+                    label=r"noise $\sigma_i$ (OD-like)")
+        ax.set_title(name, fontweight="bold")
+        ax.set_ylabel("|coefficient|")
+        ax.set_xlabel("coefficient index")
+        for e in edges[:-1]:
+            ax.axvline(e, color="0.85", lw=0.8, zorder=0)
+        ax.grid(True, which="both", alpha=0.25)
+        ax.legend(fontsize=8.5, loc="upper left", ncol=2, framealpha=0.92)
+        snr = np.sqrt(np.mean((d["diff"] / d["sigma"]) ** 2))
+        ax.text(0.985, 0.05, f"RMS |ΔCS|/σ = {snr:.1f}", transform=ax.transAxes,
+                ha="right", va="bottom", fontsize=10, fontweight="bold",
+                bbox=dict(fc="w", ec="0.7", alpha=0.9))
+
+        # (bottom) pre/post fit, whitened so every coefficient is comparable
+        ax = axes[1, col]
+        ax.axhline(0, color="k", lw=0.8)
+        ax.plot(idx, d["data"] / d["sigma"], "o", ms=3.4, color=COLOR[2],
+                label=r"data  $\Delta$CS$+\epsilon$  (pre-fit)")
+        ax.plot(idx, d["model"] / d["sigma"], "-", lw=1.6, color=COLOR[0],
+                label=r"fitted model  A$\hat\beta$  (post-fit)")
+        r = (d["data"] - d["model"]) / d["sigma"]
+        ax.plot(idx, r, ".", ms=3.0, color=COLOR[3], alpha=0.75,
+                label=f"residual (RMS {np.sqrt(np.mean(r**2)):.2f}σ)")
+        ax.fill_between(idx, -1, 1, color="0.85", zorder=0, label="±1σ")
+        for e in edges[:-1]:
+            ax.axvline(e, color="0.9", lw=0.8, zorder=0)
+        ax.set_xlabel(f"coefficient index  (grey lines separate {elab})")
+        ax.set_ylabel(r"coefficient / $\sigma_i$")
+        ax.grid(True, alpha=0.25)
+        ax.legend(fontsize=8.5, loc="upper right", ncol=2)
+
+    bh, ft = sp["beta_hat"], res["f_true"]
+    axes[1, 0].text(
+        0.015, 0.03,
+        "joint SH+CH fit of this realization:\n"
+        + "\n".join(f"  $\\beta_{{{k}}}$  truth {t:+.3f}   fitted {h:+.3f}"
+                    for k, (t, h) in enumerate(zip(ft, bh))),
+        transform=axes[1, 0].transAxes, ha="left", va="bottom", fontsize=9,
+        family="monospace", bbox=dict(fc="w", ec="0.7", alpha=0.92))
+    fig.tight_layout(rect=[0, 0, 1, 0.965])
+    fig.savefig(os.path.join(outdir, "global_fig5_coefficients.pdf"),
+                dpi=180, bbox_inches="tight")
+
     plt.show()
 
 
@@ -1188,6 +1361,7 @@ if __name__ == "__main__":
         outdir="Images",
         verbose=True,
     )
-    print("\nSaved: Images/global_fig1_massratio.png, global_fig2_position.png, "
-          "global_fig3_lsfit_detection.png, global_fig4_nonlinear_mc.png")
+    print("\nSaved: Images/global_fig1_massratio.pdf, global_fig2_position.pdf, "
+          "global_fig3_lsfit_detection.pdf, global_fig4_nonlinear_mc.pdf, "
+          "global_fig5_coefficients.pdf")
     print("Done.")

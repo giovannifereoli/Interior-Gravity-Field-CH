@@ -119,6 +119,13 @@ SEP = "=" * 78
 # cylinder geometry — identical to pt2 so the networks are comparable
 CYL_RADIUS, CYL_HEIGHT, CYL_ALPHA, CYL_LIFT = 0.12, 0.32, 100.0, 0.03
 
+# Strategies whose score never touches the interior: geometry (FPS), the SH
+# formal-uncertainty map (built from the tracking geometry alone) and the
+# incremental Fisher scan (built from the two basis sets).  Their networks are
+# IDENTICAL for every truth interior — which is what the robustness sweep
+# exploits, and what the verdict must say out loud if one of them wins.
+INTERIOR_INDEPENDENT = ("FPS (geometry)", "SH-SIG detrend", "FISHER logdet")
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION 1 — SPHERICAL-HARMONIC FIELD SYNTHESIS
@@ -592,12 +599,12 @@ def run(Lmax_sh=6, eps=0.02, ch_modes=(6, 6), n_cyl=6, n_cand=140,
             print(f"    {k:16s} sites {np.sort(i)}  ({same}/{n_cyl} shared with FPS, "
                   f"mean NN spacing {np.mean(d):.3f} LU)")
 
-    # ── observables (pt1/pt2 rule: equal RELATIVE precision eps on the FULL
-    #    measured field; every design matrix is a contrast against the bulk, and
-    #    there is no Σβ = 1 row — the mass budget is structural) ──────────────
+    # ── observables (pt1/pt2 rule: OD-like per-coefficient weights, σ_i =
+    #    eps·|coeff_i| above a noise floor, on the FULL measured coefficients;
+    #    every design matrix is a contrast against the bulk, and there is no
+    #    Σβ = 1 row — the mass budget is structural) ───────────────────────────
     A_sh = G.A_stokes_contrast(P, bulk, 2, Lmax_sh, Rref)
-    sig_sh = eps * float(np.sqrt(np.mean(
-        G.stokes_total(f_true, P, bulk, 2, Lmax_sh, Rref) ** 2)))
+    sig_sh = G.od_sigma(G.stokes_total(f_true, P, bulk, 2, Lmax_sh, Rref), eps)
     base = [(A_sh, sig_sh)]
 
     cases = {"SH only": base}
@@ -690,8 +697,7 @@ def robustness_sweep(res, eps=0.02, ch_modes=(6, 6), Lmax_sh=6,
     V, F, tm, Rb = res["V"], res["F"], res["tm"], res["Rb"]
     bulk = res["bulk"]
     cand, lift, n_cyl, min_sep = res["cand"], res["lift"], res["n_cyl"], res["min_sep"]
-    fixed = {k: res["picks"][k] for k in
-             ("FPS (geometry)", "SH-SIG detrend", "FISHER logdet")}
+    fixed = {k: res["picks"][k] for k in INTERIOR_INDEPENDENT}
     fixed_nets = {k: res["nets"][k] for k in fixed}
     ratios = {k: [] for k in res["cases"]}
     sites = {"SH-ERR raw": [], "SH-ERR detrend": []}   # do the picks even move?
@@ -707,8 +713,7 @@ def robustness_sweep(res, eps=0.02, ch_modes=(6, 6), Lmax_sh=6,
             sites[key].append(set(idx.tolist()))
             nets[key] = network_at(cand[idx], tm, V, F, n_pts=n_pts)
         A_sh = G.A_stokes_contrast(P, bulk, 2, Lmax_sh, Rb)
-        sig_sh = eps * float(np.sqrt(np.mean(
-            G.stokes_total(f_true, P, bulk, 2, Lmax_sh, Rb) ** 2)))
+        sig_sh = G.od_sigma(G.stokes_total(f_true, P, bulk, 2, Lmax_sh, Rb), eps)
         base = [(A_sh, sig_sh)]
         wc = {}
         for k in ratios:
@@ -720,8 +725,9 @@ def robustness_sweep(res, eps=0.02, ch_modes=(6, 6), Lmax_sh=6,
     ratios = {k: np.asarray(v) for k, v in ratios.items()}
     # site stability: fraction of each draw's cylinders shared with the first
     # draw's.  Near 1 means the "adaptive" criterion is not actually adapting.
-    stab = {k: float(np.mean([len(a & v[0]) / n_cyl for a in v]))
-            for k, v in sites.items() if v}
+    stab = {k: 1.0 for k in fixed}          # reused unchanged for every interior
+    stab.update({k: float(np.mean([len(a & v[0]) / n_cyl for a in v]))
+                 for k, v in sites.items() if v})
     if verbose:
         print("  worst-case sigma_beta improvement over FPS, across interiors")
         print(f"  {'strategy':18s} {'median':>9s} {'min':>9s} {'max':>9s} "
@@ -731,12 +737,16 @@ def robustness_sweep(res, eps=0.02, ch_modes=(6, 6), Lmax_sh=6,
                   f"{int((v > 1).sum()):11d}/{len(v)}")
         print("\n  site stability (fraction of cylinders shared with the first "
               "interior's pick):")
-        for k, f in stab.items():
-            print(f"    {k:18s} {f:.2f}")
-        print("    ⇒ with the constant-density bulk in the truth field, eps(r) is "
-              "dominated by the\n      SHAPE's degree>L truncation error, so the "
-              "eps-based 'adaptive' networks barely\n      move between interiors: "
-              "any win they show is a better GEOMETRIC rule, not adaptivity.")
+        for k in res["cases"]:
+            if k in stab:
+                tag = ("   (fixed by construction: the score never sees the interior)"
+                       if k in INTERIOR_INDEPENDENT else "")
+                print(f"    {k:18s} {stab[k]:.2f}{tag}")
+        print("    ⇒ three of the four criteria never look at the interior at all, and "
+              "the eps-based\n      ones barely move either: with the constant-density "
+              "bulk in the truth field eps(r)\n      is dominated by the SHAPE's "
+              "degree>L truncation error.  Any win here is a\n      better GEOMETRIC "
+              "rule, not adaptivity.")
     return ratios, stab
 
 
@@ -769,6 +779,7 @@ def verdict(res, sweep=None, stability=None):
               ("." if survives else
                " — and the ratios straddle 1, so the\n  ranking flips from one interior "
                "to the next."))
+        fixed_by_constr = best in INTERIOR_INDEPENDENT
         if not survives:
             print("\n  → CONCLUSION.  None of the SH-aware criteria beats farthest-point\n"
                   "    sampling once you average over interiors: single-draw wins are\n"
@@ -785,19 +796,23 @@ def verdict(res, sweep=None, stability=None):
             print(f"\n  → CONCLUSION.  The win SURVIVES averaging: {best} beats\n"
                   f"    farthest-point on {nb}/{n_dr} independent interiors.  But read what\n"
                   f"    it actually is before calling it adaptive placement:")
-            if moves is not None:
+            if fixed_by_constr:
+                print("      • its score never touches the interior — it is built from "
+                      "the\n        tracking geometry and the two basis sets alone, so it "
+                      "selects the\n        SAME six sites for every truth interior;")
+            elif moves is not None:
                 print(f"      • its network barely moves between interiors "
                       f"({moves:.0%} of the\n        cylinders are shared with the first "
                       f"draw's pick), because with the\n        constant-density bulk in "
                       f"the truth field eps(r) is dominated by the\n        SHAPE's "
                       f"degree>L truncation error, not by the anomalies;")
-            print("      • and it correlates with radius at |rho| > 0.93, i.e. it says\n"
-                  "        'go to the lowest points, where the degree-L model is worst'.\n"
-                  "    So this is a better GEOMETRIC rule — precomputable from the shape\n"
-                  "    and the SH degree alone, with no interior knowledge — rather than a\n"
-                  "    criterion that adapts to the interior.  Report it as such: an\n"
-                  "    SH-truncation-error placement map, farthest-point as the safe\n"
-                  "    interior-agnostic default.")
+            print("      • and every criterion here correlates with radius at "
+                  "|rho| > 0.93, i.e.\n        it says 'go to the lowest points, where the "
+                  "degree-L model is worst'.\n"
+                  "    So this is a better GEOMETRIC rule — precomputable from the shape,\n"
+                  "    the tracking geometry and the SH degree, with no interior knowledge\n"
+                  "    — rather than a criterion that adapts to the interior.  Report it as\n"
+                  "    such, with farthest-point as the safe default.")
     else:
         print("  (run with n_sweep > 1: a single interior cannot rank placement rules)")
     if sweep is not None and gain >= 1.2 and nb >= 0.75 * n_dr:
@@ -807,7 +822,7 @@ def verdict(res, sweep=None, stability=None):
               '     degree-L spherical-harmonic model departs most from the\n'
               '     constant-density field tightens the worst-case mass-fraction\n'
               '     uncertainty by a further factor of roughly %.1f; since that map is\n'
-              '     fixed by the shape and the truncation degree, it requires no\n'
+              '     fixed by the shape, the tracking geometry and the truncation degree,\n'
               '     knowledge of the interior."' % gain)
     else:
         print("\n  Suggested sentence:\n"
@@ -901,7 +916,7 @@ def make_plots(res, outdir="Images"):
     fig.suptitle("Where should the cylinders go?  SH-aware criterion maps on the "
                  "common candidate pool", fontsize=13)
     fig.tight_layout()
-    fig.savefig(os.path.join(outdir, "global_pt3_fig1_criteria.png"),
+    fig.savefig(os.path.join(outdir, "global_pt3_fig1_criteria.pdf"),
                 dpi=180, bbox_inches="tight")
 
     # ---- FIG 2: mass-fraction recovery, all strategies ---------------------
@@ -955,7 +970,7 @@ def make_plots(res, outdir="Images"):
                      "(bar = median; below the line = worse than geometry)")
         a3.grid(True, axis="y", which="both", alpha=0.3); a3.legend(fontsize=8)
     fig.tight_layout()
-    fig.savefig(os.path.join(outdir, "global_pt3_fig2_massratio.png"),
+    fig.savefig(os.path.join(outdir, "global_pt3_fig2_massratio.pdf"),
                 dpi=180, bbox_inches="tight")
 
     # ---- FIG 3: position recovery ------------------------------------------
@@ -972,7 +987,7 @@ def make_plots(res, outdir="Images"):
                      "geometric vs SH-aware networks")
         ax.grid(True, axis="y", which="both", alpha=0.3); ax.legend(fontsize=8)
         fig.tight_layout()
-        fig.savefig(os.path.join(outdir, "global_pt3_fig3_position.png"),
+        fig.savefig(os.path.join(outdir, "global_pt3_fig3_position.pdf"),
                     dpi=180, bbox_inches="tight")
     plt.show()
 
@@ -1058,6 +1073,6 @@ if __name__ == "__main__":
         outdir="Images",
         verbose=True,
     )
-    print("\nSaved: Images/global_pt3_fig1_criteria.png, "
-          "global_pt3_fig2_massratio.png, global_pt3_fig3_position.png")
+    print("\nSaved: Images/global_pt3_fig1_criteria.pdf, "
+          "global_pt3_fig2_massratio.pdf, global_pt3_fig3_position.pdf")
     print("Done.")
