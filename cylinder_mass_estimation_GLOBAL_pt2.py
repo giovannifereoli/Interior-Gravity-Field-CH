@@ -131,8 +131,15 @@ def build_network(V, F, tm, n_cyl=6, radius=0.12, height=0.32, n_pts=180,
 def place_mascons(net, seed=2):
     """
     Scatter ANOMALIES for the experiment: one near-surface anomaly under each of
-    the first (n_cyl-1) cylinders, plus one DEEP anomaly at the centre (the hard
-    case that no near-surface patch sits close to).  Returns names, positions and
+    the first (n_cyl-1) cylinder SITES, plus one DEEP anomaly near the centre of
+    the shape (the hard case, far from every near-surface patch).
+
+    The cylinders are not assigned to anomalies: they are near-surface data
+    patches, every one of them enters the same joint least squares, and every
+    anomaly is estimated from all of them at once.  The shallow anomalies are
+    merely PLACED under cylinder sites so that "covered" and "uncovered" cases
+    both exist; the naming reflects where things sit, not who owns what.
+    Returns names, positions and
     truth mass fractions β_j = m_j/M* — a few per cent each, mixed signs
     (over- and under-dense), NOT ratios summing to one: the remaining
     β̃ = 1 − Σβ stays in the constant-density polyhedron.
@@ -141,12 +148,12 @@ def place_mascons(net, seed=2):
     for i, c in enumerate(net[:-1]):
         names.append(f"m{i} near {_axis_label(c['dir'])}")
         pos.append(0.72 * c["surf"])  # just inside the surface, under cylinder i
-    names.append("core (deep)")
+    names.append("deep (core)")
     pos.append(np.array([0.08, 0.0, 0.0]))
     pos = np.array(pos)
     rng = np.random.default_rng(seed)
     f = rng.uniform(0.015, 0.05, len(pos)) * rng.choice([-1.0, 1.0], len(pos))
-    f[-1] = abs(f[-1])  # the deep one is a dense core
+    f[-1] = abs(f[-1])  # keep the deep one an EXCESS (a dense concentration)
     return names, pos, f
 
 
@@ -274,6 +281,13 @@ def run(Lmax_sh=6, eps=0.02, ch_modes=(6, 6), n_cyl=6,
               f"Φ-to-field fit is unweighted")
         for nm, p, fr in zip(names, P, f_true):
             print(f"    {nm:16s} p={np.round(p,3)}  β={fr:+.3f}  |r|={np.linalg.norm(p):.2f}")
+        print(f"  CH cylinder sites (farthest-point order; every one of them "
+              f"enters the joint fit):")
+        for i_c, c in enumerate(net):
+            print(f"    C{i_c} {_axis_label(c['dir']):>3s}  surface="
+                  f"{np.round(c['surf'], 3)}  |r|={np.linalg.norm(c['surf']):.2f}"
+                  + ("   <- used by the 1-CH case" if i_c == 0 else
+                     "   <- added by the 2-CH case" if i_c == 1 else ""))
 
     # ── observable design blocks (all of them CONTRASTS vs the bulk) ────────
     A_sh = G.A_stokes_contrast(P, bulk, 2, Lmax_sh, Rref)
@@ -282,11 +296,15 @@ def run(Lmax_sh=6, eps=0.02, ch_modes=(6, 6), n_cyl=6,
     sig_ch_list = [s for _, s in ch_blocks]
 
     base = [(A_sh, sig_sh)]
-    # net[0] and net[1] are the two most-opposite cylinders (farthest-point order)
+    # Farthest-point order anchors net[0] at the −z extreme and puts net[1]
+    # farthest from it, so these two are the most widely separated pair.  Name
+    # the reduced configurations by WHERE their cylinders actually sit, since
+    # which patch is included is the whole point of the comparison.
+    c0, c1 = _axis_label(net[0]["dir"]), _axis_label(net[1]["dir"])
     cases = {
         "SH only": base,
-        "SH + 1 CH": base + [ch_blocks[0]],
-        "SH + 2 CH (opposite)": base + [ch_blocks[0], ch_blocks[1]],
+        f"SH + 1 CH ({c0})": base + [ch_blocks[0]],
+        f"SH + 2 CH ({c0},{c1})": base + [ch_blocks[0], ch_blocks[1]],
         f"SH + {n_cyl}-CH network": base + ch_blocks,
     }
 
@@ -295,13 +313,25 @@ def run(Lmax_sh=6, eps=0.02, ch_modes=(6, 6), n_cyl=6,
         print(f"\n{'-'*72}\n  A) MASS-FRACTION recovery (1σ on β_j over {n_mc} MC "
               f"draws)\n{'-'*72}")
         print(f"  {'anomaly':16s} " + " ".join(f"{k:>14s}" for k in cases))
-    sig_by_case = {}
+    # The body fraction is ESTIMATED too — not as a free parameter, but as the
+    # derived quantity β̃ = 1 − Σβ evaluated on every Monte-Carlo draw.  Mass
+    # conservation makes it a function of the anomalies, so it inherits their
+    # covariance: σ_β̃ = sqrt(1ᵀ Cov(β) 1), which is what the draws measure.
+    sig_by_case, bulk_by_case = {}, {}
     for k, blocks in cases.items():
         mc = G.monte_carlo_fit(blocks, f_true, n_mc=n_mc)
         sig_by_case[k] = mc.std(0)
+        bt = 1.0 - mc.sum(1)
+        bulk_by_case[k] = (float(bt.mean()), float(bt.std()))
     if verbose:
         for i, nm in enumerate(names):
             print(f"  {nm:16s} " + " ".join(f"{sig_by_case[k][i]:14.2e}" for k in cases))
+        print(f"  {'-'*72}")
+        print(f"  {'BODY β̃ =1−Σβ':16s} "
+              + " ".join(f"{bulk_by_case[k][1]:14.2e}" for k in cases))
+        net_k = f"SH + {n_cyl}-CH network"
+        print(f"    (truth β̃ = {beta_bulk:.4f};  recovered {bulk_by_case[net_k][0]:.4f}"
+              f" ± {bulk_by_case[net_k][1]:.4f} with the full network)")
         gains = sig_by_case["SH only"] / sig_by_case[f"SH + {n_cyl}-CH network"]
         print(f"  network gain vs SH: min={gains.min():.0f}× median={np.median(gains):.0f}× "
               f"max={gains.max():.0f}×")
@@ -328,7 +358,7 @@ def run(Lmax_sh=6, eps=0.02, ch_modes=(6, 6), n_cyl=6,
                   f"→ {pos_rms['SH only'][j]/pos_rms['network'][j]:.0f}× tighter")
 
     res = dict(V=V, F=F, Rb=Rb, net=net, names=names, P=P, f_true=f_true,
-               bulk=bulk, beta_bulk=beta_bulk,
+               bulk=bulk, beta_bulk=beta_bulk, bulk_by_case=bulk_by_case,
                n_cyl=n_cyl, cases=list(cases.keys()), sig_by_case=sig_by_case,
                pos_rms=pos_rms, pos_clouds=pos_clouds)
     make_plots(res, outdir=outdir)
@@ -347,28 +377,40 @@ def make_plots(res, outdir="Images"):
     V, F, P, net, names = res["V"], res["F"], res["P"], res["net"], res["names"]
     n_cyl = res["n_cyl"]
 
-    # ---- FIG 1: geometry — Eros + mascons + CH network ---------------------
-    fig = plt.figure(figsize=(8.5, 7))
-    ax = fig.add_subplot(111, projection="3d")
+    # ---- FIG 1: geometry + the truth mass budget ---------------------------
+    ft, beta_bulk = res["f_true"], res["beta_bulk"]
+    fig = plt.figure(figsize=(15.5, 6.4))
+    ax = fig.add_subplot(1, 2, 1, projection="3d")
     step = max(1, len(F) // 9000)
     ax.add_collection3d(Poly3DCollection(V[F[::step]], alpha=0.10,
                         facecolor="#9ecae1", edgecolor="0.6", linewidths=0.1))
-    for c in net:
+    for i_c, c in enumerate(net):
         o = c["obs"]
         ax.scatter(o[:, 0], o[:, 1], o[:, 2], s=3, color="crimson", alpha=0.5)
-    ax.scatter(P[:, 0], P[:, 1], P[:, 2], s=90, color="k", depthshade=False)
-    for nm, p in zip(names, P):
-        ax.text(p[0], p[1], p[2], "  " + nm.split()[0], fontsize=8)
+        # past the far tip of the cylinder's point cloud (height 0.32 + lift),
+        # otherwise the label sits inside the crimson cloud and is unreadable
+        t = c["surf"] + 0.40 * c["dir"]
+        ax.text(t[0], t[1], t[2], f"C{i_c} ({_axis_label(c['dir'])})",
+                fontsize=8, color="#8b0000", fontweight="bold", ha="center",
+                bbox=dict(fc="white", ec="0.7", alpha=0.8, pad=1.2, lw=0.4))
+    for nm, p, b in zip(names, P, ft):   # colour by SIGN, label with β_j
+        ax.scatter(p[0], p[1], p[2], s=90, depthshade=False, edgecolor="k",
+                   color=G.COLOR[0] if b > 0 else G.COLOR[2])
+        ax.text(p[0], p[1], p[2], f"  {nm.split()[0]} ({b:+.3f})", fontsize=8)
     ax.scatter([], [], color="crimson", label=f"{n_cyl} CH cylinders")
-    ax.scatter([], [], color="k", label="anomalies")
-    ax.set_title(f"Eros: constant-density bulk (β̃ = {res['beta_bulk']:.2f})"
-                 f" + {len(P)} anomalies\n+ CH network ({n_cyl} cylinders)")
+    ax.scatter([], [], color=G.COLOR[0], label=r"anomaly $\beta_j>0$")
+    ax.scatter([], [], color=G.COLOR[2], label=r"anomaly $\beta_j<0$")
+    ax.set_title("Interior = constant-density BODY "
+                 f"($\\tilde\\beta$ = {beta_bulk:.3f})\n"
+                 f"+ {len(P)} anomalies + CH network ({n_cyl} cylinders)")
     ax.set_xlabel("x [LU]"); ax.set_ylabel("y [LU]"); ax.set_zlabel("z [LU]")
     try:
         ax.set_box_aspect([1, 1, 1])
     except Exception:
         pass
     ax.legend(fontsize=9, loc="upper left")
+
+    G.draw_mass_budget(fig.add_subplot(1, 2, 2), names, ft, beta_bulk)
     fig.tight_layout()
     fig.savefig(os.path.join(outdir, "global_pt2_fig1_geometry.pdf"),
                 dpi=180, bbox_inches="tight")
@@ -377,23 +419,28 @@ def make_plots(res, outdir="Images"):
     fig, ax = plt.subplots(figsize=(14, 5.8))
     cases = res["cases"]  # SH / 1CH / 2CH / network
     sig = res["sig_by_case"]
-    x = np.arange(len(P))
+    nb = res["bulk_by_case"]
+    # the derived body fraction is shown alongside the anomalies it comes from
+    vals = {c: np.append(sig[c], nb[c][1]) for c in cases}
+    x = np.arange(len(P) + 1)
     w = 0.2
     colmap = {cases[0]: COLOR[2], cases[1]: COLOR[1], cases[2]: COLOR[3],
               cases[3]: COLOR[0]}
     offs = [-1.5 * w, -0.5 * w, 0.5 * w, 1.5 * w]
     for c, off in zip(cases, offs):
-        ax.bar(x + off, sig[c], w, color=colmap[c], edgecolor="k", label=c)
+        ax.bar(x + off, vals[c], w, color=colmap[c], edgecolor="k", label=c)
+    ax.axvline(len(P) - 0.5, color="0.6", ls="--", lw=1.2)
     ax.set_yscale("log")
     ax.set_xticks(x)
-    ax.set_xticklabels([n.replace(" ", "\n", 1) for n in names], fontsize=8)
+    ax.set_xticklabels([n.replace(" ", "\n", 1) for n in names]
+                       + ["BODY\n$\\tilde\\beta$ (derived)"], fontsize=8)
     ax.set_ylabel(r"mass-fraction 1$\sigma$ uncertainty $\sigma_\beta$")
-    ax.set_title("Mass-fraction recovery: SH → +1 CH → +2 CH (opposite) → CH network\n"
-                 "(each added cylinder constrains the anomalies it covers; "
-                 "the full network constrains ALL)")
-    gains = sig[cases[0]] / sig[cases[3]]
-    for i in range(len(P)):
-        ax.text(x[i] + 1.5 * w, sig[cases[3]][i], f"{gains[i]:.0f}×", ha="center",
+    ax.set_title("Mass-fraction recovery: SH → +1 CH → +2 CH → full CH network\n"
+                 "(each added patch constrains the anomalies it covers; the full "
+                 "network constrains ALL — and the body fraction with them)")
+    gains = vals[cases[0]] / vals[cases[3]]
+    for i in range(len(x)):
+        ax.text(x[i] + 1.5 * w, vals[cases[3]][i], f"{gains[i]:.0f}×", ha="center",
                 va="bottom", fontsize=8, fontweight="bold")
     ax.grid(True, axis="y", which="both", alpha=0.3); ax.legend(fontsize=9)
     fig.tight_layout()

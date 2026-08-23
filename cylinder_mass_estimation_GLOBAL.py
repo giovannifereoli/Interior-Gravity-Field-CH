@@ -990,14 +990,11 @@ def run_experiment(
         print(f"  recovered-mean bias:         SH={biasA:.2e}  SH+CH={biasB:.2e}  "
               f"(both ≈ unbiased)")
 
-    spec_shallow = stokes_power_spectrum(P[target], max(Lmax_sh + 6, 12), Rref)
-    spec_lobe = stokes_power_spectrum(P[1], max(Lmax_sh + 6, 12), Rref)
-
     res = dict(
         V=V, F=F, Rb=Rb, zmax=zmax, cyl=cyl, obs=obs, P=P, names=names,
         f_true=f_true, bulk=bulk, beta_bulk=beta_bulk,
         target=target, sdA=sdA, sdB=sdB, improve=improve,
-        posA=posA, posB=posB, spec_shallow=spec_shallow, spec_lobe=spec_lobe,
+        posA=posA, posB=posB,
         fitA=fitA, fitB=fitB, det=det, nl=nl, spectra=spectra,
         Lmax_sh=Lmax_sh, ch_modes=ch_modes, sig_sh=sig_sh, sig_ch=sig_ch,
     )
@@ -1010,12 +1007,56 @@ def run_experiment(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _plot_ellipse(ax, center, cov2, color, label, nsig=1.0):
-    vals, vecs = np.linalg.eigh(cov2)
-    vals = np.maximum(vals, 0)
-    t = np.linspace(0, 2 * np.pi, 120)
-    ell = vecs @ (nsig * np.sqrt(vals)[:, None] * np.array([np.cos(t), np.sin(t)]))
-    ax.plot(center[0] + ell[0], center[1] + ell[1], color=color, lw=2, label=label)
+def draw_mass_budget(ax, names, beta, beta_bulk=None):
+    """
+    Waterfall of the mass budget, shared by pt1/pt2/pt3.
+
+    The point it makes visible: the interior is NOT the mascons.  The
+    constant-density polyhedron carries a mass fraction β̃ of its own, each
+    anomaly then adds (β_j > 0) or removes (β_j < 0) a few per cent, and the
+    running total closes at exactly M* = 1.  That closure IS the constraint
+    β̃ = 1 − Σβ_j — mass conservation — rather than something imposed as an
+    extra observation.
+
+    The y-axis is zoomed onto the region the anomalies occupy, so the body's
+    bar runs off the bottom of the axis (it is labelled with its value); the
+    alternative is a 0–1 axis on which every anomaly step is invisible.
+    """
+    beta = np.asarray(beta, float)
+    if beta_bulk is None:
+        beta_bulk = bulk_fraction(beta)
+    vals = np.concatenate([[beta_bulk], beta])
+    ends = np.cumsum(vals)
+    start = ends - vals
+    x = np.arange(len(vals))
+    lo = min(beta_bulk, ends.min()) - 0.035
+    hi = max(1.0, ends.max()) + 0.030
+
+    cols = ["0.55"] + [COLOR[0] if v > 0 else COLOR[2] for v in beta]
+    ax.bar(x[0], beta_bulk - lo, bottom=lo, color=cols[0], edgecolor="k", width=0.62)
+    ax.bar(x[1:], vals[1:], bottom=start[1:], color=cols[1:], edgecolor="k", width=0.62)
+    for k in range(len(vals) - 1):  # waterfall connectors
+        ax.plot([x[k] + 0.31, x[k + 1] - 0.31], [ends[k]] * 2, color="0.5",
+                lw=0.9, ls=":")
+    ax.axhline(1.0, color="k", ls="--", lw=1.5)
+    ax.text(x[0] - 0.42, 1.0, r"$M^*=1$", va="bottom", ha="left", fontsize=10,
+            fontweight="bold")
+    for k, v in enumerate(vals):
+        ax.text(x[k], ends[k], f"{v:.3f}" if k == 0 else f"{v:+.3f}", ha="center",
+                va="bottom" if v > 0 else "top", fontsize=8, fontweight="bold")
+    ax.set_xticks(x)
+    ax.set_xticklabels(["BODY\n(const. density)"]
+                       + [n.split()[0] for n in names], fontsize=8)
+    ax.set_ylim(lo, hi)
+    ax.set_ylabel("cumulative mass fraction of $M^*$")
+    ax.set_title(r"Mass budget:  $\tilde\beta + \sum_j \beta_j = 1$"
+                 "\n(body bar runs off the axis bottom)", fontsize=10.5)
+    ax.grid(True, axis="y", alpha=0.3)
+    from matplotlib.patches import Patch
+    ax.legend(handles=[Patch(fc="0.55", ec="k", label=r"body $\tilde\beta$"),
+                       Patch(fc=COLOR[0], ec="k", label=r"anomaly $\beta_j>0$"),
+                       Patch(fc=COLOR[2], ec="k", label=r"anomaly $\beta_j<0$")],
+              fontsize=8, loc="lower right")
 
 
 def draw_silhouette(ax, V, F, i, j, color="0.82", edge="0.6", zorder=0):
@@ -1041,155 +1082,66 @@ def make_plots(res, outdir="Images"):
     cyl, obs, names = res["cyl"], res["obs"], res["names"]
     tgt = res["target"]
 
-    # ---- FIG 1: geometry + Stokes spectrum + mass-fraction bars ----------------
-    fig = plt.figure(figsize=(18, 5.4))
+    # ---- FIG 1: geometry + mass-fraction recovery + detection ---------------
+    fitA, fitB, det = res["fitA"], res["fitB"], res["det"]
+    ft = res["f_true"]
+    fig = plt.figure(figsize=(23, 5.4))
+    fig.suptitle("EXPERIMENT 1 — mass fractions, positions fixed "
+                 f"({len(fitA['samples'])} MC draws)", fontweight="bold", y=1.02)
 
-    ax = fig.add_subplot(1, 3, 1, projection="3d")
+    # (a) the interior model and the near-surface data
+    ax = fig.add_subplot(1, 4, 1, projection="3d")
     step = max(1, len(F) // 8000)
     pc = Poly3DCollection(V[F[::step]], alpha=0.18, facecolor="#9ecae1",
                           edgecolor="0.55", linewidths=0.1)
     ax.add_collection3d(pc)
     ax.scatter(obs[:, 0], obs[:, 1], obs[:, 2], c="crimson", s=4, alpha=0.6,
                label="CH cylinder data")
-    for i, (nm, p) in enumerate(zip(names, P)):
-        mk = "*" if i == tgt else "o"
-        sz = 240 if i == tgt else 120
-        ax.scatter(*p, c="k", s=sz, marker=mk)
-        ax.text(p[0], p[1], p[2], "  " + nm.split()[0], fontsize=8)
-    ax.set_title(f"Eros interior model: constant-density bulk\n"
-                 f"(β̃ = {res['beta_bulk']:.2f}) + {len(P)} anomalies")
+    for i_a, (nm, p_a) in enumerate(zip(names, P)):
+        mk = "*" if i_a == tgt else "o"
+        sz = 240 if i_a == tgt else 120
+        # colour by SIGN so an excess and a deficit are never confused
+        ax.scatter(*p_a, c=COLOR[0] if ft[i_a] > 0 else COLOR[2], s=sz,
+                   marker=mk, edgecolor="k", depthshade=False)
+        ax.text(p_a[0], p_a[1], p_a[2],
+                f"  {nm.split()[0]} ({ft[i_a]:+.3f})", fontsize=8)
+    ax.set_title("Interior = constant-density BODY "
+                 f"($\\tilde\\beta$ = {res['beta_bulk']:.3f})\n"
+                 f"+ {len(P)} anomalies ($\\beta_j$, signed)")
     ax.set_xlabel("x [LU]"); ax.set_ylabel("y [LU]"); ax.set_zlabel("z [LU]")
     try:
         ax.set_box_aspect([1, 1, 1])
     except Exception:
         pass
-    ax.legend(loc="upper left", fontsize=9)
+    ax.scatter([], [], color=COLOR[0], label=r"anomaly $\beta_j>0$")
+    ax.scatter([], [], color=COLOR[2], label=r"anomaly $\beta_j<0$")
+    ax.legend(loc="upper left", fontsize=8)
 
-    ax = fig.add_subplot(1, 3, 2)
-    degs = np.arange(len(res["spec_shallow"]))
-    ax.semilogy(degs, res["spec_shallow"], "-o", color=COLOR[0],
-                label=names[res["target"]])
-    ax.semilogy(degs, res["spec_lobe"], "-s", color=COLOR[2], label=names[1])
-    ax.axvspan(2, res["Lmax_sh"], color="0.85", label=f"observed SH (≤{res['Lmax_sh']})")
-    ax.set_xlabel("SH degree n"); ax.set_ylabel("Stokes signature (RMS per degree)")
-    ax.set_title("Where each anomaly's signature lives")
-    ax.grid(True, which="both", alpha=0.3); ax.legend(fontsize=9)
-
-    ax = fig.add_subplot(1, 3, 3)
-    xpos = np.arange(len(names)); w = 0.38
-    ax.bar(xpos - w/2, res["sdA"], w, color=COLOR[2], edgecolor="k", label="SH only")
-    ax.bar(xpos + w/2, res["sdB"], w, color=COLOR[0], edgecolor="k", label="SH + CH")
-    ax.set_yscale("log")
-    ax.set_xticks(xpos)
-    ax.set_xticklabels([n.replace(" ", "\n", 1) for n in names], fontsize=8)
-    ax.set_ylabel(r"mass-fraction 1σ uncertainty  $\sigma_{\beta}$")
-    ax.set_title("Mass-fraction recovery")
-    for i in range(len(names)):
-        ax.text(i, res["sdB"][i], f"{res['improve'][i]:.0f}×", ha="center",
-                va="bottom", fontsize=9, fontweight="bold")
-    ax.legend(fontsize=9)
-    fig.tight_layout()
-    fig.savefig(os.path.join(outdir, "global_fig1_massratio.pdf"),
-                dpi=180, bbox_inches="tight")
-
-    # ---- FIG 2: position error ellipses over the Eros cross-section ---------
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5.6))
-    for ax, plane, (i, j), lbl in [
-        (axes[0], "x–z", (0, 2), ("x", "z")),
-        (axes[1], "y–z", (1, 2), ("y", "z")),
-    ]:
-        draw_silhouette(ax, V, F, i, j)  # Eros cross-section for context
-        # all mascons in this plane
-        ax.scatter(P[:, i], P[:, j], c="k", s=30, zorder=5)
-        # cylinder footprint (projected) as a light band
-        cc = cyl.center
-        ax.plot([cc[i]], [cc[j]], marker="v", color="crimson", ms=9,
-                label="CH cylinder", zorder=6)
-        for case, col, name in [
-            (res["posA"], COLOR[2], "SH only"),
-            (res["posB"], COLOR[0], "SH + CH"),
-        ]:
-            C = case["cov"][np.ix_([i, j], [i, j])]
-            _plot_ellipse(ax, P[tgt][[i, j]], C, col, name)
-        ax.plot(*P[tgt][[i, j]], "k*", ms=15, label="anomaly (truth)", zorder=7)
-        ax.set_xlabel(f"{lbl[0]} [LU]"); ax.set_ylabel(f"{lbl[1]} [LU]")
-        ax.set_title(f"Anomaly localization on Eros ({plane})")
-        ax.set_aspect("equal"); ax.grid(True, alpha=0.25)
-        ax.legend(fontsize=8, loc="upper right")
-
-        # zoom inset at the SH+CH scale (≈100× finer) to reveal the red ellipse
-        axin = ax.inset_axes([0.04, 0.08, 0.30, 0.32])
-        Cb = res["posB"]["cov"][np.ix_([i, j], [i, j])]
-        _plot_ellipse(axin, P[tgt][[i, j]], Cb, COLOR[0], "SH+CH")
-        axin.plot(*P[tgt][[i, j]], "k*", ms=8)
-        w = 4 * math.sqrt(max(Cb[0, 0], Cb[1, 1]))
-        axin.set_xlim(P[tgt][i] - w, P[tgt][i] + w)
-        axin.set_ylim(P[tgt][j] - w, P[tgt][j] + w)
-        axin.set_title("SH+CH zoom (×%d)" % round(res["posA"]["rms"] / res["posB"]["rms"]),
-                       fontsize=8, color=COLOR[0])
-        axin.tick_params(labelsize=6)
-        axin.set_aspect("equal")
-        for s in axin.spines.values():
-            s.set_edgecolor(COLOR[0])
-    fig.suptitle(
-        f"Near-surface anomaly localization:  SH {res['posA']['rms']:.2e} LU  →  "
-        f"SH+CH {res['posB']['rms']:.2e} LU   "
-        f"({res['posA']['rms']/res['posB']['rms']:.0f}× tighter)",
-        fontweight="bold",
-    )
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
-    fig.savefig(os.path.join(outdir, "global_fig2_position.pdf"),
-                dpi=180, bbox_inches="tight")
-
-    # ---- FIG 3: EXPERIMENT 1 — mass-fraction fit + detection --------------------
-    fitA, fitB, det = res["fitA"], res["fitB"], res["det"]
-    ft = res["f_true"]
-    fig, axes = plt.subplots(1, 3, figsize=(19, 5.4))
-    fig.suptitle("EXPERIMENT 1 — mass fractions, positions fixed "
-                 f"({len(fitA['samples'])} MC draws)", fontweight="bold", y=1.02)
-
-    # (a) actual-fit recovery ERROR (RMS = bias⊕scatter) per quantity, log scale
-    ax = axes[0]
-    labels = [n.replace(" ", "\n", 1) for n in names] + ["BULK\n$\\tilde\\beta$"]
+    # (b) actual-fit recovery ERROR (RMS = bias ⊕ MC scatter) per quantity
+    ax = fig.add_subplot(1, 4, 3)
+    labels = [n.replace(" ", "\n", 1) for n in names] + ["BODY\n$\\tilde\\beta$"]
     xpos = np.arange(len(labels))
     truth = np.concatenate([ft, [res["beta_bulk"]]])
     meanA = np.concatenate([fitA["mean"], [fitA["bulk_mean"]]])
     stdA = np.concatenate([fitA["std"], [fitA["bulk_std"]]])
     meanB = np.concatenate([fitB["mean"], [fitB["bulk_mean"]]])
     stdB = np.concatenate([fitB["std"], [fitB["bulk_std"]]])
-    # RMS error about truth = sqrt(bias^2 + scatter^2)
     rmsA = np.sqrt((meanA - truth) ** 2 + stdA**2)
     rmsB = np.sqrt((meanB - truth) ** 2 + stdB**2)
     w = 0.38
     ax.bar(xpos - w / 2, rmsA, w, color=COLOR[2], edgecolor="k", label="SH only")
     ax.bar(xpos + w / 2, rmsB, w, color=COLOR[0], edgecolor="k", label="SH + CH")
     ax.set_yscale("log")
-    for i in range(len(labels)):
-        ax.text(i + w / 2, rmsB[i], f"{rmsA[i]/rmsB[i]:.0f}×", ha="center",
+    for i_b in range(len(labels)):
+        ax.text(i_b + w / 2, rmsB[i_b], f"{rmsA[i_b]/rmsB[i_b]:.0f}×", ha="center",
                 va="bottom", fontsize=9, fontweight="bold")
     ax.set_xticks(xpos); ax.set_xticklabels(labels, fontsize=9)
     ax.set_ylabel("mass-fraction recovery RMS error")
     ax.set_title("Recovery error (bias ⊕ MC scatter)")
     ax.grid(True, axis="y", which="both", alpha=0.3); ax.legend(fontsize=10)
 
-    # (b) the MC DISTRIBUTION of the recovered ANOMALY mass fraction (zoomed)
-    ax = axes[1]
-    sA, sB = fitA["samples"][:, 0], fitB["samples"][:, 0]  # anomaly (index 0)
-    lo, hi = ft[0] - 5 * sA.std(), ft[0] + 5 * sA.std()
-    bins = np.linspace(lo, hi, 40)
-    ax.hist(sA, bins=bins, color=COLOR[2], alpha=0.6, label=f"SH only (σ={sA.std():.1e})")
-    ax.hist(sB, bins=bins, color=COLOR[0], alpha=0.8,
-            label=f"SH + CH (σ={sB.std():.1e})")
-    ax.axvline(ft[0], color="k", ls="--", lw=2, label="truth")
-    ax.set_xlim(lo, hi)
-    ax.set_xlabel(r"recovered anomaly mass fraction $\hat\beta_0$")
-    ax.set_ylabel("MC count")
-    ax.set_title(f"Anomaly mass-fraction MC distribution\n({sA.std()/sB.std():.0f}× narrower "
-                 f"with CH; lobes & total unchanged)")
-    ax.legend(fontsize=9, loc="upper right")
-
     # (c) smallest detectable anomaly: recovered anomaly vs true anomaly
-    ax = axes[2]
+    ax = fig.add_subplot(1, 4, 4)
     mug = det["mu_grid"]
     ax.plot(mug, mug, "k--", lw=1, label="perfect recovery")
     ax.errorbar(mug, np.abs(det["muA"]), yerr=det["sdA"], fmt="o", color=COLOR[2],
@@ -1207,11 +1159,17 @@ def make_plots(res, outdir="Images"):
                  f"({det['thr_A']/det['thr_B']:.0f}× smaller with CH)")
     ax.grid(True, which="both", alpha=0.3); ax.legend(fontsize=8, loc="upper left")
 
+    # (b) the truth mass budget: body + anomalies = M*
+    draw_mass_budget(fig.add_subplot(1, 4, 2), names, ft, res["beta_bulk"])
+
     fig.tight_layout()
-    fig.savefig(os.path.join(outdir, "global_fig3_lsfit_detection.pdf"),
+    fig.savefig(os.path.join(outdir, "global_fig1_massfraction.pdf"),
                 dpi=180, bbox_inches="tight")
 
-    # ---- FIG 4: EXPERIMENT 2 — anomaly POSITION recovery (masses fixed) ------
+    # ---- FIG 2: EXPERIMENT 2 — anomaly POSITION recovery (masses fixed) ------
+    # The nonlinear MC fit, not the linearized covariance: with Parts 1–2 and
+    # Experiments 1–2 now sharing one observation model the two agree, so only
+    # the actual fit is plotted.
     nl = res["nl"]
     nlA, nlB = nl["nlA"], nl["nlB"]  # (n_mc, 3) position samples
     p0 = P[tgt]
@@ -1232,31 +1190,33 @@ def make_plots(res, outdir="Images"):
     ax.legend(fontsize=9)
 
     # (b,c) recovered position clouds over Eros silhouette (x–z, y–z)
-    for ax, (i, j), lbl in [(axes[1], (0, 2), ("x", "z")), (axes[2], (1, 2), ("y", "z"))]:
-        draw_silhouette(ax, V, F, i, j)
-        ax.scatter(nlA[:, i], nlA[:, j], s=12, color=COLOR[2], alpha=0.5,
+    for ax, (i_c, j_c), lbl in [(axes[1], (0, 2), ("x", "z")),
+                                (axes[2], (1, 2), ("y", "z"))]:
+        draw_silhouette(ax, V, F, i_c, j_c)
+        ax.scatter(nlA[:, i_c], nlA[:, j_c], s=12, color=COLOR[2], alpha=0.5,
                    label="SH only")
-        ax.scatter(nlB[:, i], nlB[:, j], s=12, color=COLOR[0], alpha=0.7,
+        ax.scatter(nlB[:, i_c], nlB[:, j_c], s=12, color=COLOR[0], alpha=0.7,
                    label="SH + CH")
-        ax.plot(p0[i], p0[j], "k*", ms=16, label="truth", zorder=6)
-        sA = max(nlA[:, i].std(), nlA[:, j].std())
-        ax.set_xlim(p0[i] - 5 * sA, p0[i] + 5 * sA)
-        ax.set_ylim(p0[j] - 5 * sA, p0[j] + 5 * sA)
+        ax.plot(p0[i_c], p0[j_c], "k*", ms=16, label="truth", zorder=6)
+        sA = max(nlA[:, i_c].std(), nlA[:, j_c].std())
+        ax.set_xlim(p0[i_c] - 5 * sA, p0[i_c] + 5 * sA)
+        ax.set_ylim(p0[j_c] - 5 * sA, p0[j_c] + 5 * sA)
         ax.set_xlabel(f"{lbl[0]} [LU]"); ax.set_ylabel(f"{lbl[1]} [LU]")
         ax.set_title(f"Recovered position ({lbl[0]}–{lbl[1]})")
-        ax.set_aspect("equal"); ax.grid(True, alpha=0.3); ax.legend(fontsize=8, loc="lower right")
+        ax.set_aspect("equal"); ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=8, loc="lower right")
 
         # zoom inset: SH+CH cloud is far tighter — invisible at the SH scale
         axin = ax.inset_axes([0.04, 0.06, 0.32, 0.32])
-        axin.scatter(nlB[:, i], nlB[:, j], s=8, color=COLOR[0], alpha=0.7)
-        axin.plot(p0[i], p0[j], "k*", ms=8)
-        sB = max(nlB[:, i].std(), nlB[:, j].std(), 1e-9)
-        axin.set_xlim(p0[i] - 4 * sB, p0[i] + 4 * sB)
-        axin.set_ylim(p0[j] - 4 * sB, p0[j] + 4 * sB)
+        axin.scatter(nlB[:, i_c], nlB[:, j_c], s=8, color=COLOR[0], alpha=0.7)
+        axin.plot(p0[i_c], p0[j_c], "k*", ms=8)
+        sB = max(nlB[:, i_c].std(), nlB[:, j_c].std(), 1e-9)
+        axin.set_xlim(p0[i_c] - 4 * sB, p0[i_c] + 4 * sB)
+        axin.set_ylim(p0[j_c] - 4 * sB, p0[j_c] + 4 * sB)
         axin.set_title("SH+CH zoom (×%d)" % round(sA / sB), fontsize=8, color=COLOR[0])
         axin.tick_params(labelsize=6); axin.set_aspect("equal")
-        for s in axin.spines.values():
-            s.set_edgecolor(COLOR[0])
+        for sp_ in axin.spines.values():
+            sp_.set_edgecolor(COLOR[0])
     fig.suptitle(
         f"EXPERIMENT 2 — anomaly position, masses fixed ({len(nlA)} MC draws):  "
         f"RMS  SH {nl['pos_rmsA']:.2e} LU → SH+CH {nl['pos_rmsB']:.2e} LU  "
@@ -1264,9 +1224,10 @@ def make_plots(res, outdir="Images"):
         fontweight="bold",
     )
     fig.tight_layout(rect=[0, 0, 1, 0.95])
-    fig.savefig(os.path.join(outdir, "global_fig4_nonlinear_mc.pdf"),
+    fig.savefig(os.path.join(outdir, "global_fig2_position.pdf"),
                 dpi=180, bbox_inches="tight")
-    # ---- FIG 5: coefficient spectra — homogeneous vs heterogeneous, pre/post fit
+
+    # ---- FIG 3: coefficient spectra — homogeneous vs heterogeneous, pre/post fit
     sp = res["spectra"]
     Lmin, Lmax = sp["Lmin"], sp["Lmax"]
     n_m, n_n = sp["ch_modes"]
@@ -1340,7 +1301,7 @@ def make_plots(res, outdir="Images"):
         transform=axes[1, 0].transAxes, ha="left", va="bottom", fontsize=9,
         family="monospace", bbox=dict(fc="w", ec="0.7", alpha=0.92))
     fig.tight_layout(rect=[0, 0, 1, 0.965])
-    fig.savefig(os.path.join(outdir, "global_fig5_coefficients.pdf"),
+    fig.savefig(os.path.join(outdir, "global_fig3_coefficients.pdf"),
                 dpi=180, bbox_inches="tight")
 
     plt.show()
@@ -1361,7 +1322,6 @@ if __name__ == "__main__":
         outdir="Images",
         verbose=True,
     )
-    print("\nSaved: Images/global_fig1_massratio.pdf, global_fig2_position.pdf, "
-          "global_fig3_lsfit_detection.pdf, global_fig4_nonlinear_mc.pdf, "
-          "global_fig5_coefficients.pdf")
+    print("\nSaved: Images/global_fig1_massfraction.pdf, "
+          "global_fig2_position.pdf, global_fig3_coefficients.pdf")
     print("Done.")

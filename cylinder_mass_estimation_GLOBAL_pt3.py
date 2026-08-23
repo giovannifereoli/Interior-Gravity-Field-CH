@@ -615,8 +615,13 @@ def run(Lmax_sh=6, eps=0.02, ch_modes=(6, 6), n_cyl=6, n_cand=140,
         cases[k] = base + blocks
 
     # ── A) MASS-RATIO recovery ──────────────────────────────────────────────
-    sig_by_case = {k: G.monte_carlo_fit(b, f_true, n_mc=n_mc).std(0)
-                   for k, b in cases.items()}
+    # β̃ = 1 − Σβ is estimated too, as a derived quantity on every MC draw
+    sig_by_case, bulk_by_case = {}, {}
+    for k, b in cases.items():
+        mc = G.monte_carlo_fit(b, f_true, n_mc=n_mc)
+        sig_by_case[k] = mc.std(0)
+        bt = 1.0 - mc.sum(1)
+        bulk_by_case[k] = (float(bt.mean()), float(bt.std()))
     if verbose:
         print(f"\n{'-'*78}\n  A) MASS-FRACTION sigma_beta  ({n_mc} MC least-squares "
               f"fits)\n{'-'*78}")
@@ -624,6 +629,11 @@ def run(Lmax_sh=6, eps=0.02, ch_modes=(6, 6), n_cyl=6, n_cand=140,
         for i, nm in enumerate(names):
             print(f"  {nm:14s} " + " ".join(f"{sig_by_case[k][i]:16.2e}" for k in cases))
         print(f"  {'-'*76}")
+        print(f"  {'BODY β̃':14s} " +
+              " ".join(f"{bulk_by_case[k][1]:16.2e}" for k in cases))
+        print(f"    (truth β̃ = {beta_bulk:.4f};  recovered "
+              f"{bulk_by_case['FPS (geometry)'][0]:.4f} ± "
+              f"{bulk_by_case['FPS (geometry)'][1]:.4f} with the FPS network)")
         print(f"  {'geom. mean':14s} " +
               " ".join(f"{np.exp(np.mean(np.log(sig_by_case[k]))):16.2e}" for k in cases))
         print(f"  {'WORST case':14s} " +
@@ -658,7 +668,7 @@ def run(Lmax_sh=6, eps=0.02, ch_modes=(6, 6), n_cyl=6, n_cand=140,
 
     res = dict(V=V, F=F, tm=tm, Rb=Rb, surf=surf, cand=cand, lift=lift, picks=picks,
                nets=nets, names=names, P=P, f_true=f_true, depth=depth,
-               bulk=bulk, beta_bulk=beta_bulk,
+               bulk=bulk, beta_bulk=beta_bulk, bulk_by_case=bulk_by_case,
                err_raw=err_raw, err_det=err_det, sig_kau=sig_kau,
                sig_trk=sig_trk, sig_det=sig_det, obs_track=obs_track,
                gap_lon=gap_lon, sc_fis=sc_fis, sc_tr=sc_tr,
@@ -864,13 +874,18 @@ def make_plots(res, outdir="Images"):
     for c in res["nets"]["FPS (geometry)"]:
         o = c["obs"]
         ax.scatter(o[:, 0], o[:, 1], o[:, 2], s=3, color="crimson", alpha=0.45)
-    ax.scatter(P[:, 0], P[:, 1], P[:, 2], s=80, color="k", depthshade=False)
-    for nm, p in zip(names, P):
-        ax.text(p[0], p[1], p[2], "  " + nm.split()[0], fontsize=8)
+    ft = res["f_true"]
+    for nm, p, b in zip(names, P, ft):   # colour by SIGN, label with β_j
+        ax.scatter(p[0], p[1], p[2], s=80, depthshade=False, edgecolor="k",
+                   color=G.COLOR[0] if b > 0 else G.COLOR[2])
+        ax.text(p[0], p[1], p[2], f"  {nm.split()[0]} ({b:+.3f})", fontsize=7.5)
     ax.scatter([], [], color="crimson", label="FPS network")
-    ax.scatter([], [], color="k", label="random mascons")
+    ax.scatter([], [], color=G.COLOR[0], label=r"anomaly $\beta_j>0$")
+    ax.scatter([], [], color=G.COLOR[2], label=r"anomaly $\beta_j<0$")
     ax.set_xlabel("x [LU]"); ax.set_ylabel("y [LU]"); ax.set_zlabel("z [LU]")
-    ax.set_title("Eros, randomly placed mascons\n(independent of every strategy)")
+    ax.set_title("Constant-density BODY "
+                 f"($\\tilde\\beta$ = {res['beta_bulk']:.3f})\n"
+                 f"+ {len(P)} random anomalies ($\\tilde\\beta+\\sum\\beta_j=1$)")
     try:
         ax.set_box_aspect([1, 1, 1])
     except Exception:
@@ -926,16 +941,21 @@ def make_plots(res, outdir="Images"):
     fig, axes = plt.subplots(1, ncol, figsize=(19 if has_sweep else 15.5, 5.8),
                              gridspec_kw={"width_ratios": [2.4, 1, 1.3][:ncol]})
     a1, a2 = axes[0], axes[1]
-    x = np.arange(len(P))
+    nb = res["bulk_by_case"]
+    vals = {k: np.append(sig[k], nb[k][1]) for k in cases}
+    x = np.arange(len(P) + 1)
     w = 0.8 / len(cases)
     cols = ["0.55"] + COLOR[:len(cases) - 1]
     for i, (k, col) in enumerate(zip(cases, cols)):
-        a1.bar(x + (i - (len(cases) - 1) / 2) * w, sig[k], w, color=col,
+        a1.bar(x + (i - (len(cases) - 1) / 2) * w, vals[k], w, color=col,
                edgecolor="k", lw=0.5, label=k)
+    a1.axvline(len(P) - 0.5, color="0.6", ls="--", lw=1.2)
     a1.set_yscale("log"); a1.set_xticks(x)
-    a1.set_xticklabels([n.replace(" ", "\n") for n in names], fontsize=8)
+    a1.set_xticklabels([n.replace(" ", "\n") for n in names]
+                       + ["BODY\n$\\tilde\\beta$"], fontsize=8)
     a1.set_ylabel(r"mass-fraction 1$\sigma$ uncertainty $\sigma_\beta$")
-    a1.set_title("Mass-ratio recovery per mascon (mascons sorted shallow → deep)")
+    a1.set_title("Mass-fraction recovery per anomaly (sorted shallow → deep)\n"
+                 r"plus the derived body fraction $\tilde\beta=1-\sum\beta_j$")
     a1.grid(True, axis="y", which="both", alpha=0.3); a1.legend(fontsize=8)
 
     gm = [np.exp(np.mean(np.log(sig[k]))) for k in cases]
