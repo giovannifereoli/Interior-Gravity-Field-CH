@@ -182,7 +182,7 @@ def ch_blocks_for(P, net, ch_modes, eps, f_true, bulk):
     blocks = []
     for c in net:
         Phi = G.cyl_basis(c["cyl"], c["obs"], *ch_modes)
-        pinv = np.linalg.pinv(Phi)                      # unweighted inner fit
+        pinv = G.ch_pinv(Phi)                # unweighted inner fit, trunc. SVD
         A_ch = pinv @ G.A_field_contrast(P, c["obs"], bulk)
         y_ch = pinv @ G.field_total(f_true, P, c["obs"], bulk)
         blocks.append((A_ch, G.od_sigma(y_ch, eps)))
@@ -233,7 +233,7 @@ def position_mc_net(
     if use_net:
         for c, s in zip(net, sig_ch_list):
             Phi = G.cyl_basis(c["cyl"], c["obs"], *ch_modes)
-            ch_data.append((np.linalg.pinv(Phi), c["obs"]))
+            ch_data.append((G.ch_pinv(Phi), c["obs"]))
             sig_blocks.append(s)
     p_true = P[j].copy()
     truth = _pos_forward_net(p_true, j, P, f_true, Lmax, Rref, ch_data, bulk)
@@ -385,11 +385,9 @@ def make_plots(res, outdir="Images"):
     ax.add_collection3d(Poly3DCollection(V[F[::step]], alpha=0.10,
                         facecolor="#9ecae1", edgecolor="0.6", linewidths=0.1))
     for i_c, c in enumerate(net):
-        o = c["obs"]
-        ax.scatter(o[:, 0], o[:, 1], o[:, 2], s=3, color="crimson", alpha=0.5)
-        # past the far tip of the cylinder's point cloud (height 0.32 + lift),
-        # otherwise the label sits inside the crimson cloud and is unreadable
-        t = c["surf"] + 0.40 * c["dir"]
+        G.draw_cylinder(ax, c["cyl"])
+        # past the far end of the cylinder, so the label never sits on it
+        t = c["surf"] + 0.42 * c["dir"]
         ax.text(t[0], t[1], t[2], f"C{i_c} ({_axis_label(c['dir'])})",
                 fontsize=8, color="#8b0000", fontweight="bold", ha="center",
                 bbox=dict(fc="white", ec="0.7", alpha=0.8, pad=1.2, lw=0.4))
@@ -397,20 +395,21 @@ def make_plots(res, outdir="Images"):
         ax.scatter(p[0], p[1], p[2], s=90, depthshade=False, edgecolor="k",
                    color=G.COLOR[0] if b > 0 else G.COLOR[2])
         ax.text(p[0], p[1], p[2], f"  {nm.split()[0]} ({b:+.3f})", fontsize=8)
-    ax.scatter([], [], color="crimson", label=f"{n_cyl} CH cylinders")
+    ax.plot([], [], color="crimson", lw=2, label=f"{n_cyl} CH cylinders")
     ax.scatter([], [], color=G.COLOR[0], label=r"anomaly $\beta_j>0$")
     ax.scatter([], [], color=G.COLOR[2], label=r"anomaly $\beta_j<0$")
     ax.set_title("Interior = constant-density BODY "
                  f"($\\tilde\\beta$ = {beta_bulk:.3f})\n"
                  f"+ {len(P)} anomalies + CH network ({n_cyl} cylinders)")
     ax.set_xlabel("x [LU]"); ax.set_ylabel("y [LU]"); ax.set_zlabel("z [LU]")
-    try:
-        ax.set_box_aspect([1, 1, 1])
-    except Exception:
-        pass
+    G.set_axes_true_shape(ax, np.vstack([V] + [G.cylinder_hull(c["cyl"])
+                                              for c in net]))
     ax.legend(fontsize=9, loc="upper left")
 
-    G.draw_mass_budget(fig.add_subplot(1, 2, 2), names, ft, beta_bulk)
+    net_key = f"SH + {n_cyl}-CH network"
+    G.draw_mass_budget(fig.add_subplot(1, 2, 2), names, ft, beta_bulk,
+                       recovered=res["bulk_by_case"][net_key],
+                       rec_label=net_key)
     fig.tight_layout()
     fig.savefig(os.path.join(outdir, "global_pt2_fig1_geometry.pdf"),
                 dpi=180, bbox_inches="tight")

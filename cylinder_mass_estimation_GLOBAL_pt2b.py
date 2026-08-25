@@ -238,7 +238,7 @@ def ch_blocks_comp(comps, net, ch_modes, eps, beta, bulk):
     blocks = []
     for c in net:
         Phi = G.cyl_basis(c["cyl"], c["obs"], *ch_modes)
-        pinv = np.linalg.pinv(Phi)                      # unweighted inner fit
+        pinv = G.ch_pinv(Phi)                # unweighted inner fit, trunc. SVD
         A_ch = pinv @ A_field_comp(comps, c["obs"], bulk)
         y_ch = pinv @ field_total_comp(beta, comps, c["obs"], bulk)
         blocks.append((A_ch, G.od_sigma(y_ch, eps)))
@@ -414,32 +414,46 @@ def make_plots(res, outdir="Images"):
     centres, comps = res["centres"], res["comps"]
 
     # ---- FIG 1: where the components are + the mass budget ------------------
-    fig = plt.figure(figsize=(15.5, 6.4))
-    ax = fig.add_subplot(1, 2, 1, projection="3d")
+    fig = plt.figure(figsize=(18, 6.8))
+    gs = fig.add_gridspec(1, 2, width_ratios=[1.45, 1], wspace=0.10)
+    ax = fig.add_subplot(gs[0, 0], projection="3d")
     step = max(1, len(F) // 9000)
     ax.add_collection3d(Poly3DCollection(V[F[::step]], alpha=0.10,
                         facecolor="#9ecae1", edgecolor="0.6", linewidths=0.1))
     for c in res["net"]:
-        o = c["obs"]
-        ax.scatter(o[:, 0], o[:, 1], o[:, 2], s=2, color="crimson", alpha=0.35)
-    for nm, (pts, _), b, tg in zip(names, comps, beta, res["target"]):
+        G.draw_cylinder(ax, c["cyl"], alpha=0.12, lw=0.7)
+    for nm, (pts, _), b in zip(names, comps, beta):
         col = COLOR[0] if b > 0 else COLOR[2]
-        ax.scatter(pts[:, 0], pts[:, 1], pts[:, 2], s=70 if len(pts) == 1 else 14,
-                   color=col, edgecolor="k", depthshade=False, lw=0.4)
-    for nm, c, b, tg in zip(names, centres, beta, res["target"]):
-        ax.text(c[0], c[1], c[2], f"  {nm} ({b:+.3f})\n   → {tg}", fontsize=7)
+        if len(pts) > 1:                     # extended: draw the ring as a RING
+            loop = np.vstack([pts, pts[:1]])
+            ax.plot(loop[:, 0], loop[:, 1], loop[:, 2], color=col, lw=2.6,
+                    zorder=5)
+        else:
+            ax.scatter(pts[:, 0], pts[:, 1], pts[:, 2], s=95, color=col,
+                       edgecolor="k", depthshade=False, lw=0.5, zorder=5)
+    # one short label per component, nudged radially outward so they do not pile
+    # up in the middle; the targets live in fig 2 and in the printed table
+    for nm, c, b in zip(names, centres, beta):
+        d = c / max(np.linalg.norm(c), 1e-9)
+        t = c + 0.22 * d
+        ax.text(t[0], t[1], t[2], f"{nm} {b:+.3f}", fontsize=8, ha="center",
+                fontweight="bold", zorder=6,
+                color=COLOR[0] if b > 0 else COLOR[2],
+                bbox=dict(fc="white", ec="0.75", alpha=0.85, pad=1.2, lw=0.4))
     ax.scatter([], [], color=COLOR[0], label=r"compaction $\beta_j>0$")
     ax.scatter([], [], color=COLOR[2], label=r"porosity $\beta_j<0$")
-    ax.scatter([], [], color="crimson", label=f"{res['n_cyl']} CH cylinders")
+    ax.plot([], [], color="crimson", lw=2, label=f"{res['n_cyl']} CH cylinders")
     ax.set_xlabel("x [LU]"); ax.set_ylabel("y [LU]"); ax.set_zlabel("z [LU]")
     ax.set_title("Components placed to TARGET specific coefficients\n"
-                 f"on a constant-density body ($\\tilde\\beta$ = {res['beta_bulk']:.3f})")
-    try:
-        ax.set_box_aspect([1, 1, 1])
-    except Exception:
-        pass
+                 f"on a constant-density body ($\\tilde\\beta$ = {res['beta_bulk']:.3f})"
+                 "\n(targets: see fig. 2)", fontsize=10.5)
+    G.set_axes_true_shape(ax, np.vstack([V] + [G.cylinder_hull(c["cyl"])
+                                              for c in res["net"]]))
+    ax.view_init(elev=24, azim=-58)
     ax.legend(fontsize=8, loc="upper left")
-    G.draw_mass_budget(fig.add_subplot(1, 2, 2), names, beta, res["beta_bulk"])
+    G.draw_mass_budget(fig.add_subplot(gs[0, 1]), names, beta, res["beta_bulk"],
+                       recovered=(res["btB"].mean(), res["btB"].std()),
+                       rec_label=f"SH + {res['n_cyl']}-CH network")
     fig.tight_layout()
     fig.savefig(os.path.join(outdir, "global_pt2b_fig1_components.pdf"),
                 dpi=180, bbox_inches="tight")

@@ -325,10 +325,45 @@ def cyl_basis(cyl: Cylinder, obs, n_m, n_n):
     return np.column_stack(cols)
 
 
-def ch_projector(Phi):
-    """P_CH = Φ(ΦᵀΦ)⁻¹Φᵀ : projection onto the span the CH model can represent."""
-    # use a pseudo-inverse for numerical safety (Φ can be rank-deficient)
-    return Phi @ np.linalg.pinv(Phi.T @ Phi) @ Phi.T
+# Truncated-SVD cutoff for every CH pseudo-inverse.  This matters more than it
+# looks.  Over a patch the Bessel-Fourier columns are close to linearly
+# dependent (cond(Phi) ~ 1e16), and `np.linalg.pinv`'s DEFAULT cutoff is
+# machine-epsilon based — max(M,N)*eps*s_max, about 9e-12 relative — so it keeps
+# directions whose singular value is ~1e-13 of the largest.  Their coefficients
+# come out as (projection)/sigma, i.e. enormous, and cancel again when
+# multiplied back by Phi.  That, and nothing else, is why raw CH coefficients
+# come out at 1e10 and refuse to decay with m.  Measured here at (8,8), 200 pts:
+#
+#   rcond    kept   ||c||    fit err   m-spectrum last/first
+#   default    82   9.5e+09    2.1 %   3.13   (RISES)
+#   1e-8       46   8.8e+05    4.7 %   0.18
+#   1e-6       31   6.9e+03    6.9 %   1.2e-04
+#   1e-4       16   1.6e+02   10.0 %   3.8e-07
+#
+# Truncating is not cosmetic: the discarded directions carry noise, not signal,
+# so counting them as information inflates what the CH block appears to know.
+# `cylinder_mass_estimation_BENNU_TAG.fit_coefficients` has always passed an
+# explicit cond for this reason; the reference `..._MOV` script does not (it
+# builds a regularization block, `order_weights`, and then drops it before the
+# solve).  NOTE: with a large truncation and few sample points the system goes
+# UNDERdetermined (e.g. (25,25) = 1250 columns against 4x190 = 760 rows), and
+# numpy's minimum-norm solution then looks well behaved for a different reason —
+# do not read that as the basis being well conditioned.
+CH_RCOND = 1e-4
+
+
+def ch_pinv(Phi, rcond=None):
+    """Truncated-SVD pseudo-inverse of the CH basis (see CH_RCOND)."""
+    return np.linalg.pinv(Phi, rcond=CH_RCOND if rcond is None else rcond)
+
+
+def ch_projector(Phi, rcond=None):
+    """
+    P_CH : projection onto the span the CH model can actually represent, built
+    from the SAME truncated pseudo-inverse the fits use, so the projector and
+    the coefficient designs agree on what "representable" means.
+    """
+    return Phi @ ch_pinv(Phi, rcond=rcond)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -444,8 +479,11 @@ class Bulk:
         u, wu = _gauss01(ng)
         UU, VV, WW = np.meshgrid(u, u, u, indexing="ij")
         Wq = (
-            wu[:, None, None] * wu[None, :, None] * wu[None, None, :]
-            * (1.0 - UU) ** 2 * (1.0 - VV)
+            wu[:, None, None]
+            * wu[None, :, None]
+            * wu[None, None, :]
+            * (1.0 - UU) ** 2
+            * (1.0 - VV)
         ).ravel()
         l1 = UU.ravel()
         l2 = (VV * (1.0 - UU)).ravel()
@@ -477,8 +515,9 @@ def A_stokes_contrast(positions, bulk, Lmin, Lmax, Rref):
     [ Stokes of a unit mass at p_j ] − [ Stokes of the same mass spread through
     the body ] — the signature of a density CONTRAST, not of mass in vacuum.
     """
-    return (A_stokes(positions, Lmin, Lmax, Rref)
-            - bulk.stokes(Lmin, Lmax, Rref)[:, None])
+    return (
+        A_stokes(positions, Lmin, Lmax, Rref) - bulk.stokes(Lmin, Lmax, Rref)[:, None]
+    )
 
 
 def A_field_contrast(positions, obs, bulk):
@@ -488,8 +527,10 @@ def A_field_contrast(positions, obs, bulk):
 
 def stokes_total(beta, positions, bulk, Lmin, Lmax, Rref):
     """Full Stokes vector of the truth model  β̃·CD + Σ β_j pt_j."""
-    return (bulk.stokes(Lmin, Lmax, Rref)
-            + A_stokes_contrast(positions, bulk, Lmin, Lmax, Rref) @ beta)
+    return (
+        bulk.stokes(Lmin, Lmax, Rref)
+        + A_stokes_contrast(positions, bulk, Lmin, Lmax, Rref) @ beta
+    )
 
 
 def field_total(beta, positions, obs, bulk):
@@ -536,7 +577,7 @@ def od_sigma(cs, eps, floor_frac=0.1):
     faster than the signal does.  A degree-dependent rule slots in here.
     """
     cs = np.asarray(cs, float)
-    floor = floor_frac * float(np.sqrt(np.mean(cs ** 2)))
+    floor = floor_frac * float(np.sqrt(np.mean(cs**2)))
     return eps * np.maximum(np.abs(cs), floor)
 
 
@@ -601,7 +642,6 @@ def mascon_arrays():
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-
 def stokes_power_spectrum(p, Lmax, Rref):
     """RMS Stokes magnitude per degree for a unit mass at p (shows where its
     signature lives: shallow → high degree, deep → low degree)."""
@@ -619,8 +659,9 @@ def stokes_power_spectrum(p, Lmax, Rref):
     return np.asarray(out)
 
 
-def position_covariance(idx, P, obs, cyl, ch_modes, sig_sh, sig_ch, Lmax, Rref,
-                        pinvPhi):
+def position_covariance(
+    idx, P, obs, cyl, ch_modes, sig_sh, sig_ch, Lmax, Rref, pinvPhi
+):
     """
     Linearized position covariance of anomaly `idx`, with its truth mass
     fraction, from SH-only and SH+CH.  Position partials by central differences,
@@ -643,7 +684,10 @@ def position_covariance(idx, P, obs, cyl, ch_modes, sig_sh, sig_ch, Lmax, Rref,
             J[:, k] = mass * (func(p0 + d) - func(p0 - d)) / (2 * eps)
         return J
 
-    Jsh = jac(lambda p: sh_stokes_of_point(p, 2, Lmax, Rref), A_stokes(P, 2, Lmax, Rref).shape[0])
+    Jsh = jac(
+        lambda p: sh_stokes_of_point(p, 2, Lmax, Rref),
+        A_stokes(P, 2, Lmax, Rref).shape[0],
+    )
     Jsh_w = Jsh / _col(sig_sh)
     Fi_A = Jsh_w.T @ Jsh_w
     Jch = pinvPhi @ jac(lambda p: point_mass_field(p, obs), 4 * len(obs))
@@ -676,7 +720,7 @@ def ch_coeff_design(P, obs, cyl, ch_modes, bulk):
     anomalies are estimated.
     """
     Phi = cyl_basis(cyl, obs, *ch_modes)
-    return np.linalg.pinv(Phi) @ A_field_contrast(P, obs, bulk)  # (n_ch, n_anom)
+    return ch_pinv(Phi) @ A_field_contrast(P, obs, bulk)  # (n_ch, n_anom)
 
 
 def ls_fit_once(blocks, m_true, rng):
@@ -704,8 +748,7 @@ def monte_carlo_fit(blocks, m_true, n_mc=400, seed=7):
     return np.array([ls_fit_once(blocks, m_true, rng) for _ in range(n_mc)])
 
 
-def detection_sweep(A_sh, sig_sh, A_ch, sig_ch, f_base, mu_grid,
-                    n_mc=250, seed=11):
+def detection_sweep(A_sh, sig_sh, A_ch, sig_ch, f_base, mu_grid, n_mc=250, seed=11):
     """
     Smallest detectable anomaly with vs without the cylinder.  Sweeps the true
     shallow-anomaly fraction β_0 over `mu_grid`, keeps the two deep anomalies
@@ -719,15 +762,19 @@ def detection_sweep(A_sh, sig_sh, A_ch, sig_ch, f_base, mu_grid,
         m_true[0] = mu
         A = monte_carlo_fit([(A_sh, sig_sh)], m_true, n_mc, seed)
         B = monte_carlo_fit([(A_sh, sig_sh), (A_ch, sig_ch)], m_true, n_mc, seed)
-        out["muA"].append(A[:, 0].mean()); out["sdA"].append(A[:, 0].std())
-        out["muB"].append(B[:, 0].mean()); out["sdB"].append(B[:, 0].std())
+        out["muA"].append(A[:, 0].mean())
+        out["sdA"].append(A[:, 0].std())
+        out["muB"].append(B[:, 0].mean())
+        out["sdB"].append(B[:, 0].std())
     for k in out:
         out[k] = np.asarray(out[k])
     out["mu_grid"] = np.asarray(mu_grid)
+
     # 3σ detection threshold = smallest true anomaly whose recovery exceeds 3×scatter
     def thr(mu, sd):
         floor = np.median(sd)  # scatter is ~flat in the fraction (linear problem)
         return 3.0 * floor
+
     out["thr_A"] = thr(out["mu_grid"], out["sdA"])
     out["thr_B"] = thr(out["mu_grid"], out["sdB"])
     return out
@@ -760,17 +807,40 @@ def _pos_forward(pos0, masses, lobe_pos, Lmax, Rref, obs, pinvPhi, use_ch, bulk)
     return blocks
 
 
-def _pos_residual(pos0, data_blocks, sig_blocks, masses, lobe_pos, Lmax, Rref,
-                  obs, pinvPhi, use_ch, bulk):
-    model = _pos_forward(pos0, masses, lobe_pos, Lmax, Rref, obs, pinvPhi,
-                         use_ch, bulk)
-    return np.concatenate([(mo - da) / s for mo, da, s in
-                           zip(model, data_blocks, sig_blocks)])
+def _pos_residual(
+    pos0,
+    data_blocks,
+    sig_blocks,
+    masses,
+    lobe_pos,
+    Lmax,
+    Rref,
+    obs,
+    pinvPhi,
+    use_ch,
+    bulk,
+):
+    model = _pos_forward(pos0, masses, lobe_pos, Lmax, Rref, obs, pinvPhi, use_ch, bulk)
+    return np.concatenate(
+        [(mo - da) / s for mo, da, s in zip(model, data_blocks, sig_blocks)]
+    )
 
 
 def position_mc(
-    P, f_true, obs, cyl, ch_modes, Lmax, Rref, sig_sh, sig_ch, bulk,
-    use_ch=False, n_mc=150, seed=21, start_offset=0.03,
+    P,
+    f_true,
+    obs,
+    cyl,
+    ch_modes,
+    Lmax,
+    Rref,
+    sig_sh,
+    sig_ch,
+    bulk,
+    use_ch=False,
+    n_mc=150,
+    seed=21,
+    start_offset=0.03,
 ):
     """
     EXPERIMENT 2 — Monte-Carlo NONLINEAR least-squares recovery of the anomaly
@@ -779,25 +849,42 @@ def position_mc(
     TRF).  Returns recovered positions (n_mc, 3).
     """
     Phi = cyl_basis(cyl, obs, *ch_modes)
-    pinvPhi = np.linalg.pinv(Phi)
+    pinvPhi = ch_pinv(Phi)
     masses = f_true
     lobe_pos = [P[1], P[2]]
     pos_true = P[0].copy()
-    truth_blocks = _pos_forward(pos_true, masses, lobe_pos, Lmax, Rref, obs,
-                                pinvPhi, use_ch, bulk)
+    truth_blocks = _pos_forward(
+        pos_true, masses, lobe_pos, Lmax, Rref, obs, pinvPhi, use_ch, bulk
+    )
     sig_blocks = [sig_sh, sig_ch][: len(truth_blocks)]
 
     rng = np.random.default_rng(seed)
     out = []
     for _ in range(n_mc):
-        data = [tb + rng.normal(0.0, s, size=tb.shape)
-                for tb, s in zip(truth_blocks, sig_blocks)]
+        data = [
+            tb + rng.normal(0.0, s, size=tb.shape)
+            for tb, s in zip(truth_blocks, sig_blocks)
+        ]
         pos0 = pos_true + start_offset
         sol = least_squares(
-            _pos_residual, pos0, method="trf",
-            args=(data, sig_blocks, masses, lobe_pos, Lmax, Rref, obs, pinvPhi,
-                  use_ch, bulk),
-            xtol=1e-12, ftol=1e-12, max_nfev=400,
+            _pos_residual,
+            pos0,
+            method="trf",
+            args=(
+                data,
+                sig_blocks,
+                masses,
+                lobe_pos,
+                Lmax,
+                Rref,
+                obs,
+                pinvPhi,
+                use_ch,
+                bulk,
+            ),
+            xtol=1e-12,
+            ftol=1e-12,
+            max_nfev=400,
         )
         out.append(sol.x)
     return np.asarray(out)
@@ -836,10 +923,14 @@ def run_experiment(
         print(SEP)
         print("  Interior-density recovery: SH  vs  SH+CH   (Eros, normalized units)")
         print(SEP)
-        print(f"  Brillouin R* = {Rb:.3f} LU,  z_max = {zmax:.3f} LU,  "
-              f"volume = {bulk.volume:.4f} LU³")
-        print(f"  BULK: constant-density polyhedron, β̃ = 1 − Σβ = {beta_bulk:.3f} "
-              f"of M*  (C̄20 = {bulk.stokes(2, Lmax_sh, Rref)[0]:+.4f})")
+        print(
+            f"  Brillouin R* = {Rb:.3f} LU,  z_max = {zmax:.3f} LU,  "
+            f"volume = {bulk.volume:.4f} LU³"
+        )
+        print(
+            f"  BULK: constant-density polyhedron, β̃ = 1 − Σβ = {beta_bulk:.3f} "
+            f"of M*  (C̄20 = {bulk.stokes(2, Lmax_sh, Rref)[0]:+.4f})"
+        )
         print("  anomalies (truth mass fractions β_j, + = excess, − = deficit):")
         for nm, p, fr in zip(names, P, f_true):
             print(f"    {nm:22s} p={np.round(p,3)}  β={fr:+.3f}  depth={zmax-p[2]:.3f}")
@@ -856,7 +947,7 @@ def run_experiment(
     A_sh = A_stokes_contrast(P, bulk, 2, Lmax_sh, Rref)
     A_fd = A_field_contrast(P, obs, bulk)
     Phi = cyl_basis(cyl, obs, *ch_modes)
-    pinvPhi = np.linalg.pinv(Phi)          # the UNWEIGHTED inner CH fit
+    pinvPhi = ch_pinv(Phi)  # UNWEIGHTED inner CH fit, truncated SVD
     A_ch = ch_coeff_design(P, obs, cyl, ch_modes, bulk)
 
     # OD-like per-coefficient noise on the FULL measured coefficients (bulk +
@@ -866,25 +957,35 @@ def run_experiment(
     y_ch_tot = pinvPhi @ y_fd_tot
     sig_sh = od_sigma(y_sh_tot, eps)
     sig_ch = od_sigma(y_ch_tot, eps)
-    blocksA = [(A_sh, sig_sh)]                      # SH only
-    blocksB = [(A_sh, sig_sh), (A_ch, sig_ch)]      # SH + CH
+    blocksA = [(A_sh, sig_sh)]  # SH only
+    blocksB = [(A_sh, sig_sh), (A_ch, sig_ch)]  # SH + CH
     if verbose:
-        print(f"  cylinder over anomaly: {len(obs)} vacuum pts, "
-              f"|r|∈[{r_obs.min():.2f},{r_obs.max():.2f}] ⊂ Brillouin {Rb:.2f}")
+        print(
+            f"  cylinder over anomaly: {len(obs)} vacuum pts, "
+            f"|r|∈[{r_obs.min():.2f},{r_obs.max():.2f}] ⊂ Brillouin {Rb:.2f}"
+        )
         d_fd = A_fd @ f_true
         rep_ch = float(np.linalg.norm(ch_projector(Phi) @ d_fd) / np.linalg.norm(d_fd))
-        print(f"  observables: SH deg 2..{Lmax_sh} ({A_sh.shape[0]} coeffs)"
-              f" | CH modes {ch_modes} ({Phi.shape[1]} cols)"
-              f"  [no Σβ=1 row — the mass budget is structural]")
-        print(f"  weights: OD-like σ_i = {eps}·|coeff_i| (floor 10% of RMS)  →  "
-              f"σ_SH ∈ [{sig_sh.min():.2e}, {sig_sh.max():.2e}], "
-              f"σ_CH ∈ [{sig_ch.min():.2e}, {sig_ch.max():.2e}]")
-        print(f"  inner CH fit (Φ c = field) is UNWEIGHTED; its span captures "
-              f"{rep_ch:.3f} of the near-surface discrepancy")
-        print(f"  discrepancy / full field:  SH "
-              f"{np.sqrt(np.mean((A_sh @ f_true)**2)) / np.sqrt(np.mean(y_sh_tot**2)):.3f}"
-              f"   near-surface "
-              f"{np.sqrt(np.mean(d_fd**2)) / np.sqrt(np.mean(y_fd_tot**2)):.3f}")
+        print(
+            f"  observables: SH deg 2..{Lmax_sh} ({A_sh.shape[0]} coeffs)"
+            f" | CH modes {ch_modes} ({Phi.shape[1]} cols)"
+            f"  [no Σβ=1 row — the mass budget is structural]"
+        )
+        print(
+            f"  weights: OD-like σ_i = {eps}·|coeff_i| (floor 10% of RMS)  →  "
+            f"σ_SH ∈ [{sig_sh.min():.2e}, {sig_sh.max():.2e}], "
+            f"σ_CH ∈ [{sig_ch.min():.2e}, {sig_ch.max():.2e}]"
+        )
+        print(
+            f"  inner CH fit (Φ c = field) is UNWEIGHTED; its span captures "
+            f"{rep_ch:.3f} of the near-surface discrepancy"
+        )
+        print(
+            f"  discrepancy / full field:  SH "
+            f"{np.sqrt(np.mean((A_sh @ f_true)**2)) / np.sqrt(np.mean(y_sh_tot**2)):.3f}"
+            f"   near-surface "
+            f"{np.sqrt(np.mean(d_fd**2)) / np.sqrt(np.mean(y_fd_tot**2)):.3f}"
+        )
 
     # ── PART 1 — mass fractions ────────────────────────────────────────────────
     Fi_A = fisher_masses(blocksA)
@@ -893,7 +994,9 @@ def run_experiment(
     improve = sdA / sdB
     if verbose:
         print(f"\n{'-'*70}\n  PART 1 — MASS-FRACTION UNCERTAINTY (1σ on β_j)\n{'-'*70}")
-        print(f"  {'anomaly':22s} {'depth':>6} {'σ_SH':>10} {'σ_SH+CH':>10} {'gain':>7}")
+        print(
+            f"  {'anomaly':22s} {'depth':>6} {'σ_SH':>10} {'σ_SH+CH':>10} {'gain':>7}"
+        )
         for nm, p, a, b in zip(names, P, sdA, sdB):
             print(f"  {nm:22s} {zmax-p[2]:6.3f} {a:10.2e} {b:10.2e} {a/b:6.1f}×")
 
@@ -902,10 +1005,14 @@ def run_experiment(
         target, P, obs, cyl, ch_modes, sig_sh, sig_ch, Lmax_sh, Rref, pinvPhi
     )
     if verbose:
-        print(f"\n{'-'*70}\n  PART 2 — POSITION OF NEAR-SURFACE ANOMALY "
-              f"(β={f_true[target]:+.3f})\n{'-'*70}")
-        print(f"  position 1σ RMS:  SH={posA['rms']:.3e} LU   SH+CH={posB['rms']:.3e} LU"
-              f"   → {posA['rms']/posB['rms']:.0f}× tighter")
+        print(
+            f"\n{'-'*70}\n  PART 2 — POSITION OF NEAR-SURFACE ANOMALY "
+            f"(β={f_true[target]:+.3f})\n{'-'*70}"
+        )
+        print(
+            f"  position 1σ RMS:  SH={posA['rms']:.3e} LU   SH+CH={posB['rms']:.3e} LU"
+            f"   → {posA['rms']/posB['rms']:.0f}× tighter"
+        )
 
     # ══ EXPERIMENT 1 — MASS FRACTIONS (all positions FIXED) ════════════════
     # Monte-Carlo linear least squares on coefficient observables: SH Stokes
@@ -914,24 +1021,42 @@ def run_experiment(
     # the bulk fraction β̃ = 1 − Σβ follows from the fit rather than being fitted.
     mcA = monte_carlo_fit(blocksA, f_true, n_mc=n_mc)
     mcB = monte_carlo_fit(blocksB, f_true, n_mc=n_mc)
-    fitA = dict(mean=mcA.mean(0), std=mcA.std(0), samples=mcA,
-                bulk_mean=(1.0 - mcA.sum(1)).mean(), bulk_std=(1.0 - mcA.sum(1)).std())
-    fitB = dict(mean=mcB.mean(0), std=mcB.std(0), samples=mcB,
-                bulk_mean=(1.0 - mcB.sum(1)).mean(), bulk_std=(1.0 - mcB.sum(1)).std())
+    fitA = dict(
+        mean=mcA.mean(0),
+        std=mcA.std(0),
+        samples=mcA,
+        bulk_mean=(1.0 - mcA.sum(1)).mean(),
+        bulk_std=(1.0 - mcA.sum(1)).std(),
+    )
+    fitB = dict(
+        mean=mcB.mean(0),
+        std=mcB.std(0),
+        samples=mcB,
+        bulk_mean=(1.0 - mcB.sum(1)).mean(),
+        bulk_std=(1.0 - mcB.sum(1)).std(),
+    )
     if verbose:
-        print(f"\n{'='*70}\n  EXPERIMENT 1 — MASS FRACTIONS, positions FIXED "
-              f"({n_mc} draws)\n{'='*70}")
-        print(f"  {'quantity':22s} {'truth':>8} | {'SH: mean±std':>20} {'err%':>6}"
-              f" | {'SH+CH: mean±std':>20} {'err%':>6}")
+        print(
+            f"\n{'='*70}\n  EXPERIMENT 1 — MASS FRACTIONS, positions FIXED "
+            f"({n_mc} draws)\n{'='*70}"
+        )
+        print(
+            f"  {'quantity':22s} {'truth':>8} | {'SH: mean±std':>20} {'err%':>6}"
+            f" | {'SH+CH: mean±std':>20} {'err%':>6}"
+        )
         for k, nm in enumerate(names):
             ta = f"{fitA['mean'][k]:+.4f}±{fitA['std'][k]:.4f}"
             tb = f"{fitB['mean'][k]:+.4f}±{fitB['std'][k]:.4f}"
-            ea = 100 * abs(fitA['mean'][k] - f_true[k]) / abs(f_true[k])
-            eb = 100 * abs(fitB['mean'][k] - f_true[k]) / abs(f_true[k])
-            print(f"  {nm:22s} {f_true[k]:+8.3f} | {ta:>20} {ea:5.1f}% | {tb:>20} {eb:5.1f}%")
+            ea = 100 * abs(fitA["mean"][k] - f_true[k]) / abs(f_true[k])
+            eb = 100 * abs(fitB["mean"][k] - f_true[k]) / abs(f_true[k])
+            print(
+                f"  {nm:22s} {f_true[k]:+8.3f} | {ta:>20} {ea:5.1f}% | {tb:>20} {eb:5.1f}%"
+            )
         ta = f"{fitA['bulk_mean']:+.4f}±{fitA['bulk_std']:.4f}"
         tb = f"{fitB['bulk_mean']:+.4f}±{fitB['bulk_std']:.4f}"
-        print(f"  {'BULK β̃ = 1 − Σβ':21s} {beta_bulk:+8.3f} | {ta:>20} {'':5} | {tb:>20}")
+        print(
+            f"  {'BULK β̃ = 1 − Σβ':21s} {beta_bulk:+8.3f} | {ta:>20} {'':5} | {tb:>20}"
+        )
 
     # ── COEFFICIENT SPECTRA: homogeneous vs heterogeneous, pre/post fit ────
     # The whole parameterization in one picture.  The HOMOGENEOUS body gives
@@ -940,63 +1065,133 @@ def run_experiment(
     # to stand above the per-coefficient noise σ.  One noisy realization is then
     # fitted so the post-fit model and residual can be shown against the data.
     rng_sp = np.random.default_rng(99)
-    d_sh, d_ch = A_sh @ f_true, A_ch @ f_true          # = CS_hetero − CS_homog
+    d_sh, d_ch = A_sh @ f_true, A_ch @ f_true  # = CS_hetero − CS_homog
     dat_sh = d_sh + rng_sp.normal(0.0, sig_sh)
     dat_ch = d_ch + rng_sp.normal(0.0, sig_ch)
     Aw = np.vstack([A_sh / sig_sh[:, None], A_ch / sig_ch[:, None]])
     yw = np.concatenate([dat_sh / sig_sh, dat_ch / sig_ch])
     beta_hat, *_ = np.linalg.lstsq(Aw, yw, rcond=None)
     spectra = dict(
-        sh=dict(homog=bulk.stokes(2, Lmax_sh, Rref), hetero=y_sh_tot, diff=d_sh,
-                sigma=sig_sh, data=dat_sh, model=A_sh @ beta_hat),
-        ch=dict(homog=pinvPhi @ bulk.field(obs), hetero=y_ch_tot, diff=d_ch,
-                sigma=sig_ch, data=dat_ch, model=A_ch @ beta_hat),
-        beta_hat=beta_hat, Lmin=2, Lmax=Lmax_sh, ch_modes=ch_modes,
+        sh=dict(
+            homog=bulk.stokes(2, Lmax_sh, Rref),
+            hetero=y_sh_tot,
+            diff=d_sh,
+            sigma=sig_sh,
+            data=dat_sh,
+            model=A_sh @ beta_hat,
+        ),
+        ch=dict(
+            homog=pinvPhi @ bulk.field(obs),
+            hetero=y_ch_tot,
+            diff=d_ch,
+            sigma=sig_ch,
+            data=dat_ch,
+            model=A_ch @ beta_hat,
+        ),
+        beta_hat=beta_hat,
+        Lmin=2,
+        Lmax=Lmax_sh,
+        ch_modes=ch_modes,
     )
     if verbose:
         snr = lambda d, sg: float(np.sqrt(np.mean((d / sg) ** 2)))
-        print(f"\n  discrepancy-to-noise per coefficient (RMS of ΔCS/σ):"
-              f"  SH {snr(d_sh, sig_sh):.1f}   CH {snr(d_ch, sig_ch):.1f}")
+        print(
+            f"\n  discrepancy-to-noise per coefficient (RMS of ΔCS/σ):"
+            f"  SH {snr(d_sh, sig_sh):.1f}   CH {snr(d_ch, sig_ch):.1f}"
+        )
 
     # smallest detectable anomaly (part of Experiment 1: positions fixed)
     f_base = f_true.copy()
     mu_grid = np.logspace(-4.5, -0.7, 16)  # true anomaly mass-fraction sweep
-    det = detection_sweep(A_sh, sig_sh, A_ch, sig_ch, f_base, mu_grid,
-                          n_mc=max(150, n_mc // 2))
+    det = detection_sweep(
+        A_sh, sig_sh, A_ch, sig_ch, f_base, mu_grid, n_mc=max(150, n_mc // 2)
+    )
     if verbose:
         print(f"\n  smallest detectable anomaly (3σ fit scatter):")
         print(f"    SH only : μ_min = {det['thr_A']:.2e}")
-        print(f"    SH + CH : μ_min = {det['thr_B']:.2e}   "
-              f"→ {det['thr_A']/det['thr_B']:.0f}× smaller anomaly detectable")
+        print(
+            f"    SH + CH : μ_min = {det['thr_B']:.2e}   "
+            f"→ {det['thr_A']/det['thr_B']:.0f}× smaller anomaly detectable"
+        )
 
     # ══ EXPERIMENT 2 — ANOMALY POSITION (all masses FIXED) ═════════════════
     # Monte-Carlo NONLINEAR least squares for the anomaly's (x,y,z); the three
     # mass fractions are held at truth.  Nothing is estimated jointly with mass.
     if verbose:
-        print(f"\n{'='*70}\n  EXPERIMENT 2 — ANOMALY POSITION, masses FIXED "
-              f"({n_mc_nl} draws)\n{'='*70}")
-    posA_nl = position_mc(P, f_true, obs, cyl, ch_modes, Lmax_sh, Rref,
-                          sig_sh, sig_ch, bulk, use_ch=False, n_mc=n_mc_nl)
-    posB_nl = position_mc(P, f_true, obs, cyl, ch_modes, Lmax_sh, Rref,
-                          sig_sh, sig_ch, bulk, use_ch=True, n_mc=n_mc_nl)
+        print(
+            f"\n{'='*70}\n  EXPERIMENT 2 — ANOMALY POSITION, masses FIXED "
+            f"({n_mc_nl} draws)\n{'='*70}"
+        )
+    posA_nl = position_mc(
+        P,
+        f_true,
+        obs,
+        cyl,
+        ch_modes,
+        Lmax_sh,
+        Rref,
+        sig_sh,
+        sig_ch,
+        bulk,
+        use_ch=False,
+        n_mc=n_mc_nl,
+    )
+    posB_nl = position_mc(
+        P,
+        f_true,
+        obs,
+        cyl,
+        ch_modes,
+        Lmax_sh,
+        Rref,
+        sig_sh,
+        sig_ch,
+        bulk,
+        use_ch=True,
+        n_mc=n_mc_nl,
+    )
     pos_rmsA = float(np.sqrt(np.mean(np.sum((posA_nl - P[target]) ** 2, axis=1))))
     pos_rmsB = float(np.sqrt(np.mean(np.sum((posB_nl - P[target]) ** 2, axis=1))))
     nl = dict(nlA=posA_nl, nlB=posB_nl, pos_rmsA=pos_rmsA, pos_rmsB=pos_rmsB)
     if verbose:
         biasA = np.linalg.norm(posA_nl.mean(0) - P[target])
         biasB = np.linalg.norm(posB_nl.mean(0) - P[target])
-        print(f"  anomaly POSITION RMS error:  SH={pos_rmsA:.3e} LU  "
-              f"SH+CH={pos_rmsB:.3e} LU  → {pos_rmsA/pos_rmsB:.0f}× tighter")
-        print(f"  recovered-mean bias:         SH={biasA:.2e}  SH+CH={biasB:.2e}  "
-              f"(both ≈ unbiased)")
+        print(
+            f"  anomaly POSITION RMS error:  SH={pos_rmsA:.3e} LU  "
+            f"SH+CH={pos_rmsB:.3e} LU  → {pos_rmsA/pos_rmsB:.0f}× tighter"
+        )
+        print(
+            f"  recovered-mean bias:         SH={biasA:.2e}  SH+CH={biasB:.2e}  "
+            f"(both ≈ unbiased)"
+        )
 
     res = dict(
-        V=V, F=F, Rb=Rb, zmax=zmax, cyl=cyl, obs=obs, P=P, names=names,
-        f_true=f_true, bulk=bulk, beta_bulk=beta_bulk,
-        target=target, sdA=sdA, sdB=sdB, improve=improve,
-        posA=posA, posB=posB,
-        fitA=fitA, fitB=fitB, det=det, nl=nl, spectra=spectra,
-        Lmax_sh=Lmax_sh, ch_modes=ch_modes, sig_sh=sig_sh, sig_ch=sig_ch,
+        V=V,
+        F=F,
+        Rb=Rb,
+        zmax=zmax,
+        cyl=cyl,
+        obs=obs,
+        P=P,
+        names=names,
+        f_true=f_true,
+        bulk=bulk,
+        beta_bulk=beta_bulk,
+        target=target,
+        sdA=sdA,
+        sdB=sdB,
+        improve=improve,
+        posA=posA,
+        posB=posB,
+        fitA=fitA,
+        fitB=fitB,
+        det=det,
+        nl=nl,
+        spectra=spectra,
+        Lmax_sh=Lmax_sh,
+        ch_modes=ch_modes,
+        sig_sh=sig_sh,
+        sig_ch=sig_ch,
     )
     make_plots(res, outdir=outdir)
     return res
@@ -1007,7 +1202,9 @@ def run_experiment(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def draw_mass_budget(ax, names, beta, beta_bulk=None):
+def draw_mass_budget(
+    ax, names, beta, beta_bulk=None, recovered=None, rec_label="SH + CH"
+):
     """
     Waterfall of the mass budget, shared by pt1/pt2/pt3.
 
@@ -1017,6 +1214,13 @@ def draw_mass_budget(ax, names, beta, beta_bulk=None):
     running total closes at exactly M* = 1.  That closure IS the constraint
     β̃ = 1 − Σβ_j — mass conservation — rather than something imposed as an
     extra observation.
+
+    The bars are the TRUTH budget — the simulated interior, i.e. what was put
+    in.  β̃ there is not an assumption of the estimator: it is 1 − Σβ of the
+    chosen truth anomalies.  Pass `recovered=(mean, std)` to also mark the
+    ESTIMATED body fraction, which comes out of the fit as 1 − Σβ̂ evaluated on
+    every Monte-Carlo draw and carries a real uncertainty.  Seeing both is the
+    point: the estimator is never told β̃, it reconstructs it.
 
     The y-axis is zoomed onto the region the anomalies occupy, so the body's
     bar runs off the bottom of the axis (it is labelled with its value); the
@@ -1036,27 +1240,162 @@ def draw_mass_budget(ax, names, beta, beta_bulk=None):
     ax.bar(x[0], beta_bulk - lo, bottom=lo, color=cols[0], edgecolor="k", width=0.62)
     ax.bar(x[1:], vals[1:], bottom=start[1:], color=cols[1:], edgecolor="k", width=0.62)
     for k in range(len(vals) - 1):  # waterfall connectors
-        ax.plot([x[k] + 0.31, x[k + 1] - 0.31], [ends[k]] * 2, color="0.5",
-                lw=0.9, ls=":")
+        ax.plot(
+            [x[k] + 0.31, x[k + 1] - 0.31], [ends[k]] * 2, color="0.5", lw=0.9, ls=":"
+        )
     ax.axhline(1.0, color="k", ls="--", lw=1.5)
-    ax.text(x[0] - 0.42, 1.0, r"$M^*=1$", va="bottom", ha="left", fontsize=10,
-            fontweight="bold")
+    ax.text(
+        x[0] - 0.42,
+        1.0,
+        r"$M^*=1$",
+        va="bottom",
+        ha="left",
+        fontsize=10,
+        fontweight="bold",
+    )
     for k, v in enumerate(vals):
-        ax.text(x[k], ends[k], f"{v:.3f}" if k == 0 else f"{v:+.3f}", ha="center",
-                va="bottom" if v > 0 else "top", fontsize=8, fontweight="bold")
+        ax.text(
+            x[k],
+            ends[k],
+            f"{v:.3f}" if k == 0 else f"{v:+.3f}",
+            ha="center",
+            va="bottom" if v > 0 else "top",
+            fontsize=8,
+            fontweight="bold",
+        )
     ax.set_xticks(x)
-    ax.set_xticklabels(["BODY\n(const. density)"]
-                       + [n.split()[0] for n in names], fontsize=8)
+    ax.set_xticklabels(
+        ["BODY\n(const. density)"] + [n.split()[0] for n in names], fontsize=8
+    )
     ax.set_ylim(lo, hi)
     ax.set_ylabel("cumulative mass fraction of $M^*$")
-    ax.set_title(r"Mass budget:  $\tilde\beta + \sum_j \beta_j = 1$"
-                 "\n(body bar runs off the axis bottom)", fontsize=10.5)
+    ax.set_title(
+        r"TRUTH mass budget:  $\tilde\beta + \sum_j \beta_j = 1$"
+        "\n(body bar runs off the axis bottom)",
+        fontsize=10.5,
+    )
     ax.grid(True, axis="y", alpha=0.3)
     from matplotlib.patches import Patch
-    ax.legend(handles=[Patch(fc="0.55", ec="k", label=r"body $\tilde\beta$"),
-                       Patch(fc=COLOR[0], ec="k", label=r"anomaly $\beta_j>0$"),
-                       Patch(fc=COLOR[2], ec="k", label=r"anomaly $\beta_j<0$")],
-              fontsize=8, loc="lower right")
+    from matplotlib.lines import Line2D
+
+    handles = [
+        Patch(fc="0.55", ec="k", label=r"body $\tilde\beta$ (truth)"),
+        Patch(fc=COLOR[0], ec="k", label=r"anomaly $\beta_j>0$"),
+        Patch(fc=COLOR[2], ec="k", label=r"anomaly $\beta_j<0$"),
+    ]
+    if recovered is not None:
+        mu, sd = float(recovered[0]), float(recovered[1])
+        # marker offset sideways so it does not sit on the bar's value label;
+        # the note goes in the empty top-left corner rather than on a leader
+        # line across the bars
+        ax.errorbar(
+            [x[0] + 0.26],
+            [mu],
+            yerr=[sd],
+            fmt="D",
+            ms=7,
+            color="k",
+            mfc="w",
+            mew=1.6,
+            capsize=4,
+            zorder=6,
+        )
+        ax.text(
+            0.015,
+            0.985,
+            f"TRUTH      $\\tilde\\beta$ = {beta_bulk:.4f}   (bars)\n"
+            f"ESTIMATED  $\\tilde\\beta$ = {mu:.4f} ± {sd:.4f}   (◇)\n"
+            f"{rec_label} — derived as $1-\\sum_j\\hat\\beta_j$, "
+            f"never assumed",
+            transform=ax.transAxes,
+            fontsize=8,
+            ha="left",
+            va="top",
+            family="monospace",
+            bbox=dict(fc="white", ec="0.6", alpha=0.93),
+        )
+        handles.append(
+            Line2D(
+                [],
+                [],
+                marker="D",
+                ls="none",
+                color="k",
+                mfc="w",
+                mew=1.6,
+                label=r"estimated $\tilde\beta$ ±1σ",
+            )
+        )
+    ax.legend(handles=handles, fontsize=8, loc="lower right")
+
+
+def set_axes_true_shape(ax, pts, pad=0.04):
+    """
+    Make a 3-D axes show the body's TRUE proportions.
+
+    `ax.set_box_aspect([1, 1, 1])` makes the drawing BOX cubic, which is not the
+    same thing: with autoscaled limits the three axes then cover different data
+    ranges and an elongated body (Eros spans 1.60 × 0.71 × 0.58 LU) is stretched
+    into something round.  Setting the box aspect to the data extents instead
+    keeps the shape honest and the framing tight.
+    """
+    pts = np.asarray(pts, float)
+    lo, hi = pts.min(0), pts.max(0)
+    span = np.maximum(hi - lo, 1e-9)
+    lo, hi = lo - pad * span, hi + pad * span
+    ax.set_xlim(lo[0], hi[0])
+    ax.set_ylim(lo[1], hi[1])
+    ax.set_zlim(lo[2], hi[2])
+    ax.set_box_aspect(hi - lo)
+
+
+def draw_cylinder(ax, cyl, color="crimson", alpha=0.20, n_th=48, lw=0.9, label=None):
+    """
+    Draw a `Cylinder` AS a cylinder — translucent lateral surface plus the two
+    end rings — instead of scattering the field points that happen to sample it.
+    The sample cloud shows where the data is, but it reads as noise; the solid
+    body shows what the CH patch actually covers.
+    """
+    th = np.linspace(0.0, 2.0 * np.pi, n_th)
+    zz = np.array([0.0, cyl.height])
+    TH, ZZ = np.meshgrid(th, zz)
+    loc = np.stack([cyl.radius * np.cos(TH), cyl.radius * np.sin(TH), ZZ], axis=-1)
+    g = loc @ cyl.rot().T + cyl.center
+    ax.plot_surface(
+        g[..., 0],
+        g[..., 1],
+        g[..., 2],
+        color=color,
+        alpha=alpha,
+        linewidth=0,
+        shade=False,
+        zorder=2,
+    )
+    for z0 in zz:  # end rings, so the footprint reads even at grazing angles
+        c = np.stack(
+            [cyl.radius * np.cos(th), cyl.radius * np.sin(th), np.full_like(th, z0)],
+            axis=-1,
+        )
+        gg = c @ cyl.rot().T + cyl.center
+        ax.plot(
+            gg[:, 0],
+            gg[:, 1],
+            gg[:, 2],
+            color=color,
+            lw=lw,
+            alpha=0.85,
+            zorder=3,
+            label=label if z0 == 0.0 else None,
+        )
+
+
+def cylinder_hull(cyl, n_th=16):
+    """Points spanning a cylinder — for including it in the axis limits."""
+    th = np.linspace(0.0, 2.0 * np.pi, n_th, endpoint=False)
+    zz = np.array([0.0, cyl.height])
+    TH, ZZ = np.meshgrid(th, zz)
+    loc = np.stack([cyl.radius * np.cos(TH), cyl.radius * np.sin(TH), ZZ], axis=-1)
+    return (loc.reshape(-1, 3) @ cyl.rot().T) + cyl.center
 
 
 def draw_silhouette(ax, V, F, i, j, color="0.82", edge="0.6", zorder=0):
@@ -1065,8 +1404,9 @@ def draw_silhouette(ax, V, F, i, j, color="0.82", edge="0.6", zorder=0):
 
     tris2d = V[F][:, :, [i, j]]
     ax.add_collection(
-        PolyCollection(tris2d, facecolors=color, edgecolors="none", alpha=0.9,
-                       zorder=zorder)
+        PolyCollection(
+            tris2d, facecolors=color, edgecolors="none", alpha=0.9, zorder=zorder
+        )
     )
     # outer envelope (upper/lower j vs i) for a crisp outline
     xi = V[:, i]
@@ -1086,33 +1426,45 @@ def make_plots(res, outdir="Images"):
     fitA, fitB, det = res["fitA"], res["fitB"], res["det"]
     ft = res["f_true"]
     fig = plt.figure(figsize=(23, 5.4))
-    fig.suptitle("EXPERIMENT 1 — mass fractions, positions fixed "
-                 f"({len(fitA['samples'])} MC draws)", fontweight="bold", y=1.02)
+    fig.suptitle(
+        "EXPERIMENT 1 — mass fractions, positions fixed "
+        f"({len(fitA['samples'])} MC draws)",
+        fontweight="bold",
+        y=1.02,
+    )
 
     # (a) the interior model and the near-surface data
     ax = fig.add_subplot(1, 4, 1, projection="3d")
     step = max(1, len(F) // 8000)
-    pc = Poly3DCollection(V[F[::step]], alpha=0.18, facecolor="#9ecae1",
-                          edgecolor="0.55", linewidths=0.1)
+    pc = Poly3DCollection(
+        V[F[::step]], alpha=0.18, facecolor="#9ecae1", edgecolor="0.55", linewidths=0.1
+    )
     ax.add_collection3d(pc)
-    ax.scatter(obs[:, 0], obs[:, 1], obs[:, 2], c="crimson", s=4, alpha=0.6,
-               label="CH cylinder data")
+    draw_cylinder(ax, cyl, label="CH cylinder")
     for i_a, (nm, p_a) in enumerate(zip(names, P)):
         mk = "*" if i_a == tgt else "o"
         sz = 240 if i_a == tgt else 120
         # colour by SIGN so an excess and a deficit are never confused
-        ax.scatter(*p_a, c=COLOR[0] if ft[i_a] > 0 else COLOR[2], s=sz,
-                   marker=mk, edgecolor="k", depthshade=False)
-        ax.text(p_a[0], p_a[1], p_a[2],
-                f"  {nm.split()[0]} ({ft[i_a]:+.3f})", fontsize=8)
-    ax.set_title("Interior = constant-density BODY "
-                 f"($\\tilde\\beta$ = {res['beta_bulk']:.3f})\n"
-                 f"+ {len(P)} anomalies ($\\beta_j$, signed)")
-    ax.set_xlabel("x [LU]"); ax.set_ylabel("y [LU]"); ax.set_zlabel("z [LU]")
-    try:
-        ax.set_box_aspect([1, 1, 1])
-    except Exception:
-        pass
+        ax.scatter(
+            *p_a,
+            c=COLOR[0] if ft[i_a] > 0 else COLOR[2],
+            s=sz,
+            marker=mk,
+            edgecolor="k",
+            depthshade=False,
+        )
+        ax.text(
+            p_a[0], p_a[1], p_a[2], f"  {nm.split()[0]} ({ft[i_a]:+.3f})", fontsize=8
+        )
+    ax.set_title(
+        "Interior = constant-density BODY "
+        f"($\\tilde\\beta$ = {res['beta_bulk']:.3f})\n"
+        f"+ {len(P)} anomalies ($\\beta_j$, signed)"
+    )
+    ax.set_xlabel("x [LU]")
+    ax.set_ylabel("y [LU]")
+    ax.set_zlabel("z [LU]")
+    set_axes_true_shape(ax, np.vstack([V, cylinder_hull(cyl)]))
     ax.scatter([], [], color=COLOR[0], label=r"anomaly $\beta_j>0$")
     ax.scatter([], [], color=COLOR[2], label=r"anomaly $\beta_j<0$")
     ax.legend(loc="upper left", fontsize=8)
@@ -1133,38 +1485,86 @@ def make_plots(res, outdir="Images"):
     ax.bar(xpos + w / 2, rmsB, w, color=COLOR[0], edgecolor="k", label="SH + CH")
     ax.set_yscale("log")
     for i_b in range(len(labels)):
-        ax.text(i_b + w / 2, rmsB[i_b], f"{rmsA[i_b]/rmsB[i_b]:.0f}×", ha="center",
-                va="bottom", fontsize=9, fontweight="bold")
-    ax.set_xticks(xpos); ax.set_xticklabels(labels, fontsize=9)
+        ax.text(
+            i_b + w / 2,
+            rmsB[i_b],
+            f"{rmsA[i_b]/rmsB[i_b]:.0f}×",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            fontweight="bold",
+        )
+    ax.set_xticks(xpos)
+    ax.set_xticklabels(labels, fontsize=9)
     ax.set_ylabel("mass-fraction recovery RMS error")
     ax.set_title("Recovery error (bias ⊕ MC scatter)")
-    ax.grid(True, axis="y", which="both", alpha=0.3); ax.legend(fontsize=10)
+    ax.grid(True, axis="y", which="both", alpha=0.3)
+    ax.legend(fontsize=10)
 
     # (c) smallest detectable anomaly: recovered anomaly vs true anomaly
     ax = fig.add_subplot(1, 4, 4)
     mug = det["mu_grid"]
     ax.plot(mug, mug, "k--", lw=1, label="perfect recovery")
-    ax.errorbar(mug, np.abs(det["muA"]), yerr=det["sdA"], fmt="o", color=COLOR[2],
-                ms=5, capsize=3, label="SH only")
-    ax.errorbar(mug, np.abs(det["muB"]), yerr=det["sdB"], fmt="s", color=COLOR[0],
-                ms=5, capsize=3, label="SH + CH")
-    ax.axhline(det["thr_A"], color=COLOR[2], ls=":", lw=1.5,
-               label=f"SH 3σ floor = {det['thr_A']:.1e}")
-    ax.axhline(det["thr_B"], color=COLOR[0], ls=":", lw=1.5,
-               label=f"SH+CH 3σ floor = {det['thr_B']:.1e}")
-    ax.set_xscale("log"); ax.set_yscale("log")
+    ax.errorbar(
+        mug,
+        np.abs(det["muA"]),
+        yerr=det["sdA"],
+        fmt="o",
+        color=COLOR[2],
+        ms=5,
+        capsize=3,
+        label="SH only",
+    )
+    ax.errorbar(
+        mug,
+        np.abs(det["muB"]),
+        yerr=det["sdB"],
+        fmt="s",
+        color=COLOR[0],
+        ms=5,
+        capsize=3,
+        label="SH + CH",
+    )
+    ax.axhline(
+        det["thr_A"],
+        color=COLOR[2],
+        ls=":",
+        lw=1.5,
+        label=f"SH 3σ floor = {det['thr_A']:.1e}",
+    )
+    ax.axhline(
+        det["thr_B"],
+        color=COLOR[0],
+        ls=":",
+        lw=1.5,
+        label=f"SH+CH 3σ floor = {det['thr_B']:.1e}",
+    )
+    ax.set_xscale("log")
+    ax.set_yscale("log")
     ax.set_xlabel(r"true anomaly mass fraction  $\beta_0$")
     ax.set_ylabel(r"recovered anomaly  $|\hat\mu|$")
-    ax.set_title(f"Smallest detectable anomaly "
-                 f"({det['thr_A']/det['thr_B']:.0f}× smaller with CH)")
-    ax.grid(True, which="both", alpha=0.3); ax.legend(fontsize=8, loc="upper left")
+    ax.set_title(
+        f"Smallest detectable anomaly "
+        f"({det['thr_A']/det['thr_B']:.0f}× smaller with CH)"
+    )
+    ax.grid(True, which="both", alpha=0.3)
+    ax.legend(fontsize=8, loc="upper left")
 
     # (b) the truth mass budget: body + anomalies = M*
-    draw_mass_budget(fig.add_subplot(1, 4, 2), names, ft, res["beta_bulk"])
+    draw_mass_budget(
+        fig.add_subplot(1, 4, 2),
+        names,
+        ft,
+        res["beta_bulk"],
+        recovered=(fitB["bulk_mean"], fitB["bulk_std"]),
+    )
 
     fig.tight_layout()
-    fig.savefig(os.path.join(outdir, "global_fig1_massfraction.pdf"),
-                dpi=180, bbox_inches="tight")
+    fig.savefig(
+        os.path.join(outdir, "global_fig1_massfraction.pdf"),
+        dpi=180,
+        bbox_inches="tight",
+    )
 
     # ---- FIG 2: EXPERIMENT 2 — anomaly POSITION recovery (masses fixed) ------
     # The nonlinear MC fit, not the linearized covariance: with Parts 1–2 and
@@ -1185,25 +1585,33 @@ def make_plots(res, outdir="Images"):
     ax.set_xscale("log")
     ax.set_xlabel(r"position error $|\hat p - p_{\rm true}|$ [LU]")
     ax.set_ylabel("MC count")
-    ax.set_title(f"Position error (RMS {nl['pos_rmsA']:.1e}→{nl['pos_rmsB']:.1e} LU, "
-                 f"{nl['pos_rmsA']/nl['pos_rmsB']:.0f}×)")
+    ax.set_title(
+        f"Position error (RMS {nl['pos_rmsA']:.1e}→{nl['pos_rmsB']:.1e} LU, "
+        f"{nl['pos_rmsA']/nl['pos_rmsB']:.0f}×)"
+    )
     ax.legend(fontsize=9)
 
     # (b,c) recovered position clouds over Eros silhouette (x–z, y–z)
-    for ax, (i_c, j_c), lbl in [(axes[1], (0, 2), ("x", "z")),
-                                (axes[2], (1, 2), ("y", "z"))]:
+    for ax, (i_c, j_c), lbl in [
+        (axes[1], (0, 2), ("x", "z")),
+        (axes[2], (1, 2), ("y", "z")),
+    ]:
         draw_silhouette(ax, V, F, i_c, j_c)
-        ax.scatter(nlA[:, i_c], nlA[:, j_c], s=12, color=COLOR[2], alpha=0.5,
-                   label="SH only")
-        ax.scatter(nlB[:, i_c], nlB[:, j_c], s=12, color=COLOR[0], alpha=0.7,
-                   label="SH + CH")
+        ax.scatter(
+            nlA[:, i_c], nlA[:, j_c], s=12, color=COLOR[2], alpha=0.5, label="SH only"
+        )
+        ax.scatter(
+            nlB[:, i_c], nlB[:, j_c], s=12, color=COLOR[0], alpha=0.7, label="SH + CH"
+        )
         ax.plot(p0[i_c], p0[j_c], "k*", ms=16, label="truth", zorder=6)
         sA = max(nlA[:, i_c].std(), nlA[:, j_c].std())
         ax.set_xlim(p0[i_c] - 5 * sA, p0[i_c] + 5 * sA)
         ax.set_ylim(p0[j_c] - 5 * sA, p0[j_c] + 5 * sA)
-        ax.set_xlabel(f"{lbl[0]} [LU]"); ax.set_ylabel(f"{lbl[1]} [LU]")
+        ax.set_xlabel(f"{lbl[0]} [LU]")
+        ax.set_ylabel(f"{lbl[1]} [LU]")
         ax.set_title(f"Recovered position ({lbl[0]}–{lbl[1]})")
-        ax.set_aspect("equal"); ax.grid(True, alpha=0.3)
+        ax.set_aspect("equal")
+        ax.grid(True, alpha=0.3)
         ax.legend(fontsize=8, loc="lower right")
 
         # zoom inset: SH+CH cloud is far tighter — invisible at the SH scale
@@ -1214,7 +1622,8 @@ def make_plots(res, outdir="Images"):
         axin.set_xlim(p0[i_c] - 4 * sB, p0[i_c] + 4 * sB)
         axin.set_ylim(p0[j_c] - 4 * sB, p0[j_c] + 4 * sB)
         axin.set_title("SH+CH zoom (×%d)" % round(sA / sB), fontsize=8, color=COLOR[0])
-        axin.tick_params(labelsize=6); axin.set_aspect("equal")
+        axin.tick_params(labelsize=6)
+        axin.set_aspect("equal")
         for sp_ in axin.spines.values():
             sp_.set_edgecolor(COLOR[0])
     fig.suptitle(
@@ -1224,85 +1633,124 @@ def make_plots(res, outdir="Images"):
         fontweight="bold",
     )
     fig.tight_layout(rect=[0, 0, 1, 0.95])
-    fig.savefig(os.path.join(outdir, "global_fig2_position.pdf"),
-                dpi=180, bbox_inches="tight")
+    fig.savefig(
+        os.path.join(outdir, "global_fig2_position.pdf"), dpi=180, bbox_inches="tight"
+    )
 
-    # ---- FIG 3: coefficient spectra — homogeneous vs heterogeneous, pre/post fit
+    # ---- FIG 3: residual power spectrum, before and after the fit ----------
+    # Per-degree (SH) / per-radial-mode (CH) RMS of the WHITENED residual,
+    #     PRE-fit  = measured − homogeneous model   (= the discrepancy + noise)
+    #     POST-fit = measured − (homogeneous + A β̂)
+    # Whitened by σ_i, so the y-axis is dimensionless, a linear scale is
+    # meaningful, and "1" is exactly the noise floor: a post-fit spectrum
+    # sitting on 1 says the fit has consumed the signal and σ is the right size.
     sp = res["spectra"]
     Lmin, Lmax = sp["Lmin"], sp["Lmax"]
     n_m, n_n = sp["ch_modes"]
-    # block boundaries: SH by degree n (2(n+1) entries each), CH by order m
-    sh_edges, acc = [], 0
-    for n in range(Lmin, Lmax + 1):
-        acc += 2 * (n + 1)
-        sh_edges.append(acc)
-    ch_edges = [2 * n_n * (m + 1) for m in range(n_m)]
 
-    fig, axes = plt.subplots(2, 2, figsize=(17.5, 9.5))
-    fig.suptitle("Coefficient spectra: homogeneous body vs heterogeneous truth, "
-                 "and the fit of their difference", fontweight="bold", y=0.99)
+    def _groups(key):
+        """(x values, list of index arrays) for the spectrum grouping."""
+        if key == "sh":  # group by degree n
+            xs, gr, acc = [], [], 0
+            for n in range(Lmin, Lmax + 1):
+                k = 2 * (n + 1)
+                xs.append(n)
+                gr.append(np.arange(acc, acc + k))
+                acc += k
+            return np.array(xs), gr
+        pair = np.arange(2 * n_m * n_n) // 2  # group by azimuthal order m
+        azi = pair // n_n
+        xs = np.arange(n_m)
+        return xs, [np.where(azi == m)[0] for m in xs]
 
-    for col, (key, name, edges, elab) in enumerate([
-        ("sh", f"SPHERICAL harmonics (degree {Lmin}..{Lmax})", sh_edges, "n"),
-        ("ch", f"CYLINDRICAL harmonics (modes {n_m}×{n_n})", ch_edges, "m"),
-    ]):
+    fig, axes = plt.subplots(1, 2, figsize=(15, 5.4))
+    handles = None
+    for ax, (key, name, xlab) in zip(
+        axes,
+        [
+            ("sh", "SPHERICAL harmonics", "SH degree $n$"),
+            ("ch", "CYLINDRICAL harmonics", "CH azimuthal order $m$"),
+        ],
+    ):
         d = sp[key]
-        idx = np.arange(len(d["homog"]))
+        pre = d["data"]  # measured − homogeneous
+        post = d["data"] - d["model"]  # measured − fitted
+        xs, gr = _groups(key)
+        rms = lambda v: np.array([np.sqrt(np.mean(v[g] ** 2)) for g in gr])
+        # absolute residuals in the coefficients' own units, so the reference is
+        # σ itself — one curve, labelled 1σ — rather than an abstract band about 1.
+        # CAVEAT: reading the ratio red/dashed off the plot is only approximate.
+        # σ_i varies within a group (od_sigma is per-coefficient), and
+        # RMS|r| / RMS(σ)  ≠  RMS(r/σ) unless σ is constant across the group.
+        # Worst case here is SH degree 3: the plot reads 0.30, the actual
+        # whitened statistic is 0.67.  The EXACT consistency numbers are the
+        # pre/post RMS in the panel titles, which are properly whitened.
+        y_pre, y_post, y_sig = rms(np.abs(pre)), rms(np.abs(post)), rms(d["sigma"])
+        rms_pre = np.sqrt(np.mean((pre / d["sigma"]) ** 2))
+        rms_post = np.sqrt(np.mean((post / d["sigma"]) ** 2))
+        ax.plot(xs, y_sig, "-o", lw=1.6, color="0.30", zorder=2, label=r"1$\sigma$")
+        ax.plot(
+            xs,
+            y_pre,
+            "-o",
+            color=COLOR[2],
+            lw=1.8,
+            ms=9,
+            mec="k",
+            mew=0.7,
+            zorder=5,
+            label="PRE-fit: measured − homogeneous",
+        )
+        ax.plot(
+            xs,
+            y_post,
+            "-s",
+            color=COLOR[0],
+            lw=1.8,
+            ms=8,
+            mec="k",
+            mew=0.7,
+            zorder=6,
+            label=r"POST-fit: measured − (homog. + A$\hat\beta$)",
+        )
 
-        # (top) magnitudes: what the two bodies produce, and what separates them
-        # (entries that are identically zero — the S̄_n0 sine terms — are masked
-        #  so the log axis breaks the line instead of plunging to -inf)
-        _m = lambda v: np.where(np.abs(v) == 0, np.nan, np.abs(v))
-        ax = axes[0, col]
-        ax.semilogy(idx, _m(d["homog"]), lw=1.5, color="0.45",
-                    label="homogeneous  |CS$_{CD}$|")
-        ax.semilogy(idx, _m(d["hetero"]), lw=4.0, color=COLOR[2], alpha=0.40,
-                    solid_capstyle="round", label="heterogeneous  |CS$_T$|")
-        ax.semilogy(idx, _m(d["diff"]), lw=1.5, color=COLOR[0],
-                    label=r"difference  |$\Delta$CS| (what is fitted)")
-        ax.semilogy(idx, d["sigma"], lw=1.4, ls="--", color="k",
-                    label=r"noise $\sigma_i$ (OD-like)")
-        ax.set_title(name, fontweight="bold")
-        ax.set_ylabel("|coefficient|")
-        ax.set_xlabel("coefficient index")
-        for e in edges[:-1]:
-            ax.axvline(e, color="0.85", lw=0.8, zorder=0)
-        ax.grid(True, which="both", alpha=0.25)
-        ax.legend(fontsize=8.5, loc="upper left", ncol=2, framealpha=0.92)
-        snr = np.sqrt(np.mean((d["diff"] / d["sigma"]) ** 2))
-        ax.text(0.985, 0.05, f"RMS |ΔCS|/σ = {snr:.1f}", transform=ax.transAxes,
-                ha="right", va="bottom", fontsize=10, fontweight="bold",
-                bbox=dict(fc="w", ec="0.7", alpha=0.9))
+        ax.set_xticks(xs)
+        ax.set_xlabel(xlab)
+        ax.set_ylabel("RMS |residual|  per " + ("degree" if key == "sh" else "order"))
+        ax.set_yscale("log")
+        ax.set_ylim(0.5 * min(y_post.min(), y_sig.min()), 2.5 * y_pre.max())
+        ax.set_xlim(xs[0] - 0.4, xs[-1] + 0.4)
+        ax.grid(True, axis="y", which="both", ls=":", alpha=0.45)
+        ax.set_axisbelow(True)
+        for sd_ in ("top", "right"):
+            ax.spines[sd_].set_visible(False)
+        ax.set_title(
+            f"{name}\nRMS  pre-fit {rms_pre:.1f}$\\,\\sigma$   →   "
+            f"post-fit {rms_post:.2f}$\\,\\sigma$",
+            fontweight="bold",
+            fontsize=11,
+            pad=9,
+        )
+        if handles is None:
+            handles, labels = ax.get_legend_handles_labels()
 
-        # (bottom) pre/post fit, whitened so every coefficient is comparable
-        ax = axes[1, col]
-        ax.axhline(0, color="k", lw=0.8)
-        ax.plot(idx, d["data"] / d["sigma"], "o", ms=3.4, color=COLOR[2],
-                label=r"data  $\Delta$CS$+\epsilon$  (pre-fit)")
-        ax.plot(idx, d["model"] / d["sigma"], "-", lw=1.6, color=COLOR[0],
-                label=r"fitted model  A$\hat\beta$  (post-fit)")
-        r = (d["data"] - d["model"]) / d["sigma"]
-        ax.plot(idx, r, ".", ms=3.0, color=COLOR[3], alpha=0.75,
-                label=f"residual (RMS {np.sqrt(np.mean(r**2)):.2f}σ)")
-        ax.fill_between(idx, -1, 1, color="0.85", zorder=0, label="±1σ")
-        for e in edges[:-1]:
-            ax.axvline(e, color="0.9", lw=0.8, zorder=0)
-        ax.set_xlabel(f"coefficient index  (grey lines separate {elab})")
-        ax.set_ylabel(r"coefficient / $\sigma_i$")
-        ax.grid(True, alpha=0.25)
-        ax.legend(fontsize=8.5, loc="upper right", ncol=2)
-
-    bh, ft = sp["beta_hat"], res["f_true"]
-    axes[1, 0].text(
-        0.015, 0.03,
-        "joint SH+CH fit of this realization:\n"
-        + "\n".join(f"  $\\beta_{{{k}}}$  truth {t:+.3f}   fitted {h:+.3f}"
-                    for k, (t, h) in enumerate(zip(ft, bh))),
-        transform=axes[1, 0].transAxes, ha="left", va="bottom", fontsize=9,
-        family="monospace", bbox=dict(fc="w", ec="0.7", alpha=0.92))
-    fig.tight_layout(rect=[0, 0, 1, 0.965])
-    fig.savefig(os.path.join(outdir, "global_fig3_coefficients.pdf"),
-                dpi=180, bbox_inches="tight")
+    # one legend for both panels, in a reserved strip under the axes — an
+    # in-axes legend here covered the degree-3 peak
+    fig.tight_layout(rect=[0, 0.09, 1, 1])
+    fig.legend(
+        handles,
+        labels,
+        loc="lower center",
+        ncol=3,
+        fontsize=9.5,
+        frameon=False,
+        bbox_to_anchor=(0.5, 0.012),
+    )
+    fig.savefig(
+        os.path.join(outdir, "global_fig3_coefficients.pdf"),
+        dpi=180,
+        bbox_inches="tight",
+    )
 
     plt.show()
 
@@ -1313,15 +1761,17 @@ def make_plots(res, outdir="Images"):
 
 if __name__ == "__main__":
     res = run_experiment(
-        Lmax_sh=6,        # observable spherical-harmonic degree (tracking limit)
-        eps=0.02,         # relative measurement precision (same on SH & field)
+        Lmax_sh=6,  # observable spherical-harmonic degree (tracking limit)
+        eps=0.02,  # relative measurement precision (same on SH & field)
         ch_modes=(8, 8),  # (n_m, n_n) cylindrical-harmonic truncation
         n_cyl_pts=200,
-        n_mc=400,         # noise draws for the linear mass fit
-        n_mc_nl=150,      # noise draws for the nonlinear masses+position fit
+        n_mc=400,  # noise draws for the linear mass fit
+        n_mc_nl=150,  # noise draws for the nonlinear masses+position fit
         outdir="Images",
         verbose=True,
     )
-    print("\nSaved: Images/global_fig1_massfraction.pdf, "
-          "global_fig2_position.pdf, global_fig3_coefficients.pdf")
+    print(
+        "\nSaved: Images/global_fig1_massfraction.pdf, "
+        "global_fig2_position.pdf, global_fig3_coefficients.pdf"
+    )
     print("Done.")

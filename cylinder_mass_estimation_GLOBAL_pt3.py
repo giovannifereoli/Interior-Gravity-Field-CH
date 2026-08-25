@@ -380,7 +380,12 @@ def delta_fisher(site, tm, V, F, ch_modes, Lmax, Rref, n_pts, seed=1,
         return dict(logdet=-np.inf, trace=0.0, n_obs=len(obs))
     H_ch = G.cyl_basis(cyl, obs, *ch_modes)                 # (4N, n_ch)
     H_sh = sh_meas_basis(obs, 0, Lmax, Rref)                # (4N, n_c)
-    coef, *_ = np.linalg.lstsq(H_sh, H_ch, rcond=None)
+    # SAME trap as the CH pseudo-inverse (see G.CH_RCOND): H_SH over a single
+    # patch has cond ~ 1e23, and the default machine-epsilon cutoff keeps 49/56
+    # directions down to sigma ~ 1e-21 of the largest.  Projecting through those
+    # is projecting through noise, so P_perp — and every DeltaF score built on
+    # it — inherits it.  Truncate at the same relative level (33/56 survive).
+    coef, *_ = np.linalg.lstsq(H_sh, H_ch, rcond=G.CH_RCOND)
     M = H_ch - H_sh @ coef                                  # P_perp H_CH
     if normalize:
         nrm = np.linalg.norm(H_ch, axis=0)
@@ -872,17 +877,20 @@ def make_plots(res, outdir="Images"):
     ax.add_collection3d(Poly3DCollection(V[F[::step]], alpha=0.10,
                         facecolor="#9ecae1", edgecolor="0.6", linewidths=0.1))
     for c in res["nets"]["FPS (geometry)"]:
-        o = c["obs"]
-        ax.scatter(o[:, 0], o[:, 1], o[:, 2], s=3, color="crimson", alpha=0.45)
+        G.draw_cylinder(ax, c["cyl"])
     ft = res["f_true"]
     for nm, p, b in zip(names, P, ft):   # colour by SIGN, label with β_j
         ax.scatter(p[0], p[1], p[2], s=80, depthshade=False, edgecolor="k",
                    color=G.COLOR[0] if b > 0 else G.COLOR[2])
-        ax.text(p[0], p[1], p[2], f"  {nm.split()[0]} ({b:+.3f})", fontsize=7.5)
-    ax.scatter([], [], color="crimson", label="FPS network")
+        # name only: this panel is one of six, and the β values are in the
+        # printed table — full labels collide at this size
+        ax.text(p[0], p[1], p[2], f"  {nm.split()[0]}", fontsize=7.5)
+    ax.plot([], [], color="crimson", lw=2, label="FPS network")
     ax.scatter([], [], color=G.COLOR[0], label=r"anomaly $\beta_j>0$")
     ax.scatter([], [], color=G.COLOR[2], label=r"anomaly $\beta_j<0$")
     ax.set_xlabel("x [LU]"); ax.set_ylabel("y [LU]"); ax.set_zlabel("z [LU]")
+    G.set_axes_true_shape(ax, np.vstack(
+        [V] + [G.cylinder_hull(c["cyl"]) for c in res["nets"]["FPS (geometry)"]]))
     ax.set_title("Constant-density BODY "
                  f"($\\tilde\\beta$ = {res['beta_bulk']:.3f})\n"
                  f"+ {len(P)} random anomalies ($\\tilde\\beta+\\sum\\beta_j=1$)")
@@ -997,10 +1005,13 @@ def make_plots(res, outdir="Images"):
     if res["pos_rms"]:
         fig, ax = plt.subplots(figsize=(13.5, 5.6))
         pr = res["pos_rms"]
+        # NOT fig 2's `x`: that one carries an extra slot for the derived body
+        # fraction, which has no position — this axis is one bar per anomaly
+        xp = np.arange(len(P))
         for i, (k, col) in enumerate(zip(cases, cols)):
-            ax.bar(x + (i - (len(cases) - 1) / 2) * w, pr[k], w, color=col,
+            ax.bar(xp + (i - (len(cases) - 1) / 2) * w, pr[k], w, color=col,
                    edgecolor="k", lw=0.5, label=k)
-        ax.set_yscale("log"); ax.set_xticks(x)
+        ax.set_yscale("log"); ax.set_xticks(xp)
         ax.set_xticklabels([n.replace(" ", "\n") for n in names], fontsize=8)
         ax.set_ylabel("position RMS error [LU]")
         ax.set_title("Position recovery of randomly placed mascons: "
