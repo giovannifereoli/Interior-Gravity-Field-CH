@@ -62,7 +62,7 @@ import cylinder_mass_estimation_GLOBAL as G  # reuse pt1 machinery
 
 COLOR = G.COLOR
 mpl.rcParams.update({"axes.prop_cycle": mpl.cycler(color=COLOR),
-                     "font.family": "serif", "figure.dpi": 110})
+                     "figure.dpi": 110})
 SEP = "=" * 72
 
 
@@ -434,12 +434,12 @@ def make_plots(res, outdir="Images"):
     ax.set_xticklabels([n.replace(" ", "\n", 1) for n in names]
                        + ["BODY\n$\\tilde\\beta$ (derived)"], fontsize=8)
     ax.set_ylabel(r"mass-fraction 1$\sigma$ uncertainty $\sigma_\beta$")
-    ax.set_title("Mass-fraction recovery: SH → +1 CH → +2 CH → full CH network\n"
+    ax.set_title("Mass-fraction recovery: SH to +1 CH to +2 CH to the full network\n"
                  "(each added patch constrains the anomalies it covers; the full "
                  "network constrains ALL — and the body fraction with them)")
     gains = vals[cases[0]] / vals[cases[3]]
     for i in range(len(x)):
-        ax.text(x[i] + 1.5 * w, vals[cases[3]][i], f"{gains[i]:.0f}×", ha="center",
+        ax.text(x[i] + 1.5 * w, vals[cases[3]][i], rf"${gains[i]:.0f}\times$", ha="center",
                 va="bottom", fontsize=8, fontweight="bold")
     ax.grid(True, axis="y", which="both", alpha=0.3); ax.legend(fontsize=9)
     fig.tight_layout()
@@ -449,18 +449,22 @@ def make_plots(res, outdir="Images"):
     # ---- FIG 3: position recovery per anomaly, SH vs network ---------------
     fig, ax = plt.subplots(figsize=(13, 5.6))
     pr = res["pos_rms"]
-    ax.bar(x - 0.2, pr["SH only"], 0.4, color=COLOR[2], edgecolor="k", label="SH only")
-    ax.bar(x + 0.2, pr["network"], 0.4, color=COLOR[0], edgecolor="k",
+    # NOT fig 2's `x`: that carries an extra slot for the derived body fraction,
+    # which has no position
+    xp = np.arange(len(P))
+    ax.bar(xp - 0.2, pr["SH only"], 0.4, color=COLOR[2], edgecolor="k",
+           label="SH only")
+    ax.bar(xp + 0.2, pr["network"], 0.4, color=COLOR[0], edgecolor="k",
            label=f"SH + {n_cyl}-CH network")
     ax.set_yscale("log")
-    ax.set_xticks(x)
+    ax.set_xticks(xp)
     ax.set_xticklabels([n.replace(" ", "\n", 1) for n in names], fontsize=8)
     ax.set_ylabel("position RMS error [LU]")
     ax.set_title("Position recovery of arbitrary anomalies: SH vs CH network")
     g = pr["SH only"] / pr["network"]
     for i in range(len(P)):
-        ax.text(x[i] + 0.2, pr["network"][i], f"{g[i]:.0f}×", ha="center",
-                va="bottom", fontsize=8, fontweight="bold")
+        ax.text(xp[i] + 0.2, pr["network"][i], f"{g[i]:.0f}" + r"$\times$",
+                ha="center", va="bottom", fontsize=8, fontweight="bold")
     ax.grid(True, axis="y", which="both", alpha=0.3); ax.legend(fontsize=9)
     fig.tight_layout()
     fig.savefig(os.path.join(outdir, "global_pt2_fig3_position.pdf"),

@@ -113,7 +113,7 @@ import cylinder_mass_estimation_GLOBAL_pt2 as P2     # pt2 network machinery
 
 COLOR = G.COLOR
 mpl.rcParams.update({"axes.prop_cycle": mpl.cycler(color=COLOR),
-                     "font.family": "serif", "figure.dpi": 110})
+                     "figure.dpi": 110})
 SEP = "=" * 78
 
 # cylinder geometry — identical to pt2 so the networks are comparable
@@ -962,7 +962,7 @@ def make_plots(res, outdir="Images"):
     a1.set_xticklabels([n.replace(" ", "\n") for n in names]
                        + ["BODY\n$\\tilde\\beta$"], fontsize=8)
     a1.set_ylabel(r"mass-fraction 1$\sigma$ uncertainty $\sigma_\beta$")
-    a1.set_title("Mass-fraction recovery per anomaly (sorted shallow → deep)\n"
+    a1.set_title("Mass-fraction recovery per anomaly (sorted shallow to deep)\n"
                  r"plus the derived body fraction $\tilde\beta=1-\sum\beta_j$")
     a1.grid(True, axis="y", which="both", alpha=0.3); a1.legend(fontsize=8)
 

@@ -118,7 +118,8 @@ COLOR_PALETTE = ["#d7191c", "#fdae61", "#2c7bb6", "#1a9641", "#762a83", "#e66101
 mpl.rcParams.update(
     {
         "text.usetex": False,
-        "font.family": "serif",
+        "font.family": "STIXGeneral",
+        "mathtext.fontset": "stix",
         "font.size": 11,
         "axes.labelsize": 12,
         "axes.titlesize": 11,

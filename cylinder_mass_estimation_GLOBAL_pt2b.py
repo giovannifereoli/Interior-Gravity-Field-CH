@@ -73,7 +73,7 @@ import cylinder_mass_estimation_GLOBAL_pt2 as P2     # pt2 network machinery
 
 COLOR = G.COLOR
 mpl.rcParams.update({"axes.prop_cycle": mpl.cycler(color=COLOR),
-                     "font.family": "serif", "figure.dpi": 110})
+                     "figure.dpi": 110})
 SEP = "=" * 78
 
 
@@ -415,7 +415,9 @@ def make_plots(res, outdir="Images"):
 
     # ---- FIG 1: where the components are + the mass budget ------------------
     fig = plt.figure(figsize=(18, 6.8))
-    gs = fig.add_gridspec(1, 2, width_ratios=[1.45, 1], wspace=0.10)
+    # no wspace=: see the note in _GLOBAL.py — it silently disables the
+    # tight_layout call below
+    gs = fig.add_gridspec(1, 2, width_ratios=[1.45, 1])
     ax = fig.add_subplot(gs[0, 0], projection="3d")
     step = max(1, len(F) // 9000)
     ax.add_collection3d(Poly3DCollection(V[F[::step]], alpha=0.10,
@@ -489,7 +491,7 @@ def make_plots(res, outdir="Images"):
     ax.set_ylabel(r"1$\sigma$ uncertainty $\sigma_\beta$")
     ax.set_title("Density recovery per component")
     for i in range(len(x)):
-        ax.text(x[i] + 0.2, vB[i], f"{vA[i]/vB[i]:.0f}×", ha="center", va="bottom",
+        ax.text(x[i] + 0.2, vB[i], rf"${vA[i]/vB[i]:.0f}\times$", ha="center", va="bottom",
                 fontsize=8, fontweight="bold")
     ax.grid(True, axis="y", which="both", alpha=0.3); ax.legend(fontsize=9)
 
@@ -500,8 +502,8 @@ def make_plots(res, outdir="Images"):
                                                              fontsize=8)
         ax.set_yticks(range(len(names))); ax.set_yticklabels(names, fontsize=8)
         off = ~np.eye(len(names), dtype=bool)
-        ax.set_title(f"Correlation — {ttl}\n"
-                     f"max |ρ| = {np.abs(M[off]).max():.2f}, "
+        ax.set_title(f"Correlation: {ttl}\n"
+                     rf"max $|\rho|$ = {np.abs(M[off]).max():.2f}, "
                      f"mean = {np.abs(M[off]).mean():.2f}", fontsize=10)
         for a in range(len(names)):
             for b in range(len(names)):
