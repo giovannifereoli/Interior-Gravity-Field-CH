@@ -433,7 +433,7 @@ def make_plots(res, outdir="Images"):
     ax.set_xticks(x)
     ax.set_xticklabels([n.replace(" ", "\n", 1) for n in names]
                        + ["BODY\n$\\tilde\\beta$ (derived)"], fontsize=8)
-    ax.set_ylabel(r"mass-fraction 1$\sigma$ uncertainty $\sigma_\beta$")
+    ax.set_ylabel(r"mass-fraction 1$\sigma$ uncertainty $\sigma_\beta$  (MC)")
     ax.set_title("Mass-fraction recovery: SH to +1 CH to +2 CH to the full network\n"
                  "(each added patch constrains the anomalies it covers; the full "
                  "network constrains ALL — and the body fraction with them)")
@@ -459,7 +459,7 @@ def make_plots(res, outdir="Images"):
     ax.set_yscale("log")
     ax.set_xticks(xp)
     ax.set_xticklabels([n.replace(" ", "\n", 1) for n in names], fontsize=8)
-    ax.set_ylabel("position RMS error [LU]")
+    ax.set_ylabel("position RMS error [LU]  (MC)")
     ax.set_title("Position recovery of arbitrary anomalies: SH vs CH network")
     g = pr["SH only"] / pr["network"]
     for i in range(len(P)):

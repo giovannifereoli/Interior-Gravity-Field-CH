@@ -152,6 +152,11 @@ G_SI = 6.67430e-11  # polyhedral_gravity works in SI; divided out to get G = 1
 SEP = "=" * 70
 
 
+# NOTE: incosistency on how MC is used and results plotted. ls_fit_once used just in mc. avoid montecarlo come one over noise..
+# also how analytical covafiance, fisher prior, MC inconsitnet..
+# NOTE: avoid MC at all if it is on realization measurement....
+# NOTE: maybe figure 2 emulatye figure 3 and put the sweep on its own...
+
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION 0 — SHAPE
 # ═══════════════════════════════════════════════════════════════════════════
@@ -357,10 +362,8 @@ def cyl_basis(cyl: Cylinder, obs, n_m, n_n):
 # `cylinder_mass_estimation_BENNU_TAG.fit_coefficients` has always passed an
 # explicit cond for this reason; the reference `..._MOV` script does not (it
 # builds a regularization block, `order_weights`, and then drops it before the
-# solve).  NOTE: with a large truncation and few sample points the system goes
-# UNDERdetermined (e.g. (25,25) = 1250 columns against 4x190 = 760 rows), and
-# numpy's minimum-norm solution then looks well behaved for a different reason —
-# do not read that as the basis being well conditioned.
+# solve).
+# TODO: understant better implications and ask _MOV meaning
 CH_RCOND = 1e-4
 
 
@@ -405,11 +408,11 @@ def ch_projector(Phi, rcond=None):
 # fraction, not the density contrast, is the estimated parameter.
 #
 # Both pieces of U_CD are computed once from the shape, to machine precision:
-#   Stokes    — the integrand (r/R*)^n P̄_nm(sinφ){cos,sin}(mλ) is a solid
-#               harmonic, i.e. a homogeneous POLYNOMIAL of degree n, so a
-#               tetrahedral Gauss rule of degree ≥ n is exact (no model error).
-#   near-field— polyhedral_gravity (Werner–Scheeres), which converges right down
-#               to the surface where the SH series does not.
+#   Stokes     — the integrand (r/R*)^n P̄_nm(sinφ){cos,sin}(mλ) is a solid
+#                harmonic, i.e. a homogeneous POLYNOMIAL of degree n, so a
+#                tetrahedral Gauss rule of degree ≥ n is exact (no model error).
+#   near-field — polyhedral_gravity (Werner–Scheeres), which converges right down
+#                to the surface where the SH series does not.
 
 
 def _gauss01(n):
@@ -471,6 +474,7 @@ class Bulk:
         return self._fd[key]
 
     # ── Stokes coefficients ────────────────────────────────────────────────
+    # TODO: is this okay?
     def stokes(self, Lmin, Lmax, Rref, chunk=200_000):
         """
         Fully-normalized Stokes coefficients of the unit-mass constant-density
@@ -570,6 +574,9 @@ def field_total(beta, positions, obs, bulk):
 #      given the same absolute weight.
 
 
+# NOTE: Use the OD uncertainty of the absolute coefficients for
+# the residual coefficients because subtracting the noise-free
+# constant-density model does not change their covariance.
 def od_sigma(cs, eps, floor_frac=0.1):
     """
     OD-like 1σ for a measured coefficient vector `cs`:
@@ -635,9 +642,9 @@ def posterior_sigma(Fi):
 # β_j > 0 an over-dense concentration, β_j < 0 a mass deficit.  Index 0 is the
 # shallow anomaly (the CH target); 1 and 2 sit deep in the two lobes.
 MASCONS = [
-    ("near-surface anomaly", np.array([0.00, 0.00, 0.22]), 0.03),
-    ("+x lobe excess", np.array([0.42, 0.00, 0.00]), 0.05),
-    ("-x lobe deficit", np.array([-0.45, 0.00, 0.00]), -0.04),
+    ("Near-surface Anomaly", np.array([0.00, 0.00, 0.22]), 0.03),
+    ("+x Lobe Excess", np.array([0.42, 0.00, 0.00]), 0.05),
+    ("-x Lobe Deficit", np.array([-0.45, 0.00, 0.00]), -0.04),
 ]
 
 
@@ -649,26 +656,84 @@ def mascon_arrays():
     return names, P, f
 
 
+# Largest density contrast an EXCESS can plausibly carry, as a fraction of the
+# bulk density.  Against Eros' 2.67 g/cc it is bracketed by what the material
+# can be: a solid ordinary-chondrite block (3.4 g/cc, pores squeezed out) gives
+# only Δρ/ρ ≈ 0.27, while solid FeNi (7.8 g/cc) gives Δρ/ρ ≈ 1.92 — so ~2 is the
+# hard ceiling, not a free choice.  Deficits have no such ceiling: their floor is
+# total vacuum, Δρ/ρ = −1 exactly, which is why they are handled separately.
+# NOTE: EXCESS_CONTRAST is a free parameter of the admissibility tests,
+# here I'm allowing 3 times the bulk density, which is arbitrary.
+
+EXCESS_CONTRAST = 2.00
+
+
+def admissible_radius(beta, bulk_frac, volume, contrast=EXCESS_CONTRAST):
+    """
+    Smallest equivalent sphere [LU] that makes a point anomaly β physical.
+
+    Nothing constrains the SIGN of β: it is a CONTRAST against the constant-
+    density bulk, so a void or a porous patch is negative BY CONSTRUCTION and a
+    negative β is not an unphysical mass — it is a mass deficit.  What must stay
+    physical is the TOTAL local density.  Smearing the anomaly over a sphere of
+    volume V_a, the density inside it is
+
+        ρ = β̃ M*/V_body  +  β M*/V_a  =  ρ_bulk (1 + (β/β̃)(V_body/V_a)),
+
+    so ρ ≥ 0 (a deficit can at worst empty the region) requires
+
+        V_a ≥ |β| V_body / β̃                      for β < 0,
+
+    while an excess is capped not by ρ ≥ 0 but by the densest inclusion nature
+    supplies, Δρ ≤ contrast·ρ_bulk:
+
+        V_a ≥  β  V_body / (contrast · β̃)         for β > 0.
+
+    By Newton's theorem the exterior field of a uniform sphere is EXACTLY that
+    of the point mass at its centre, so replacing the point by this sphere costs
+    the model nothing — provided every observation point stays outside it.
+    """
+    scale = 1.0 if beta < 0 else contrast
+    V_a = abs(beta) * volume / (bulk_frac * scale)
+    return (3.0 * V_a / (4.0 * math.pi)) ** (1.0 / 3.0)
+
+
+def admissible_beta(radius, beta_sign, bulk_frac, volume, contrast=EXCESS_CONTRAST):
+    """Inverse of `admissible_radius`: the largest |β| a uniform sphere of the
+    given radius can carry without going unphysical.  This is what a SITE can
+    hold — put `radius` = distance to the nearest surface or datum."""
+    scale = 1.0 if beta_sign < 0 else contrast
+    return scale * bulk_frac * (4.0 / 3.0 * math.pi * radius**3) / volume
+
+
+def admissibility(P, betas, bulk_frac, volume, obs, tm):
+    """
+    Per-anomaly: minimum admissible radius, distance to the shape surface, and
+    distance to the nearest field point.  a_min < both ⇒ the point-mass truth is
+    an exact stand-in for a physical, buried, uniform density contrast.
+    """
+    a = np.array([admissible_radius(b, bulk_frac, volume) for b in betas])
+    if tm is not None:
+        d_surf = np.abs(trimesh.proximity.signed_distance(tm, P))
+    else:
+        d_surf = np.full(len(P), np.nan)
+    d_obs = np.min(np.linalg.norm(obs[None, :, :] - P[:, None, :], axis=2), axis=1)
+    # largest |β| that stays buried AND clear of every field point
+    r_ok = np.minimum(np.nan_to_num(d_surf, nan=np.inf), d_obs)
+    b_max = np.array(
+        [
+            math.copysign(admissible_beta(r, b, bulk_frac, volume), b)
+            for r, b in zip(r_ok, betas)
+        ]
+    )
+    return a, d_surf, d_obs, b_max
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION 5 — EXPERIMENTS
 # ═══════════════════════════════════════════════════════════════════════════
 
-
-def stokes_power_spectrum(p, Lmax, Rref):
-    """RMS Stokes magnitude per degree for a unit mass at p (shows where its
-    signature lives: shallow → high degree, deep → low degree)."""
-    x, y, z = p
-    r = math.sqrt(x * x + y * y + z * z)
-    lam = math.atan2(y, x)
-    Pb = fully_normalized_legendre(Lmax, z / r)
-    out = []
-    for n in range(0, Lmax + 1):
-        acc = 0.0
-        for m in range(0, n + 1):
-            c = (r / Rref) ** n * Pb[n, m]
-            acc += (c * math.cos(m * lam)) ** 2 + (c * math.sin(m * lam)) ** 2
-        out.append(math.sqrt(acc))
-    return np.asarray(out)
+# TODO: understand here what's going on!
 
 
 def position_covariance(
@@ -760,6 +825,7 @@ def monte_carlo_fit(blocks, m_true, n_mc=400, seed=7):
     return np.array([ls_fit_once(blocks, m_true, rng) for _ in range(n_mc)])
 
 
+# TODO: explain this!
 def detection_sweep(A_sh, sig_sh, A_ch, sig_ch, f_base, mu_grid, n_mc=250, seed=11):
     """
     Smallest detectable anomaly with vs without the cylinder.  Sweeps the true
@@ -951,12 +1017,20 @@ def draw_truth_positions(n, V, F, tm, rng, center=None, spread=None, n_try=4000)
 
 
 def truth_mc_masses(
-    P, bulk, obs, cyl, ch_modes, Lmax, Rref, eps, n_truth=40, n_noise=60, seed=101
+    P, bulk, obs, cyl, ch_modes, Lmax, Rref, eps, n_truth=40, seed=101,
+    f_ref=None, tgt=0, n_rea=24, n_rep=400,
 ):
     """
     Redraw the truth MASSES; for each, rebuild σ from that truth's own field and
-    refit.  Returns (sigA, sigB, bulkA, bulkB, betas) with sig* of shape
-    (n_truth, n_anom): the per-parameter 1σ each truth interior yields.
+    refit.  The outer loop is over INTERIORS, so everything below is "would this
+    survive a different body?" rather than "how precise is this one fit?".
+
+    Per truth it returns both halves of the consistency test:
+      PREDICTED  sigA/sigB/bulkA/bulkB — the analytic (A^T W A)^-1, no sampling;
+      REALIZED   devA/devB/devBulk*    — errors from actually fitting noisy data.
+    Plus, for the figures, the per-truth RMS error of the CH target component
+    (m_errA/m_errB) and one representative interior's full estimate cloud
+    (m_cloudA/m_cloudB) against its analytic covariance (m_covA/m_covB).
     """
     rng = np.random.default_rng(seed)
     betas = draw_truth_masses(n_truth, rng)
@@ -967,14 +1041,60 @@ def truth_mc_masses(
     sigA = np.empty((n_truth, len(P)))
     sigB = np.empty_like(sigA)
     bulkA, bulkB = np.empty(n_truth), np.empty(n_truth)
+    m_errA, m_errB = np.empty(n_truth), np.empty(n_truth)
+    devA, devB, dbA, dbB = [], [], [], []
+    one = np.ones(len(P))
+    # the interior closest to the nominal one gets the dense cloud, so the
+    # covariance check in the figure is made on a representative body
+    i_rep = 0 if f_ref is None else int(
+        np.argmin(np.linalg.norm(betas - np.asarray(f_ref), axis=1))
+    )
+    rep = {}
     for i, b in enumerate(betas):
         s_sh = od_sigma(stokes_total(b, P, bulk, 2, Lmax, Rref), eps)
         s_ch = od_sigma(pinvPhi @ field_total(b, P, obs, bulk), eps)
-        mcA = monte_carlo_fit([(A_sh, s_sh)], b, n_mc=n_noise, seed=7 + i)
-        mcB = monte_carlo_fit([(A_sh, s_sh), (A_ch, s_ch)], b, n_mc=n_noise, seed=7 + i)
-        sigA[i], sigB[i] = mcA.std(0), mcB.std(0)
-        bulkA[i], bulkB[i] = (1.0 - mcA.sum(1)).std(), (1.0 - mcB.sum(1)).std()
-    return sigA, sigB, bulkA, bulkB, betas
+        # PREDICTED: the mass fit is LINEAR, so its posterior covariance is
+        # exactly (A^T W A)^-1 — no sampling needed for the sigma itself.
+        CA = np.linalg.inv(fisher_masses([(A_sh, s_sh)]))
+        CB = np.linalg.inv(fisher_masses([(A_sh, s_sh), (A_ch, s_ch)]))
+        sigA[i], sigB[i] = np.sqrt(np.diag(CA)), np.sqrt(np.diag(CB))
+        # beta_tilde = 1 - sum(beta), so its variance is 1^T C 1
+        bulkA[i] = np.sqrt(one @ CA @ one)
+        bulkB[i] = np.sqrt(one @ CB @ one)
+        # REALIZED: actually fit noisy data for this interior and keep the
+        # error made, estimate - truth.  Nothing above feeds this.
+        n = n_rep if i == i_rep else n_rea
+        fA = monte_carlo_fit([(A_sh, s_sh)], b, n_mc=n, seed=7 + i)
+        fB = monte_carlo_fit([(A_sh, s_sh), (A_ch, s_ch)], b, n_mc=n, seed=7 + i)
+        eA, eB = fA - b, fB - b
+        devA.append(eA[:n_rea])
+        devB.append(eB[:n_rea])
+        # beta_tilde = 1 - sum(beta), so its error is minus the sum of theirs
+        dbA.append(-eA[:n_rea].sum(axis=1))
+        dbB.append(-eB[:n_rea].sum(axis=1))
+        # what fig 2a histograms: this interior's realized error on the CH target
+        m_errA[i] = np.sqrt(np.mean(eA[:, tgt] ** 2))
+        m_errB[i] = np.sqrt(np.mean(eB[:, tgt] ** 2))
+        if i == i_rep:
+            rep = dict(
+                m_cloudA=fA, m_cloudB=fB, m_covA=CA, m_covB=CB, m_rep_beta=b.copy()
+            )
+    return dict(
+        sigA=sigA,
+        sigB=sigB,
+        bulkA=bulkA,
+        bulkB=bulkB,
+        betas=betas,
+        devA=np.vstack(devA),
+        devB=np.vstack(devB),
+        devBulkA=np.concatenate(dbA),
+        devBulkB=np.concatenate(dbB),
+        m_errA=m_errA,
+        m_errB=m_errB,
+        m_i_rep=i_rep,
+        m_tgt=tgt,
+        **rep,
+    )
 
 
 def truth_mc_position(
@@ -1122,6 +1242,42 @@ def results_report(res, tex=True):
     )
 
     print(f"\n{SEP}\n  RESULTS  (figures carry no numbers; quote from here)\n{SEP}")
+
+    # β < 0 is a DEFICIT, not a negative mass — the anomalies are contrasts on
+    # top of the bulk, so the sign is the physics.  What has to hold is that the
+    # implied density stays ≥ 0 (deficit) or below the densest realistic
+    # inclusion (excess), which sets a minimum size for the equivalent sphere.
+    adm, P_ = res["adm"], res["P"]
+    a_min, d_surf, d_obs, b_max = (
+        adm["a_min"],
+        adm["d_surf"],
+        adm["d_obs"],
+        adm["b_max"],
+    )
+    print(
+        f"\n  TABLE 0 — physical admissibility of the truth anomalies "
+        f"(excess ceiling Δρ/ρ = {EXCESS_CONTRAST:.2f})"
+    )
+    print(
+        f"  {'component':22s} {'β':>8} {'Δρ/ρ':>7} {'a_min':>8} {'to surf':>8} "
+        f"{'to obs':>8} {'β_max':>9}  verdict"
+    )
+    for k, nm in enumerate(names):
+        ratio = -1.0 if ft[k] < 0 else EXCESS_CONTRAST
+        if a_min[k] > d_surf[k]:
+            v = "breaches the surface"
+        elif a_min[k] > d_obs[k]:
+            v = "field points inside it"
+        else:
+            v = "buried, clear of the data — exact"
+        print(
+            f"  {nm:22s} {ft[k]:+8.3f} {ratio:+7.2f} {a_min[k]:8.3f} "
+            f"{d_surf[k]:8.3f} {d_obs[k]:8.3f} {b_max[k]:+9.4f}  {v}"
+        )
+    print(
+        f"  body β̃ = {res['beta_bulk']:.3f} > 0, and Σβ + β̃ = 1 exactly, so the "
+        "total mass is conserved and positive."
+    )
     print(
         "\n  TABLE 1 — mass-fraction uncertainty, "
         f"{len(tmc['sigA'])} truth interiors, 1σ, median [10–90%]"
@@ -1136,6 +1292,29 @@ def results_report(res, tex=True):
             f"  {nm_:22s} {tr:+9.4f} {a[1]:10.2e} "
             f"[{a[0]:8.2e},{a[2]:8.2e}] {b[1]:10.2e} "
             f"[{b[0]:8.2e},{b[2]:8.2e}] {g:6.1f}×"
+        )
+
+    # Does the analytic covariance actually predict the error made?  The
+    # realized column comes from noisy fits, the predicted column from
+    # (A^T W A)^-1 — nothing is shared, so the ratio is a real check.
+    _rms = lambda M: np.sqrt(np.mean(np.asarray(M) ** 2, axis=0))
+    reA = _rms(np.column_stack([tmc["devA"], tmc["devBulkA"]]))
+    reB = _rms(np.column_stack([tmc["devB"], tmc["devBulkB"]]))
+    prA = _rms(np.column_stack([tmc["sigA"], tmc["bulkA"]]))
+    prB = _rms(np.column_stack([tmc["sigB"], tmc["bulkB"]]))
+    nms = [n.replace(r"$\tilde\beta$", "β̃") for n, *_ in rows_m]
+    print(
+        f"\n  TABLE 1b — covariance consistency, {len(tmc['devA'])} noisy fits: "
+        "realized RMS(estimate − truth) vs predicted 1σ"
+    )
+    print(
+        f"  {'component':22s} {'realized SH':>12} {'pred SH':>11} {'ratio':>6} "
+        f"{'realized SH+CH':>15} {'pred SH+CH':>11} {'ratio':>6}"
+    )
+    for k, nm in enumerate(nms):
+        print(
+            f"  {nm:22s} {reA[k]:12.2e} {prA[k]:11.2e} {reA[k]/prA[k]:6.2f} "
+            f"{reB[k]:15.2e} {prB[k]:11.2e} {reB[k]/prB[k]:6.2f}"
         )
 
     eA, eB, dax = tmc["errA"], tmc["errB"], tmc["d_axis"]
@@ -1259,6 +1438,12 @@ def run_experiment(
     obs = obs[~inside_body(tm, V, F, obs)]
     r_obs = np.linalg.norm(obs, axis=1)
 
+    # Are the truth anomalies physically realizable?  β < 0 is a deficit, not a
+    # negative mass; the real constraint is on the density it implies.
+    a_min, d_surf, d_obs, b_max = admissibility(
+        P, f_true, beta_bulk, bulk.volume, obs, tm
+    )
+
     # DISCREPANCY designs: every column is (point mass at p_j) − (same mass
     # spread through the body), so β is estimated against the constant-density
     # model rather than against vacuum.
@@ -1339,6 +1524,12 @@ def run_experiment(
         float((1.0 - mc_nom.sum(1)).mean()),
         float((1.0 - mc_nom.sum(1)).std()),
     )
+    nominal_fit = dict(
+        mean=mc_nom.mean(0),
+        std=mc_nom.std(0),
+        bulk_mean=bulk_nominal[0],
+        bulk_std=bulk_nominal[1],
+    )
 
     # ══ EXPERIMENTS 1 & 2 — MONTE-CARLO OVER THE TRUTH ═════════════════════
     # Experiment 1 resamples the truth MASSES, experiment 2 the truth POSITION
@@ -1346,7 +1537,7 @@ def run_experiment(
     # scratch, so the spread reported below is over INTERIORS — "would this
     # conclusion survive a different body?" — rather than over noise draws at
     # one hard-coded truth, which only answers "how precise is this one fit?".
-    tm_sigA, tm_sigB, tm_bA, tm_bB, tm_betas = truth_mc_masses(
+    tmm = truth_mc_masses(
         P,
         bulk,
         obs,
@@ -1356,7 +1547,8 @@ def run_experiment(
         Rref,
         eps,
         n_truth=n_truth_m,
-        n_noise=max(40, n_mc // 8),
+        f_ref=f_true,
+        tgt=target,
     )
     tp = truth_mc_position(
         P,
@@ -1519,6 +1711,7 @@ def run_experiment(
         f_true=f_true,
         bulk=bulk,
         beta_bulk=beta_bulk,
+        adm=dict(a_min=a_min, d_surf=d_surf, d_obs=d_obs, b_max=b_max),
         target=target,
         sdA=sdA,
         sdB=sdB,
@@ -1527,14 +1720,13 @@ def run_experiment(
         posB=posB,
         det=det,
         bulk_nominal=bulk_nominal,
+        nominal_fit=nominal_fit,
         snr_sh=snr_sh,
         snr_ch=snr_ch,
         rms_post_sh=float(np.sqrt(np.mean(r_sh**2))),
         rms_post_ch=float(np.sqrt(np.mean(r_ch**2))),
         pos_spread=pos_spread,
-        truth_mc=dict(
-            sigA=tm_sigA, sigB=tm_sigB, bulkA=tm_bA, bulkB=tm_bB, betas=tm_betas, **tp
-        ),
+        truth_mc=dict(**tmm, **tp),
         spectra=spectra,
         Lmax_sh=Lmax_sh,
         ch_modes=ch_modes,
@@ -1550,6 +1742,66 @@ def run_experiment(
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION 6 — PLOTS
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+def draw_budget_compare(fig, cell, names, beta, beta_bulk, fit):
+    """
+    Truth against estimate, with 1-sigma, for every component AND the body.
+
+    The body carries ~0.96 of M* while the anomalies are a few per cent, so a
+    single linear axis would flatten the anomalies into nothing.  This uses a
+    broken y-axis: the upper panel is the body's band, the lower one the
+    anomalies', both with the same bars, and the diagonal ticks mark the break.
+    """
+    inner = cell.subgridspec(2, 1, height_ratios=[1, 1.9], hspace=0.10)
+    ax_t = fig.add_subplot(inner[0])
+    ax_b = fig.add_subplot(inner[1])
+
+    labels = [n.split()[0] for n in names] + ["BODY"]
+    truth = np.append(np.asarray(beta, float), beta_bulk)
+    mean = np.append(np.asarray(fit["mean"], float), fit["bulk_mean"])
+    sd = np.append(np.asarray(fit["std"], float), fit["bulk_std"])
+    x = np.arange(len(labels), dtype=float)
+    w = 0.36
+    for ax in (ax_t, ax_b):
+        ax.bar(x - w / 2, truth, w, color="0.62", edgecolor="k", label="truth")
+        ax.bar(
+            x + w / 2,
+            mean,
+            w,
+            yerr=sd,
+            capsize=4,
+            color=COLOR[0],
+            edgecolor="k",
+            label=r"estimated $\pm1\sigma$  (MC)",
+            error_kw=dict(lw=1.3, ecolor="k"),
+        )
+        ax.axhline(0.0, color="k", lw=0.8)
+        ax.grid(True, axis="y", ls=":", alpha=0.45)
+        ax.set_axisbelow(True)
+
+    pad = max(3.0 * sd[-1], 0.02)
+    ax_t.set_ylim(beta_bulk - pad, beta_bulk + pad)  # body band
+    lim = 1.35 * np.abs(truth[:-1]).max()
+    ax_b.set_ylim(-lim, lim)  # anomaly band
+
+    ax_t.spines["bottom"].set_visible(False)
+    ax_b.spines["top"].set_visible(False)
+    ax_t.tick_params(bottom=False, labelbottom=False)
+    for ax in (ax_t, ax_b):
+        ax.spines["right"].set_visible(False)
+    d = 0.012
+    kw = dict(transform=ax_t.transAxes, color="k", clip_on=False, lw=1.1)
+    ax_t.plot((-d, +d), (-d * 2, +d * 2), **kw)
+    kw.update(transform=ax_b.transAxes)
+    ax_b.plot((-d, +d), (1 - d, 1 + d), **kw)
+
+    ax_b.set_xticks(x)
+    ax_b.set_xticklabels(labels, fontsize=9)
+    ax_b.set_ylabel(r"Mass Fraction  $\beta_j$")
+    ax_t.set_ylabel(r"$\tilde\beta$", fontsize=12)
+    ax_t.legend(fontsize=8.5, loc="upper right", framealpha=0.93)
+    return ax_t, ax_b
 
 
 def draw_mass_budget(
@@ -1762,7 +2014,7 @@ def make_plots(res, outdir="Images"):
         V[F[::step]], alpha=0.18, facecolor="#9ecae1", edgecolor="0.55", linewidths=0.1
     )
     ax.add_collection3d(pc)
-    draw_cylinder(ax, cyl, label="CH cylinder")
+    draw_cylinder(ax, cyl, label="CH Cylinder")
     for i_a, (nm, p_a) in enumerate(zip(names, P)):
         mk = "*" if i_a == tgt else "o"
         sz = 240 if i_a == tgt else 120
@@ -1775,14 +2027,27 @@ def make_plots(res, outdir="Images"):
             edgecolor="k",
             depthshade=False,
         )
-        ax.text(p_a[0], p_a[1], p_a[2], f"  {nm.split()[0]}", fontsize=8)
-    ax.set_title("Interior: constant-density body plus signed anomalies")
+        # short name (first word); leading spaces nudge it right of the marker,
+        # and the target sits lower so its label clears the cylinder above it
+        dz = -0.05 if i_a == tgt else 0.0
+        ax.text(p_a[0], p_a[1], p_a[2] + dz, f"    {nm.split()[0]}", fontsize=9.5)
     ax.set_xlabel("x [LU]")
     ax.set_ylabel("y [LU]")
     ax.set_zlabel("z [LU]")
     set_axes_true_shape(ax, np.vstack([V, cylinder_hull(cyl)]))
-    ax.scatter([], [], color=COLOR[0], label=r"anomaly $\beta_j>0$")
-    ax.scatter([], [], color=COLOR[2], label=r"anomaly $\beta_j<0$")
+    ax.scatter([], [], color=COLOR[0], label=r"Anomaly $\beta_j>0$")
+    ax.scatter([], [], color=COLOR[2], label=r"Anomaly $\beta_j<0$")
+    # the target is drawn as a star rather than a dot; nothing said so.  Same
+    # colour as the marker itself, which is set by the SIGN of its own beta.
+    ax.scatter(
+        [],
+        [],
+        color=COLOR[0] if ft[tgt] > 0 else COLOR[2],
+        marker="*",
+        s=130,
+        edgecolor="k",
+        label=f"{names[tgt].split()[0]} (CH target)",
+    )
     ax.legend(loc="upper left", fontsize=8)
 
     fig.tight_layout()
@@ -1792,129 +2057,136 @@ def make_plots(res, outdir="Images"):
         bbox_inches="tight",
     )
 
-    # ---- FIG 2: mass budget + EXPERIMENT 1 + detection ----------------------
-    fig = plt.figure(figsize=(19.5, 5.8))
-    # no wspace= here: it sets locally_modified_subplot_params(), which makes
-    # tight_layout below declare every axes incompatible, warn, and do nothing.
-    # Horizontal spacing comes from tight_layout's w_pad instead.
-    gs1 = fig.add_gridspec(1, 3, width_ratios=[1.05, 1.45, 1.15])
-    fig.suptitle(
-        "Experiment 1: mass fractions, positions fixed",
-        fontweight="bold",
-        y=1.02,
-    )
-    draw_mass_budget(
-        fig.add_subplot(gs1[0, 0]),
-        names,
-        ft,
-        res["beta_bulk"],
-        recovered=res["bulk_nominal"],
-    )
-
-    # (b) EXPERIMENT 1 — spread of sigma_beta ACROSS TRUTH INTERIORS
-    ax = fig.add_subplot(gs1[0, 1])
+    # ---- FIG 2a: EXPERIMENT 1 — mass recovery over TRUTH MASS FRACTIONS ----
+    # Same three questions fig 3 asks of position: (a) how the per-truth error
+    # is distributed, (b) which interiors were drawn, (c) for one of them, does
+    # the analytic covariance actually describe the estimator's scatter.
     tmc = res["truth_mc"]
-    allA = np.column_stack([tmc["sigA"], tmc["bulkA"]])
-    allB = np.column_stack([tmc["sigB"], tmc["bulkB"]])
-    labels = [n.replace(" ", "\n", 1) for n in names] + ["BODY\n$\\tilde\\beta$"]
-    xpos = np.arange(len(labels), dtype=float) * 1.35  # extra room per group
-    w = 0.44
-    medA, medB = np.median(allA, axis=0), np.median(allB, axis=0)
-    for off, M, med, col, lab in (
-        (-w / 2, allA, medA, COLOR[2], "SH only"),
-        (+w / 2, allB, medB, COLOR[0], "SH + CH"),
-    ):
-        lo = med - np.percentile(M, 10, axis=0)
-        hi = np.percentile(M, 90, axis=0) - med
-        ax.bar(
-            xpos + off,
-            med,
-            w,
-            yerr=np.vstack([lo, hi]),
-            capsize=5,
-            color=col,
-            edgecolor="k",
-            label=lab,
-            error_kw=dict(lw=1.3, ecolor="0.2"),
-        )
-    # the one number the figure keeps: how much CH improves each component
-    gain = np.median(allA / allB, axis=0)
-    top = np.percentile(allB, 90, axis=0)
-    for k in range(len(labels)):
-        ax.text(
-            xpos[k] + w / 2,
-            top[k] * 1.45,
-            rf"${gain[k]:.0f}\times$",
-            ha="center",
-            va="bottom",
-            fontsize=11,
-            fontweight="bold",
-            color=COLOR[0],
-        )
-    ax.set_yscale("log")
-    ax.set_xticks(xpos)
-    ax.set_xticklabels(labels, fontsize=10)
-    ax.set_xlim(xpos[0] - 0.9, xpos[-1] + 0.9)
-    ax.set_ylim(top=np.percentile(allA, 90, axis=0).max() * 6)
-    ax.set_ylabel(r"Mass-fraction 1$\sigma$   $\sigma_\beta$", fontsize=11)
-    ax.set_title(
-        "Mass-fraction uncertainty over truth interiors\n"
-        "(bar = median, whiskers = 10-90 percentile)",
-        fontsize=11,
-    )
-    ax.grid(True, axis="y", which="both", ls=":", alpha=0.45)
-    ax.set_axisbelow(True)
-    ax.legend(fontsize=10, loc="upper left", framealpha=0.93)
+    mA, mB = tmc["m_errA"], tmc["m_errB"]
+    bts, jt = tmc["betas"], tmc["m_tgt"]
+    fig = plt.figure(figsize=(17.5, 5.4))
+    gs = fig.add_gridspec(1, 3)
 
-    # (c) smallest detectable anomaly: recovered anomaly vs true anomaly
-    ax = fig.add_subplot(gs1[0, 2])
+    # (a) distribution of the per-truth mass-fraction error on the CH target
+    ax = fig.add_subplot(gs[0, 0])
+    bins = np.logspace(
+        np.log10(min(mA.min(), mB.min()) * 0.8),
+        np.log10(max(mA.max(), mB.max()) * 1.2),
+        26,
+    )
+    ax.hist(mA, bins=bins, color=COLOR[2], alpha=0.75, edgecolor="k", lw=0.5,
+            label="SH")
+    ax.hist(mB, bins=bins, color=COLOR[0], alpha=0.75, edgecolor="k", lw=0.5,
+            label="SH + CH")
+    for v, col in ((np.median(mA), COLOR[2]), (np.median(mB), COLOR[0])):
+        ax.axvline(v, color=col, ls="--", lw=1.8)
+    ax.set_xscale("log")
+    ax.set_xlabel(r"Mass-fraction RMS Error over MC noise draws,  $\beta_0$")
+    ax.set_ylabel(f"Truth Interiors  (of {len(mA)})")
+    ax.grid(True, which="both", alpha=0.3)
+    ax.legend(fontsize=9)
+
+    # (b) which interiors were drawn: |beta| uniform, sign random, per component
+    ax = fig.add_subplot(gs[0, 1])
+    rj = np.random.default_rng(5)
+    for k in range(bts.shape[1]):
+        xk = k + rj.uniform(-0.16, 0.16, len(bts))
+        ax.scatter(xk, bts[:, k], s=26, color=COLOR[3], edgecolor="k", lw=0.35,
+                   alpha=0.8, zorder=3,
+                   label="Truth draws" if k == 0 else None)
+    ax.plot(range(len(ft)), ft, "k*", ms=17, zorder=6, label="Nominal truth")
+    ax.plot(range(len(ft)), tmc["m_rep_beta"], "P", color="crimson", ms=11,
+            zorder=5, label="Interior shown at right")
+    ax.axhline(0.0, color="k", lw=0.8)
+    ax.set_xticks(range(len(names)))
+    ax.set_xticklabels([n.split()[0] for n in names], fontsize=10)
+    ax.set_xlim(-0.55, len(names) - 0.45)
+    ax.set_ylabel(r"Truth Mass Fraction  $\beta_j$")
+    ax.grid(True, axis="y", alpha=0.3)
+    ax.legend(fontsize=9, loc="upper right")
+
+    # (c) ONE interior: the estimate clouds against the PREDICTED covariance,
+    # for both of the other anomalies in turn.  CH collapses the target
+    # direction (x) only and leaves the lobes almost untouched, so each ellipse
+    # is a vertical sliver — that anisotropy IS the result.
+    inner = gs[0, 2].subgridspec(2, 1, hspace=0.14)
+    ax_hi = fig.add_subplot(inner[0])
+    ax_lo = fig.add_subplot(inner[1], sharex=ax_hi)
+    others = [k for k in range(len(names)) if k != jt]
+    for row, (axc, ko) in enumerate(zip((ax_hi, ax_lo), others)):
+        ix = np.ix_([jt, ko], [jt, ko])
+        cA = tmc["m_cloudA"][:, [jt, ko]]
+        cB = tmc["m_cloudB"][:, [jt, ko]]
+        covA, covB = tmc["m_covA"][ix], tmc["m_covB"][ix]
+        muA, muB = cA.mean(axis=0), cB.mean(axis=0)
+        tru = tmc["m_rep_beta"][[jt, ko]]
+        first = row == 0
+        axc.scatter(cA[:, 0], cA[:, 1], s=14, color=COLOR[2], edgecolor="none",
+                    alpha=0.40, zorder=3, label="SH" if first else None)
+        # black outline: a blue ellipse on a blue cloud is unreadable
+        cov_ellipse(axc, muA, covA, "k", nsig=1.0, lw=2.4, zorder=6,
+                    label=r"SH 1$\sigma$ (predicted)" if first else None)
+        axc.scatter(cB[:, 0], cB[:, 1], s=11, color=COLOR[0], edgecolor="none",
+                    alpha=0.65, zorder=4, label="SH + CH" if first else None)
+        cov_ellipse(axc, muB, covB, "k", nsig=1.0, lw=2.4, ls=":", zorder=7,
+                    label=r"SH + CH 1$\sigma$ (predicted)" if first else None)
+        axc.plot(*tru, "*", color=COLOR[1], ms=15, mec="k", mew=0.8, zorder=8,
+                 label="Truth" if first else None)
+        # per-axis limits, not equal aspect: the two axes carry different
+        # components, and 3.4 sigma of each fills the panel
+        rx = 3.4 * max(np.sqrt(covA[0, 0]), abs(muA[0] - tru[0]))
+        ry = 3.4 * max(np.sqrt(covA[1, 1]), abs(muA[1] - tru[1]))
+        axc.set_xlim(muA[0] - rx, muA[0] + rx)
+        axc.set_ylim(muA[1] - ry, muA[1] + ry)
+        axc.set_ylabel(rf"$\beta$  {names[ko].split()[0]}", fontsize=10)
+        axc.ticklabel_format(style="sci", scilimits=(-2, 2), useMathText=True)
+        axc.yaxis.get_offset_text().set_fontsize(8)
+        axc.grid(True, alpha=0.3)
+        if first:
+            # above the axes, not inside: an opaque box here would sit on the
+            # SH cloud, which is the widest thing in the panel
+            axc.legend(
+                fontsize=7.5,
+                ncol=3,
+                frameon=False,
+                loc="lower left",
+                bbox_to_anchor=(0.0, 1.12, 1.0, 0.2),  # clears the 1e-2 offset text
+                mode="expand",
+                borderaxespad=0.0,
+                handletextpad=0.4,
+                columnspacing=1.0,
+            )
+            axc.tick_params(labelbottom=False)
+        else:
+            axc.set_xlabel(rf"$\beta$  {names[jt].split()[0]}", fontsize=10)
+    fig.tight_layout(w_pad=2.0)
+    fig.savefig(
+        os.path.join(outdir, "global_fig2a_massfraction.pdf"),
+        dpi=180,
+        bbox_inches="tight",
+    )
+
+    # ---- FIG 2b: smallest detectable anomaly -------------------------------
+    fig, ax = plt.subplots(figsize=(7.0, 5.6))
     mug = det["mu_grid"]
     ax.plot(mug, mug, "k--", lw=1, label="Perfect Recovery")
-    ax.errorbar(
-        mug,
-        np.abs(det["muA"]),
-        yerr=det["sdA"],
-        fmt="o",
-        color=COLOR[2],
-        ms=5,
-        capsize=3,
-        label="SH",
-    )
-    ax.errorbar(
-        mug,
-        np.abs(det["muB"]),
-        yerr=det["sdB"],
-        fmt="s",
-        color=COLOR[0],
-        ms=5,
-        capsize=3,
-        label="SH + CH",
-    )
-    ax.axhline(
-        det["thr_A"],
-        color=COLOR[2],
-        ls=":",
-        lw=1.5,
-        label=r"SH $3\sigma$ floor",
-    )
-    ax.axhline(
-        det["thr_B"],
-        color=COLOR[0],
-        ls=":",
-        lw=1.5,
-        label=r"SH + CH $3\sigma$ floor",
-    )
+    ax.errorbar(mug, np.abs(det["muA"]), yerr=det["sdA"], fmt="o", color=COLOR[2],
+                ms=5, capsize=3, label="SH")
+    ax.errorbar(mug, np.abs(det["muB"]), yerr=det["sdB"], fmt="s", color=COLOR[0],
+                ms=5, capsize=3, label="SH + CH")
+    ax.axhline(det["thr_A"], color=COLOR[2], ls=":", lw=1.5,
+               label=r"SH $3\sigma$ floor")
+    ax.axhline(det["thr_B"], color=COLOR[0], ls=":", lw=1.5,
+               label=r"SH + CH $3\sigma$ floor")
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel(r"True Anomaly $\beta_0$")
-    ax.set_ylabel(r"Recovered Anomaly  $|\hat\mu|$")
+    ax.set_ylabel(r"Recovered Anomaly  $|\hat\mu|$  (MC mean)")
     ax.grid(True, which="both", alpha=0.3)
-    ax.legend(fontsize=8, loc="upper left")
-
-    # (b) the truth mass budget: body + anomalies = M*
-    fig.tight_layout(w_pad=2.2)
+    ax.legend(fontsize=9, loc="upper left")
+    fig.tight_layout()
     fig.savefig(
-        os.path.join(outdir, "global_fig2_massfraction.pdf"),
+        os.path.join(outdir, "global_fig2b_detection.pdf"),
         dpi=180,
         bbox_inches="tight",
     )
@@ -1955,7 +2227,7 @@ def make_plots(res, outdir="Images"):
     for v, col in ((np.median(eA), COLOR[2]), (np.median(eB), COLOR[0])):
         ax.axvline(v, color=col, ls="--", lw=1.8)
     ax.set_xscale("log")
-    ax.set_xlabel("Position RMS Error [LU]")
+    ax.set_xlabel("Position RMS Error over MC noise draws [LU]")
     ax.set_ylabel(f"Truth Interiors  (of {len(eA)})")
     ax.grid(True, which="both", alpha=0.3)
     ax.legend(fontsize=9)
@@ -2010,15 +2282,16 @@ def make_plots(res, outdir="Images"):
         zorder=3,
         label="SH",
     )
+    # contrasting outline: a blue ellipse on a blue cloud is unreadable
     cov_ellipse(
         ax,
         muA,
         covA,
-        COLOR[2],
+        "k",
         nsig=1.0,
-        lw=2.2,
+        lw=2.4,
         zorder=6,
-        label=r"SH 1$\sigma$ analytic",
+        label=r"SH 1$\sigma$",
     )
     ax.scatter(
         xzB[:, 0],
@@ -2034,11 +2307,12 @@ def make_plots(res, outdir="Images"):
         ax,
         muB,
         covB,
-        COLOR[0],
+        "k",
         nsig=1.0,
-        lw=2.2,
+        lw=2.4,
+        ls=":",
         zorder=7,
-        label=r"SH + CH 1$\sigma$ analytic",
+        label=r"SH + CH 1$\sigma$",
     )
     ax.plot(*tru, "*", color=COLOR[1], ms=17, mec="k", mew=0.8, zorder=8, label="Truth")
     rA = 3.4 * max(np.sqrt(covA[0, 0]), np.sqrt(covA[1, 1]), np.linalg.norm(muA - tru))
@@ -2056,13 +2330,13 @@ def make_plots(res, outdir="Images"):
     # inset at the SH+CH scale
     # opaque, or the SH cloud shows through and the zoom is unreadable
     # [x0, y0, width, height] in axes fraction — the last two set the size
-    axin = ax.inset_axes([0.62, 0.05, 0.35, 0.35], facecolor="white")
+    axin = ax.inset_axes([0.65, 0.05, 0.3, 0.3], facecolor="white")
     axin.set_zorder(10)
     axin.patch.set_alpha(1.0)
     axin.scatter(
         xzB[:, 0], xzB[:, 1], s=14, color=COLOR[0], edgecolor="none", alpha=0.6
     )
-    cov_ellipse(axin, muB, covB, COLOR[0], nsig=1.0, lw=1.8)
+    cov_ellipse(axin, muB, covB, COLOR[0], nsig=1.0, lw=2.0)  # solid, matching
     cov_ellipse(axin, muB, np.cov(xzB.T), "0.4", nsig=1.0, lw=1.3, ls="--")
     axin.plot(*muB, "P", color="k", ms=8)
     axin.plot(*tru, "*", color=COLOR[1], ms=13, mec="k", mew=0.6)
@@ -2077,12 +2351,24 @@ def make_plots(res, outdir="Images"):
         sp_.set_edgecolor(COLOR[0])
     # no indicate_inset_zoom: the zoomed region is smaller than a marker here,
     # so the connectors are long diagonals pointing at nothing visible
-    ax.plot(*muB, "o", mfc="none", mec=COLOR[0], ms=15, mew=1.6, zorder=9)
+    # Mark the zoom REGION, not with a ring: a circle drawn in the SH+CH colour
+    # reads as that case's covariance ellipse, and since it is a fixed pixel
+    # size it is round, while the real ellipse (also plotted here, ~20x smaller
+    # and invisible at this scale) is elongated.  A dashed grey box cannot be
+    # mistaken for a covariance.
+    from matplotlib.patches import Rectangle
 
-    fig.suptitle(
-        "Experiment 2: anomaly position, Monte-Carlo over truth " "interiors",
-        fontweight="bold",
-        y=1.0,
+    ax.add_patch(
+        Rectangle(
+            (muB[0] - rB, muB[1] - rB),
+            2 * rB,
+            2 * rB,
+            fill=False,
+            ec="0.35",
+            ls="--",
+            lw=1.2,
+            zorder=9,
+        )
     )
     fig.tight_layout(w_pad=2.0)
     fig.savefig(
@@ -2176,12 +2462,6 @@ def make_plots(res, outdir="Images"):
         ax.set_axisbelow(True)
         for sd_ in ("top", "right"):
             ax.spines[sd_].set_visible(False)
-        ax.set_title(
-            name,
-            fontweight="bold",
-            fontsize=11,
-            pad=9,
-        )
         if handles is None:
             handles, labels = ax.get_legend_handles_labels()
 
@@ -2223,7 +2503,8 @@ if __name__ == "__main__":
     )
     print(
         "\nSaved: Images/global_fig1_geometry.pdf, "
-        "global_fig2_massfraction.pdf, global_fig3_position.pdf, "
+        "global_fig2a_massfraction.pdf, global_fig2b_detection.pdf, "
+        "global_fig3_position.pdf, "
         "global_fig4_coefficients.pdf"
     )
     print("Done.")

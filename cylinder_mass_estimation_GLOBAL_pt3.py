@@ -961,7 +961,7 @@ def make_plots(res, outdir="Images"):
     a1.set_yscale("log"); a1.set_xticks(x)
     a1.set_xticklabels([n.replace(" ", "\n") for n in names]
                        + ["BODY\n$\\tilde\\beta$"], fontsize=8)
-    a1.set_ylabel(r"mass-fraction 1$\sigma$ uncertainty $\sigma_\beta$")
+    a1.set_ylabel(r"mass-fraction 1$\sigma$ uncertainty $\sigma_\beta$  (MC)")
     a1.set_title("Mass-fraction recovery per anomaly (sorted shallow to deep)\n"
                  r"plus the derived body fraction $\tilde\beta=1-\sum\beta_j$")
     a1.grid(True, axis="y", which="both", alpha=0.3); a1.legend(fontsize=8)
@@ -973,7 +973,7 @@ def make_plots(res, outdir="Images"):
     a2.bar(xx + 0.2, wc, 0.4, color=COLOR[0], edgecolor="k", label="worst case")
     a2.set_yscale("log"); a2.set_xticks(xx)
     a2.set_xticklabels([_SHORT.get(k, k) for k in cases], fontsize=8)
-    a2.set_ylabel(r"$\sigma_\beta$")
+    a2.set_ylabel(r"$\sigma_\beta$  (MC)")
     a2.set_title("Aggregate on THIS interior:\ncoverage is the worst-case bar")
     a2.grid(True, axis="y", which="both", alpha=0.3); a2.legend(fontsize=8)
 
@@ -993,7 +993,7 @@ def make_plots(res, outdir="Images"):
         a3.set_yscale("log")
         a3.set_xticks(range(len(keys)))
         a3.set_xticklabels([_SHORT.get(k, k) for k in keys], fontsize=8)
-        a3.set_ylabel(r"worst-case $\sigma_\beta$ improvement over FPS")
+        a3.set_ylabel(r"worst-case $\sigma_\beta$ improvement over FPS  (MC)")
         a3.set_title(f"Across {len(sw[keys[0]])} independent interiors\n"
                      "(bar = median; below the line = worse than geometry)")
         a3.grid(True, axis="y", which="both", alpha=0.3); a3.legend(fontsize=8)
@@ -1013,7 +1013,7 @@ def make_plots(res, outdir="Images"):
                    edgecolor="k", lw=0.5, label=k)
         ax.set_yscale("log"); ax.set_xticks(xp)
         ax.set_xticklabels([n.replace(" ", "\n") for n in names], fontsize=8)
-        ax.set_ylabel("position RMS error [LU]")
+        ax.set_ylabel("position RMS error [LU]  (MC)")
         ax.set_title("Position recovery of randomly placed mascons: "
                      "geometric vs SH-aware networks")
         ax.grid(True, axis="y", which="both", alpha=0.3); ax.legend(fontsize=8)

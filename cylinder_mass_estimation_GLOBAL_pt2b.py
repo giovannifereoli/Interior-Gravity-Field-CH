@@ -488,7 +488,7 @@ def make_plots(res, outdir="Images"):
     ax.axvline(len(names) - 0.5, color="0.6", ls="--", lw=1.2)
     ax.set_yscale("log"); ax.set_xticks(x)
     ax.set_xticklabels(names + [r"BODY $\tilde\beta$"], fontsize=8)
-    ax.set_ylabel(r"1$\sigma$ uncertainty $\sigma_\beta$")
+    ax.set_ylabel(r"1$\sigma$ uncertainty $\sigma_\beta$  (MC)")
     ax.set_title("Density recovery per component")
     for i in range(len(x)):
         ax.text(x[i] + 0.2, vB[i], rf"${vA[i]/vB[i]:.0f}\times$", ha="center", va="bottom",
