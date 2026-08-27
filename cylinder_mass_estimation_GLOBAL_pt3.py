@@ -147,7 +147,10 @@ def legendre_bar(nmax: int, x):
         return P
     sx = np.sqrt(np.maximum(0.0, 1.0 - x * x))
     for m in range(1, nmax + 1):
-        P[m, m] = np.sqrt((2.0 * m + 1.0) / (2.0 * m)) * sx * P[m - 1, m - 1]
+        f = np.sqrt((2.0 * m + 1.0) / (2.0 * m))
+        if m == 1:
+            f *= np.sqrt(2.0)   # the (2 - delta_0m) step, as in G
+        P[m, m] = f * sx * P[m - 1, m - 1]
     for m in range(0, nmax):
         P[m + 1, m] = np.sqrt(2.0 * m + 3.0) * x * P[m, m]
     for m in range(0, nmax + 1):
@@ -166,11 +169,14 @@ def sh_pot_basis(pts, Lmin, Lmax, Rref):
 
         U_L(r) = sh_pot_basis(r) @ ( Σ_j f_j · G.sh_stokes_of_point(p_j) ).
 
-    The (2-delta_m0)/(2n+1) factor is the Legendre addition theorem written for
-    pt1's normalization: G.fully_normalized_legendre seeds P̄_11 with
-    sqrt(3/2) rather than the geodesy sqrt(3), i.e. its P̄_nm are the 4π-
-    normalized ones divided by sqrt(2) for m>=1.  With this factor the sum is
-    the exact multipole expansion of Σ_j f_j/|r-p_j| (verified in _selftest).
+    This is the plain 4π-normalized synthesis,
+
+        U = (1/r) Σ_n (Rref/r)^n Σ_m [C̄ cos mλ + S̄ sin mλ] P̄_nm,
+
+    with NO extra factor: since G now returns standard (geodesy/OD) Stokes
+    coefficients, the addition-theorem 1/(2n+1) and the (2-delta_0m) both live
+    inside the coefficient, not here.  The sum is the exact multipole expansion
+    of Σ_j f_j/|r-p_j| (verified in _selftest).
     Returns (N, n_coeff).
     """
     pts = np.atleast_2d(np.asarray(pts, float))
@@ -179,9 +185,9 @@ def sh_pot_basis(pts, Lmin, Lmax, Rref):
     Pb = legendre_bar(Lmax, pts[:, 2] / r)
     cols = []
     for n in range(Lmin, Lmax + 1):
-        rad = Rref ** n / r ** (n + 1) / (2.0 * n + 1.0)
+        rad = Rref ** n / r ** (n + 1)
         for m in range(0, n + 1):
-            base = (1.0 if m == 0 else 2.0) * rad * Pb[n, m]
+            base = rad * Pb[n, m]
             cols.append(base * np.cos(m * lam))
             cols.append(base * np.sin(m * lam))
     return np.column_stack(cols)
@@ -270,21 +276,20 @@ def map_sh_error(pts, P, f, Lmax, Rref, bulk=None):
 def kaula_variances(Lmax, K=1e-2, n_known=1, known_sig=1e-6):
     """
     Per-coefficient variances for a Kaula rule sigma_n = K/n^2 applied to the
-    standard 4π-normalized Stokes coefficients, EXPRESSED IN PT1'S CONVENTION
-    (degrees <= n_known — GM and the centre of mass — taken as known).
+    standard 4π-normalized Stokes coefficients (degrees <= n_known — GM and the
+    centre of mass — taken as known).
 
-    pt1's basis absorbs a (2-delta_m0)/(2n+1) factor (see sh_pot_basis), so an
-    isotropic Kaula prior is NOT equal variance per column: it is
-    sigma_n^2 (2n+1)^2/(2-delta_m0).  Only with this weighting do the degree sums
-    close under the addition theorem — which is what makes the resulting
-    sigma_g map exactly radial (asserted in _selftest).  Column order matches
-    sh_pot_basis: for each n, for each m, the cos then the sin column.
+    G now returns those standard coefficients directly, so an isotropic Kaula
+    prior IS equal variance per column, sigma_n^2, with no convention factor.
+    That is what makes the degree sums close under the addition theorem and the
+    resulting sigma_g map exactly radial (asserted in _selftest).  Column order
+    matches sh_pot_basis: for each n, for each m, the cos then the sin column.
     """
     var = []
     for n in range(0, Lmax + 1):
         s = known_sig if n <= n_known else K / n ** 2
         for m in range(0, n + 1):
-            v = s ** 2 * (2 * n + 1) ** 2 / (1.0 if m == 0 else 2.0)
+            v = s ** 2
             var += [v, v]
     return np.asarray(var)
 
