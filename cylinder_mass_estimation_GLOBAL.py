@@ -124,7 +124,21 @@ except Exception:
     _HAVE_PG = False
 
 # ── plotting ────────────────────────────────────────────────────────────────
-COLOR = ["#E6001A", "#F08C00", "#0077BB", "#1a9641", "#762a83"]
+# Okabe-Ito, the standard colour-vision-deficiency-safe qualitative palette.
+# The previous set paired #E6001A with #1a9641 — red against green, which is
+# exactly the pair deuteranopes and protanopes cannot separate, and those two
+# carried "SH+CH" and "truth draws" in adjacent plot elements.  Order here is
+# by ROLE, not by hue, so every existing COLOR[i] keeps its meaning:
+#   0 vermillion   the CH / "with cylinder" case
+#   1 orange       truth markers, second configuration
+#   2 blue         the SH-only baseline
+#   3 bluish green third configuration, truth draws
+#   4 purple       spare / accents
+#   5 sky blue     sixth series (the CH patch curves in pt2 fig 5)
+COLOR = ["#D55E00", "#E69F00", "#0072B2", "#009E73", "#CC79A7", "#56B4E9"]
+# structural elements (cylinder outlines and their labels), kept clear of the
+# data colours above
+ACCENT = "#882255"
 # Render figure text with a real LaTeX engine (exact document fonts) or with
 # matplotlib's own mathtext (much faster).  A full run is several times slower
 # with USE_TEX on, because every label is a separate LaTeX compile.
@@ -1106,7 +1120,6 @@ def truth_mc_masses(
         devBulkB=dbB.ravel(),
         m_errA=m_errA,
         m_errB=m_errB,
-        m_i_rep=i_rep,
         m_tgt=tgt,
         **rep,
     )
@@ -1413,7 +1426,6 @@ def run_experiment(
     ch_modes=(8, 8),
     n_cyl_pts=200,
     n_mc=400,
-    n_mc_nl=150,
     n_truth_m=100,  # truth-mass draws for the mass experiment
     n_truth_p=100,  # truth-position draws for the position experiment
     n_noise_p=12,  # noise draws per truth position
@@ -1782,104 +1794,6 @@ def run_experiment(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def draw_mass_budget(
-    ax, names, beta, beta_bulk=None, recovered=None, rec_label="SH + CH"
-):
-    """
-    Waterfall of the mass budget, shared by pt1/pt2/pt3.
-
-    The point it makes visible: the interior is NOT the mascons.  The
-    constant-density polyhedron carries a mass fraction β̃ of its own, each
-    anomaly then adds (β_j > 0) or removes (β_j < 0) a few per cent, and the
-    running total closes at exactly M* = 1.  That closure IS the constraint
-    β̃ = 1 − Σβ_j — mass conservation — rather than something imposed as an
-    extra observation.
-
-    The bars are the TRUTH budget — the simulated interior, i.e. what was put
-    in.  β̃ there is not an assumption of the estimator: it is 1 − Σβ of the
-    chosen truth anomalies.  Pass `recovered=(mean, std)` to also mark the
-    ESTIMATED body fraction, which comes out of the fit as 1 − Σβ̂ evaluated on
-    every Monte-Carlo draw and carries a real uncertainty.  Seeing both is the
-    point: the estimator is never told β̃, it reconstructs it.
-
-    The y-axis is zoomed onto the region the anomalies occupy, so the body's
-    bar runs off the bottom of the axis (it is labelled with its value); the
-    alternative is a 0–1 axis on which every anomaly step is invisible.
-    """
-    beta = np.asarray(beta, float)
-    if beta_bulk is None:
-        beta_bulk = bulk_fraction(beta)
-    vals = np.concatenate([[beta_bulk], beta])
-    ends = np.cumsum(vals)
-    start = ends - vals
-    x = np.arange(len(vals))
-    lo = min(beta_bulk, ends.min()) - 0.035
-    hi = max(1.0, ends.max()) + 0.030
-
-    cols = ["0.55"] + [COLOR[0] if v > 0 else COLOR[2] for v in beta]
-    ax.bar(x[0], beta_bulk - lo, bottom=lo, color=cols[0], edgecolor="k", width=0.62)
-    ax.bar(x[1:], vals[1:], bottom=start[1:], color=cols[1:], edgecolor="k", width=0.62)
-    for k in range(len(vals) - 1):  # waterfall connectors
-        ax.plot(
-            [x[k] + 0.31, x[k + 1] - 0.31], [ends[k]] * 2, color="0.5", lw=0.9, ls=":"
-        )
-    ax.axhline(1.0, color="k", ls="--", lw=1.5)
-    ax.text(
-        x[0] - 0.42,
-        1.0,
-        r"$M^*=1$",
-        va="bottom",
-        ha="left",
-        fontsize=10,
-        fontweight="bold",
-    )
-    ax.set_xticks(x)
-    ax.set_xticklabels(
-        ["BODY\n(const. density)"] + [n.split()[0] for n in names], fontsize=8
-    )
-    ax.set_ylim(lo, hi)
-    ax.set_ylabel("Cumulative Mass Fraction of $M^*$  [-]")
-    ax.grid(True, axis="y", alpha=0.3)
-    from matplotlib.patches import Patch
-    from matplotlib.lines import Line2D
-
-    handles = [
-        Patch(fc="0.55", ec="k", label=r"Body $\tilde\beta$ (truth)"),
-        Patch(fc=COLOR[0], ec="k", label=r"Anomaly $\beta_j>0$"),
-        Patch(fc=COLOR[2], ec="k", label=r"Anomaly $\beta_j<0$"),
-    ]
-    if recovered is not None:
-        mu, sd = float(recovered[0]), float(recovered[1])
-        # marker offset sideways so it does not sit on the bar's value label;
-        # the note goes in the empty top-left corner rather than on a leader
-        # line across the bars
-        ax.errorbar(
-            [x[0] + 0.26],
-            [mu],
-            yerr=[sd],
-            fmt="D",
-            ms=7,
-            color="k",
-            mfc="w",
-            mew=1.6,
-            capsize=4,
-            zorder=6,
-        )
-        handles.append(
-            Line2D(
-                [],
-                [],
-                marker="D",
-                ls="none",
-                color="k",
-                mfc="w",
-                mew=1.6,
-                label=r"estimated $\tilde\beta$ $\pm1\sigma$",
-            )
-        )
-    ax.legend(handles=handles, fontsize=8, loc="lower right")
-
-
 def set_axes_true_shape(ax, pts, pad=0.04):
     """
     Make a 3-D axes show the body's TRUE proportions.
@@ -1900,7 +1814,7 @@ def set_axes_true_shape(ax, pts, pad=0.04):
     ax.set_box_aspect(hi - lo)
 
 
-def draw_cylinder(ax, cyl, color="crimson", alpha=0.20, n_th=48, lw=0.9, label=None):
+def draw_cylinder(ax, cyl, color=ACCENT, alpha=0.20, n_th=48, lw=0.9, label=None):
     """
     Draw a `Cylinder` AS a cylinder — translucent lateral surface plus the two
     end rings — instead of scattering the field points that happen to sample it.
@@ -2130,7 +2044,7 @@ def make_plots(res, outdir="Images"):
         range(len(ft)),
         tmc["m_rep_beta"],
         "P",
-        color="crimson",
+        color=ACCENT,
         ms=11,
         zorder=5,
         label="Interior shown at right",
@@ -2431,7 +2345,7 @@ def make_plots(res, outdir="Images"):
         cylc[0],
         cylc[2],
         marker="v",
-        color="crimson",
+        color=ACCENT,
         ms=12,
         zorder=6,
         label="CH cylinder",
@@ -2677,7 +2591,6 @@ if __name__ == "__main__":
         ch_modes=(8, 8),  # (n_m, n_n) cylindrical-harmonic truncation
         n_cyl_pts=200,
         n_mc=400,  # noise draws for the linear mass fit
-        n_mc_nl=150,  # noise draws for the nonlinear masses+position fit
         outdir="Images",
         verbose=True,
     )

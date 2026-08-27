@@ -114,17 +114,30 @@ G_SI = 6.67430e-11  # m³ kg⁻¹ s⁻²
 RHO_BULK = 1190.0  # kg/m³  — Bennu bulk density (Lauretta et al. 2019)
 UGAL = 1.0e-8  # 1 µGal = 1e-8 m/s²
 
-COLOR_PALETTE = ["#d7191c", "#fdae61", "#2c7bb6", "#1a9641", "#762a83", "#e66101"]
+# Okabe-Ito, the colour-vision-deficiency-safe palette used by the GLOBAL
+# scripts, in the same role order.  The previous set opened with #d7191c and
+# carried #1a9641 at index 3 — red against green, the pair deuteranopes and
+# protanopes cannot separate.
+COLOR_PALETTE = ["#D55E00", "#E69F00", "#0072B2", "#009E73", "#CC79A7", "#56B4E9"]
+ACCENT = "#882255"  # structural elements, kept clear of the data colours
+
+USE_TEX = False  # os.environ.get("GLOBAL_NO_TEX", "") == ""
+
 mpl.rcParams.update(
     {
-        "text.usetex": False,
-        "font.family": "STIXGeneral",
+        "axes.prop_cycle": mpl.cycler(color=COLOR_PALETTE),
+        # Same switch as the GLOBAL scripts.  Every label here is written to be
+        # valid in BOTH modes — maths in $...$, no bare unicode, no % — so
+        # flipping it changes only the typeface and the speed.
+        "text.usetex": USE_TEX,
+        "font.family": "serif" if USE_TEX else "STIXGeneral",
         "mathtext.fontset": "stix",
+        "text.latex.preamble": r"\usepackage{amsmath}\usepackage{amssymb}",
         "font.size": 11,
         "axes.labelsize": 12,
         "axes.titlesize": 11,
         "legend.fontsize": 9,
-        "axes.prop_cycle": mpl.cycler(color=COLOR_PALETTE),
+        "figure.dpi": 110,
     }
 )
 
@@ -1385,7 +1398,7 @@ def plot_results(res, outdir=None):
         )
         fig2.colorbar(sc, ax=ax, pad=0.02).set_label(label, fontsize=9)
         ax.set_xlabel(r"$\rho$ [m]")
-        ax.set_ylabel("z above sheet [m]")
+        ax.set_ylabel("z above sheet  [m]")
         ax.set_title(title, fontsize=10, fontweight="bold")
         ax.set_facecolor("#fafafa")
         ax.grid(True, alpha=0.25)
@@ -1474,23 +1487,23 @@ def plot_results(res, outdir=None):
             vmin=-vmax,
             vmax=vmax,
         )
-        fig3.colorbar(c, ax=ax, label="Δσ [kg/m²]")
+        fig3.colorbar(c, ax=ax, label=r"$\Delta\sigma$  [kg/m$^2$]")
         ax.plot(R * np.cos(tc), R * np.sin(tc), "k--", lw=1.2, alpha=0.65)
         ax.set_aspect("equal")
-        ax.set_xlabel("x − x₀ [m]")
-        ax.set_ylabel("y − y₀ [m]")
+        ax.set_xlabel(r"$x-x_0$  [m]")
+        ax.set_ylabel(r"$y-y_0$  [m]")
         ax.set_title(ttl, fontweight="bold")
 
     ax3C = fig3.add_subplot(gs3[0, 2])
     rho_1d = RHO[:, 0]
     ax3C.plot(rho_1d, sm.mean(axis=1), lw=2.2, label="recovered (azim. mean)")
-    ax3C.plot(rho_1d, st.mean(axis=1), lw=2.2, ls="--", label="true ρΔh (azim. mean)")
+    ax3C.plot(rho_1d, st.mean(axis=1), lw=2.2, ls="--", label=r"true $\rho\,\Delta h$ (azim. mean)")
     ax3C.fill_between(
-        rho_1d, sm.min(axis=1), sm.max(axis=1), alpha=0.18, label="recovered min–max"
+        rho_1d, sm.min(axis=1), sm.max(axis=1), alpha=0.18, label="recovered min-max"
     )
     ax3C.axhline(0, color="k", lw=0.8, ls="--")
     ax3C.set_xlabel(r"$\rho$ [m]")
-    ax3C.set_ylabel("Δσ [kg/m²]")
+    ax3C.set_ylabel(r"$\Delta\sigma$  [kg/m$^2$]")
     ax3C.set_title("Radial profile", fontweight="bold")
     ax3C.grid(True, alpha=0.25)
     ax3C.legend(fontsize=8, loc="upper right")
@@ -1513,10 +1526,10 @@ def plot_results(res, outdir=None):
     phi_deg = np.degrees(PHI[0, :])
     for frac in [0.25, 0.50, 0.75]:
         i_r = np.argmin(np.abs(rho_1d - frac * R))
-        ax3D.plot(phi_deg, sm[i_r, :], lw=2, label=f"ρ = {rho_1d[i_r]:.1f} m")
+        ax3D.plot(phi_deg, sm[i_r, :], lw=2, label=rf"$\rho$ = {rho_1d[i_r]:.1f} m")
     ax3D.axhline(0, color="k", lw=0.8, ls="--")
-    ax3D.set_xlabel("φ [deg]")
-    ax3D.set_ylabel("Δσ [kg/m²]")
+    ax3D.set_xlabel(r"$\varphi$  [deg]")
+    ax3D.set_ylabel(r"$\Delta\sigma$  [kg/m$^2$]")
     ax3D.set_title("Azimuthal profiles (recovered)", fontweight="bold")
     ax3D.grid(True, alpha=0.25)
     ax3D.legend(fontsize=8)
@@ -1536,8 +1549,8 @@ def plot_results(res, outdir=None):
         x_pos += n_max + 1
     ax3E.set_xticks(tick_pos)
     ax3E.set_xticklabels(tick_lbl, fontsize=9)
-    ax3E.set_ylabel(r"$\sqrt{\Delta A^2+\Delta B^2}$  [m²/s²]")
-    ax3E.set_title("ΔA coefficient spectrum", fontweight="bold")
+    ax3E.set_ylabel(r"$\sqrt{\Delta A^2+\Delta B^2}$  [m$^2$/s$^2$]")
+    ax3E.set_title(r"$\Delta A$ coefficient spectrum", fontweight="bold")
     ax3E.grid(True, axis="y", alpha=0.25)
 
     ax3F = fig3.add_subplot(gs3[1, 2])
@@ -1626,7 +1639,7 @@ def plot_covariance(res, outdir=None):
         fig.colorbar(c, ax=ax, label=lab)
         ax.plot(R * np.cos(tc), R * np.sin(tc), "k--", lw=1.2, alpha=0.65)
         ax.set_aspect("equal")
-        ax.set_xlabel("x − x₀ [m]"); ax.set_ylabel("y − y₀ [m]")
+        ax.set_xlabel(r"$x-x_0$  [m]"); ax.set_ylabel(r"$y-y_0$  [m]")
         ax.set_title(ttl, fontweight="bold")
 
     # ── top right: the headline numbers ──────────────────────────────────
@@ -1648,7 +1661,7 @@ def plot_covariance(res, outdir=None):
            f"  ({cov['naive_dM']/sd:.0f}× too large)")
     ax.text(0.0, 0.98, txt, va="top", ha="left", fontsize=10.5, family="monospace",
             transform=ax.transAxes)
-    ax.set_title("Formal 1σ of the moved mass", fontweight="bold")
+    ax.set_title(r"Formal 1$\sigma$ of the moved mass", fontweight="bold")
 
     # ── bottom left: zonal weights + their share of the mass variance ────
     ax = fig.add_subplot(gs[1, 0])
@@ -1658,16 +1671,16 @@ def plot_covariance(res, outdir=None):
     ax.axhline(0, color="k", lw=0.8)
     for sgn in (+1, -1):
         ax.axhline(sgn * 0.5819 * R / G_SI, color=COLOR_PALETTE[0], ls=":", lw=1.5)
-    ax.set_xlabel("zonal mode n")
-    ax.set_ylabel(r"$f_{0n}$   [kg / (m² s⁻²)]")
-    ax.set_title(r"$f_{0n}=(R^*/G)\,J_1(j_{0n}/\alpha)$ — bounded, no factor $k$"
+    ax.set_xlabel(r"zonal mode $n$  [-]")
+    ax.set_ylabel(r"$f_{0n}$   [kg / (m$^2$ s$^{-2}$)]")
+    ax.set_title(r"$f_{0n}=(R^*/G)\,J_1(j_{0n}/\alpha)$: bounded, no factor $k$"
                  "\n(dotted = ±0.5819 R*/G;  all $m\\geq1$ weights are zero)",
                  fontsize=10.5)
     ax.grid(alpha=0.3, axis="y")
     ax2 = ax.twinx()
     ax2.plot(n, 100 * md["share_dM"], "o--", color=COLOR_PALETTE[3], lw=2,
              label=r"share of $\Sigma_{\Delta M}$ (right)")
-    ax2.set_ylabel(r"share of $\Sigma_{\Delta M}$  [%]")
+    ax2.set_ylabel(r"share of $\Sigma_{\Delta M}$  " + (r"[\%]" if USE_TEX else "[%]"))
     h1, l1 = ax.get_legend_handles_labels()
     h2, l2 = ax2.get_legend_handles_labels()
     ax.legend(h1 + h2, l1 + l2, fontsize=9, loc="lower left")
@@ -1680,7 +1693,7 @@ def plot_covariance(res, outdir=None):
     fig.colorbar(sc, ax=ax, label="azimuthal order m")
     ax.set_yscale("log")
     ax.set_xlabel(r"wavenumber $k_{mn}$  [1/m]")
-    ax.set_ylabel(r"$\sigma(\Delta\mathscr{C}_{mn})$")
+    ax.set_ylabel(r"$\sigma(\Delta\mathcal{C}_{mn})$  [-]")
     ax.set_title("Downward continuation amplifies short modes;\n"
                  "the fall beyond the peak is the SVD cutoff, not precision",
                  fontsize=10.5)
@@ -1693,17 +1706,17 @@ def plot_covariance(res, outdir=None):
     ax.axvline(cov["corr_len"], color=COLOR_PALETTE[0], ls="--", lw=1.5,
                label=f"1/e length = {cov['corr_len']:.2f} m")
     ax.axvline(cov["lam_min"], color=COLOR_PALETTE[3], ls="-.", lw=1.5,
-               label=f"shortest λ = {cov['lam_min']:.2f} m")
+               label=rf"shortest $\lambda$ = {cov['lam_min']:.2f} m")
     ax.axhline(0, color="k", lw=0.8)
     ax.set_xlabel("radial separation from the centre  [m]")
-    ax.set_ylabel("map-error correlation")
+    ax.set_ylabel("map-error correlation  [-]")
     ax.set_title(f"Errors are coherent: $\\Sigma_{{\\Delta\\sigma}}$ is "
                  f"{cov['n_grid']}×{cov['n_grid']}\nbut has rank ≤ "
                  f"{cov['rank_max']} — refining the grid buys nothing",
                  fontsize=10.5)
     ax.grid(alpha=0.3); ax.legend(fontsize=9)
 
-    fig.suptitle("TAG covariance analysis — formal 1σ (dispersion only; "
+    fig.suptitle(r"TAG covariance analysis: formal 1$\sigma$ (dispersion only; "
                  "truncation and thin-sheet biases are NOT included)",
                  fontweight="bold", y=0.985)
     if outdir:

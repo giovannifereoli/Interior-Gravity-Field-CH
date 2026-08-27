@@ -112,6 +112,7 @@ import cylinder_mass_estimation_GLOBAL as G          # pt1 machinery
 import cylinder_mass_estimation_GLOBAL_pt2 as P2     # pt2 network machinery
 
 COLOR = G.COLOR
+ACCENT = G.ACCENT
 mpl.rcParams.update({"axes.prop_cycle": mpl.cycler(color=COLOR),
                      "figure.dpi": 110})
 SEP = "=" * 78
@@ -890,7 +891,7 @@ def make_plots(res, outdir="Images"):
         # name only: this panel is one of six, and the β values are in the
         # printed table — full labels collide at this size
         ax.text(p[0], p[1], p[2], f"  {nm.split()[0]}", fontsize=7.5)
-    ax.plot([], [], color="crimson", lw=2, label="FPS network")
+    ax.plot([], [], color=ACCENT, lw=2, label="FPS network")
     ax.scatter([], [], color=G.COLOR[0], label=r"anomaly $\beta_j>0$")
     ax.scatter([], [], color=G.COLOR[2], label=r"anomaly $\beta_j<0$")
     ax.set_xlabel("x [LU]"); ax.set_ylabel("y [LU]"); ax.set_zlabel("z [LU]")
@@ -927,7 +928,7 @@ def make_plots(res, outdir="Images"):
     for pos, score, key, title in panels:
         a = fig.add_subplot(2, 3, pos)
         sc = a.scatter(lon, lat, c=score, s=42, cmap="viridis")
-        a.scatter(mlon, mlat, marker="x", s=70, color="crimson", lw=2,
+        a.scatter(mlon, mlat, marker="x", s=70, color=ACCENT, lw=2,
                   label="mascon (sub-point)")
         a.scatter(lon[fps], lat[fps], s=230, marker="s", facecolor="none",
                   edgecolor="k", lw=1.1, label="FPS picks (baseline)")
@@ -936,7 +937,7 @@ def make_plots(res, outdir="Images"):
                       edgecolor="k", lw=2.4, label="this criterion's picks")
         if pos == 5:  # show where the tracking data are missing
             for g in res["gap_lon"]:
-                a.axvline(((g + 180) % 360) - 180, color="crimson", ls="--", lw=1.2)
+                a.axvline(((g + 180) % 360) - 180, color=ACCENT, ls="--", lw=1.2)
         plt.colorbar(sc, ax=a, label="score")
         a.set_xlabel("longitude [deg]"); a.set_ylabel("latitude [deg]")
         a.set_title(title, fontsize=10)
@@ -993,7 +994,7 @@ def make_plots(res, outdir="Images"):
                 edgecolor="k", lw=0.4, zorder=3)
             a3.plot([i - 0.28, i + 0.28], [np.median(v)] * 2, color="k", lw=2.2,
                     zorder=4)
-        a3.axhline(1.0, color="crimson", ls="--", lw=1.5,
+        a3.axhline(1.0, color=ACCENT, ls="--", lw=1.5,
                    label="parity with farthest-point")
         a3.set_yscale("log")
         a3.set_xticks(range(len(keys)))
