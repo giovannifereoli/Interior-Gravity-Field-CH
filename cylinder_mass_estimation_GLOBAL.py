@@ -874,9 +874,9 @@ def detection_sweep(A_sh, sig_sh, A_ch, sig_ch, f_base, mu_grid, n_mc=250, seed=
         # reuses the same draws, so the RMS/sigma check would be one test drawn
         # 16 times rather than 16 independent ones
         A = monte_carlo_fit([(A_sh, sig_sh)], m_true, n_mc, seed + k)[:, 0]
-        B = monte_carlo_fit(
-            [(A_sh, sig_sh), (A_ch, sig_ch)], m_true, n_mc, seed + k
-        )[:, 0]
+        B = monte_carlo_fit([(A_sh, sig_sh), (A_ch, sig_ch)], m_true, n_mc, seed + k)[
+            :, 0
+        ]
         out["rmsA"].append(math.sqrt(np.mean((A - mu) ** 2)))
         out["rmsB"].append(math.sqrt(np.mean((B - mu) ** 2)))
         out["muA"].append(A[0])  # one realization, kept for reference
@@ -1069,10 +1069,13 @@ def truth_mc_masses(
         # identical noise realization in both cases.
         rngA = np.random.default_rng(7 + i)
         rngB = np.random.default_rng(7 + i)
-        eA = np.array([ls_fit_once([(A_sh, s_sh)], b, rngA) - b
-                       for _ in range(n_rea)])
-        eB = np.array([ls_fit_once([(A_sh, s_sh), (A_ch, s_ch)], b, rngB) - b
-                       for _ in range(n_rea)])
+        eA = np.array([ls_fit_once([(A_sh, s_sh)], b, rngA) - b for _ in range(n_rea)])
+        eB = np.array(
+            [
+                ls_fit_once([(A_sh, s_sh), (A_ch, s_ch)], b, rngB) - b
+                for _ in range(n_rea)
+            ]
+        )
         devA[i], devB[i] = eA, eB
         # beta_tilde = 1 - sum(beta), so its error is minus the sum of theirs
         dbA[i], dbB[i] = -eA.sum(axis=1), -eB.sum(axis=1)
@@ -1965,12 +1968,18 @@ def lognormal_overlay(ax, v, bins, color, ls="-", name="", npts=400):
     mu, sd = float(lv.mean()), float(lv.std(ddof=1))
     dlog = math.log(bins[1] / bins[0])  # bins are uniform in ln x
     x = np.logspace(math.log10(bins[0]), math.log10(bins[-1]), npts)
-    y = (len(lv) * dlog / (sd * math.sqrt(2.0 * math.pi))
-         * np.exp(-0.5 * ((np.log(x) - mu) / sd) ** 2))
+    y = (
+        len(lv)
+        * dlog
+        / (sd * math.sqrt(2.0 * math.pi))
+        * np.exp(-0.5 * ((np.log(x) - mu) / sd) ** 2)
+    )
     med, fac = math.exp(mu), math.exp(sd)
     e = int(math.floor(math.log10(abs(med))))
-    lab = (rf"{name} lognormal: $\mu={med / 10 ** e:.2f}"
-           rf"\times 10^{{{e}}}$, $\sigma=\times{fac:.2f}$").lstrip()
+    lab = (
+        rf"{name} lognormal: $\mu={med / 10 ** e:.2f}"
+        rf"\times 10^{{{e}}}$, $\sigma=\times{fac:.2f}$"
+    ).lstrip()
     ax.plot(x, y, color=color, lw=2.0, ls=ls, zorder=7, label=lab)
     return med, fac
 
@@ -2224,14 +2233,20 @@ def make_plots(res, outdir="Images"):
         axin = axc.inset_axes([0.635, 0.07, 0.345, 0.50], facecolor="white")
         axin.set_zorder(10)
         axin.patch.set_alpha(1.0)
-        axin.scatter(cB[:, 0], cB[:, 1], s=7, color=COLOR[0], edgecolor="none",
-                     alpha=0.45, zorder=2)
+        axin.scatter(
+            cB[:, 0],
+            cB[:, 1],
+            s=7,
+            color=COLOR[0],
+            edgecolor="none",
+            alpha=0.45,
+            zorder=2,
+        )
         cov_ellipse(axin, muB, covB, "k", nsig=1.0, lw=2.2, ls=":", zorder=6)
         axin.plot(*tru, "*", color=COLOR[1], ms=12, mec="k", mew=0.6, zorder=8)
         axin.set_xlim(muB[0] - rbx, muB[0] + rbx)
         axin.set_ylim(muB[1] - rby, muB[1] + rby)
-        axin.set_title(r"SH + CH 1$\sigma$, zoomed", fontsize=7, color=COLOR[0],
-                       pad=2)
+        axin.set_title(r"SH + CH 1$\sigma$, zoomed", fontsize=7, color=COLOR[0], pad=2)
         axin.tick_params(labelsize=5.5, pad=1)
         axin.locator_params(nbins=2)  # 3 ticks collide at this width
         # plain, not sci: an inset's offset text is drawn OUTSIDE its frame,
@@ -2242,8 +2257,16 @@ def make_plots(res, outdir="Images"):
         # dashed grey box, not a ring: a circle in the SH+CH colour would read
         # as that case's covariance ellipse
         axc.add_patch(
-            Rectangle((muB[0] - rbx, muB[1] - rby), 2 * rbx, 2 * rby, fill=False,
-                      ec="0.35", ls="--", lw=1.1, zorder=9)
+            Rectangle(
+                (muB[0] - rbx, muB[1] - rby),
+                2 * rbx,
+                2 * rby,
+                fill=False,
+                ec="0.35",
+                ls="--",
+                lw=1.1,
+                zorder=9,
+            )
         )
         if first:
             # above the axes, not inside: an opaque box here would sit on the
@@ -2286,62 +2309,63 @@ def make_plots(res, outdir="Images"):
 
     ax.axhspan(acc, 1e6, color="0.5", alpha=0.15, lw=0, zorder=1)
     ax.axhline(acc, color="0.3", ls="-", lw=1.4, zorder=4)
-    ax.text(mug.min() * 0.85, acc * 1.5,
-            rf"worse than {acc:.0f}" + (r"$\%$" if USE_TEX else "%")
-            + " — anomaly not measured",
-            fontsize=9, ha="left", va="bottom", color="0.2", zorder=6)
+    ax.text(
+        mug.min() * 0.85,
+        acc * 1.5,
+        rf"worse than {acc:.0f}"
+        + (r"$\%$" if USE_TEX else "%")
+        + " — anomaly not measured",
+        fontsize=9,
+        ha="left",
+        va="bottom",
+        color="0.2",
+        zorder=6,
+    )
 
-    for rel, sd, col, mk, nm in ((relA, det["sdA"], COLOR[2], "o", "SH"),
-                                 (relB, det["sdB"], COLOR[0], "s", "SH + CH")):
-        ax.plot(mug, 100.0 * sd / mug, color=col, lw=1.4, ls="--", alpha=0.85,
-                zorder=3, label=rf"{nm}: $100\,\sigma/\beta_0$ (analytic)")
-        ax.plot(mug, rel, mk, color=col, ms=6, mec="k", mew=0.5, ls="none",
-                zorder=5, label=rf"{nm}: MC RMS error")
+    for rel, sd, col, mk, nm in (
+        (relA, det["sdA"], COLOR[2], "o", "SH"),
+        (relB, det["sdB"], COLOR[0], "s", "SH + CH"),
+    ):
+        ax.plot(
+            mug,
+            100.0 * sd / mug,
+            color=col,
+            lw=1.4,
+            ls="--",
+            alpha=0.85,
+            zorder=3,
+            label=rf"{nm}: $100\,\sigma/\beta_0$ (analytic)",
+        )
+        ax.plot(
+            mug,
+            rel,
+            mk,
+            color=col,
+            ms=6,
+            mec="k",
+            mew=0.5,
+            ls="none",
+            zorder=5,
+            label=rf"{nm}: MC RMS error",
+        )
 
     # the gain, read horizontally at the accuracy threshold itself
     xA, xB = 100.0 * det["sdA"] / acc, 100.0 * det["sdB"] / acc
     ax.plot([xB, xA], [acc, acc], color="k", lw=1.8, zorder=6)
     for x in (xA, xB):
         ax.plot([x, x], [acc / 1.7, acc * 1.7], color="k", lw=1.8, zorder=6)
-    ax.text(math.sqrt(xA * xB), acc / 2.4,
-            rf"${xA / xB:.0f}\times$ smaller anomaly" "\n"
-            rf"measured to {acc:.0f}" + (r"$\%$" if USE_TEX else "%"),
-            fontsize=10.5, fontweight="bold", ha="center", va="top", zorder=7)
 
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlim(mug.min() * 0.7, mug.max() * 1.5)
     ax.set_ylim(min(relA.min(), relB.min()) * 0.45, 2.0e4)
     ax.set_xlabel(r"True Anomaly $\beta_0$")
-    ax.set_ylabel(r"MC RMS Error / True Anomaly $\beta_0$  "
-                  + (r"[$\%$]" if USE_TEX else "[%]"))
+    ax.set_ylabel(
+        r"MC RMS Error / True Anomaly $\beta_0$  " + (r"[$\%$]" if USE_TEX else "[%]")
+    )
     ax.grid(True, which="both", alpha=0.3)
     ax.set_axisbelow(True)
     ax.legend(fontsize=8.5, loc="lower left", framealpha=0.93, ncol=2)
-
-    # ---- inset: does the analytic sigma predict the MC RMS? ----------------
-    axin = ax.inset_axes([0.60, 0.70, 0.375, 0.26], facecolor="white")
-    axin.set_zorder(10)
-    axin.patch.set_alpha(1.0)
-    tol = 100.0 / math.sqrt(2.0 * det["n_mc"])  # MC precision on an RMS
-    axin.axhspan(100 - tol, 100 + tol, color="0.6", alpha=0.3, lw=0)
-    axin.axhline(100.0, color="k", lw=1.1)
-    for r, sd, col, mk in ((det["rmsA"], det["sdA"], COLOR[2], "o"),
-                           (det["rmsB"], det["sdB"], COLOR[0], "s")):
-        axin.plot(mug, 100.0 * r / sd, mk, color=col, ms=3.4, ls="none")
-    axin.set_xscale("log")
-    axin.set_ylim(100 - 4 * tol, 100 + 4 * tol)
-    axin.set_title(r"MC RMS / analytic $\sigma$  "
-                   + (r"[$\%$]" if USE_TEX else "[%]"), fontsize=7.5, pad=2)
-    axin.tick_params(labelsize=5.5, pad=1)
-    axin.locator_params(axis="y", nbins=3)
-    axin.grid(True, alpha=0.25)
-    fig.tight_layout()
-    fig.savefig(
-        os.path.join(outdir, "global_fig2b_detection.pdf"),
-        dpi=180,
-        bbox_inches="tight",
-    )
 
     # ---- FIG 3: EXPERIMENT 2 — position recovery over TRUTH POSITIONS -------
     # (a) how the per-truth error is distributed, (b) where the truths were
