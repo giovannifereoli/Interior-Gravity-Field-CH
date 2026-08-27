@@ -53,6 +53,7 @@ Units: Eros normalized (LU), total mass M* = 1, G = 1.
 
 from __future__ import annotations
 import os
+import math
 import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -148,7 +149,12 @@ def place_mascons(net, seed=2):
     for i, c in enumerate(net[:-1]):
         names.append(f"m{i} near {_axis_label(c['dir'])}")
         pos.append(0.72 * c["surf"])  # just inside the surface, under cylinder i
-    names.append("deep (core)")
+    # NOT the bulk — that is the polyhedron carrying beta~ = 1 - sum(beta).
+    # This is a genuine deep ANOMALY, ~4% of the body mass, and it is the hard
+    # case: the one anomaly with no near-surface patch above it.  Avoid "core"
+    # in the name; in the old parameterization a "core" mascon stood in for the
+    # body, and the word still reads that way.
+    names.append("deep (central)")
     pos.append(np.array([0.08, 0.0, 0.0]))
     pos = np.array(pos)
     rng = np.random.default_rng(seed)
@@ -217,7 +223,7 @@ def _pos_forward_net(posj, j, P, masses, Lmax, Rref, ch_data, bulk):
 
 def position_mc_net(
     j, P, f_true, net, ch_modes, Lmax, Rref, sig_sh, sig_ch_list, use_net, bulk,
-    bounds=None, n_mc=60, seed=13, start_jitter=0.02,
+    bounds=None, n_mc=60, seed=13, start_jitter=0.02, pinv_list=None,
 ):
     """
     Monte-Carlo NONLINEAR least-squares (scipy TRF) recovery of anomaly j's
@@ -231,9 +237,14 @@ def position_mc_net(
     ch_data = []
     sig_blocks = [sig_sh]
     if use_net:
-        for c, s in zip(net, sig_ch_list):
-            Phi = G.cyl_basis(c["cyl"], c["obs"], *ch_modes)
-            ch_data.append((G.ch_pinv(Phi), c["obs"]))
+        # Phi and its pseudo-inverse do not depend on the truth, so a caller
+        # looping over truths can build them once and pass them in; without
+        # that this rebuilds a (n_pts x n_modes) SVD on every single call.
+        pv = pinv_list if pinv_list is not None else [
+            G.ch_pinv(G.cyl_basis(c["cyl"], c["obs"], *ch_modes)) for c in net
+        ]
+        for c, s, pinv in zip(net, sig_ch_list, pv):
+            ch_data.append((pinv, c["obs"]))
             sig_blocks.append(s)
     p_true = P[j].copy()
     truth = _pos_forward_net(p_true, j, P, f_true, Lmax, Rref, ch_data, bulk)
@@ -256,113 +267,308 @@ def position_mc_net(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# MONTE-CARLO OVER THE TRUTH  (same design as pt1's `truth_mc_masses`)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def precompute_ch(P, net, ch_modes, bulk):
+    """
+    Per cylinder: the truncated pseudo-inverse of its Bessel-Fourier basis and
+    the CH design it induces.  Neither depends on the truth, so both are built
+    ONCE and reused for every drawn interior — otherwise each truth would pay
+    for `n_cyl` SVDs of a (4*n_pts x n_modes) matrix.
+    """
+    out = []
+    for c in net:
+        pinv = G.ch_pinv(G.cyl_basis(c["cyl"], c["obs"], *ch_modes))
+        out.append(
+            dict(pinv=pinv, obs=c["obs"],
+                 A=pinv @ G.A_field_contrast(P, c["obs"], bulk))
+        )
+    return out
+
+
+def case_blocks(pre, A_sh, sig_sh, sig_ch, n_cyl, c0, c1):
+    """The four observation models, as lists of (design, sigma) blocks."""
+    base = [(A_sh, sig_sh)]
+    ch = [(pre[k]["A"], sig_ch[k]) for k in range(n_cyl)]
+    return {
+        "SH only": base,
+        f"SH + 1 CH ({c0})": base + ch[:1],
+        f"SH + 2 CH ({c0},{c1})": base + ch[:2],
+        f"SH + {n_cyl}-CH network": base + ch,
+    }
+
+
+def truth_mc_masses_net(
+    P, net, bulk, ch_modes, Lmax, Rref, eps, n_cyl, c0, c1,
+    n_truth=60, seed=101, mag=(0.015, 0.05), n_rea=24,
+):
+    """
+    Redraw the truth MASS FRACTIONS; for each interior rebuild every sigma from
+    that truth's own field and refit, in all four observation models.
+
+    Identical in construction to `G.truth_mc_masses`, so pt1 and pt2 report the
+    same kind of number:
+      PREDICTED  sig[case]  — analytic (A^T W A)^-1, no sampling at all;
+      REALIZED   dev[case]  — errors from actually fitting noisy data, `n_rea`
+                              draws per interior (a single draw is half-normal
+                              about sigma with 76% scatter, which would swamp
+                              the interior-to-interior spread the figure shows).
+    The two are computed independently, so comparing them is a real consistency
+    test.  All four cases get fresh generators on the same seed, so they see the
+    same realization of the SH noise.
+
+    beta_tilde = 1 - sum(beta) is DERIVED, so its variance is 1^T C 1 and its
+    error is minus the sum of the anomaly errors — never a free parameter.
+    """
+    rng = np.random.default_rng(seed)
+    betas = rng.uniform(mag[0], mag[1], size=(n_truth, len(P))) * rng.choice(
+        [-1.0, 1.0], size=(n_truth, len(P))
+    )
+    A_sh = G.A_stokes_contrast(P, bulk, 2, Lmax, Rref)
+    pre = precompute_ch(P, net, ch_modes, bulk)
+    keys = list(case_blocks(pre, A_sh, None, [None] * n_cyl, n_cyl, c0, c1))
+    one = np.ones(len(P))
+
+    sig = {k: np.empty((n_truth, len(P))) for k in keys}
+    bulk_sig = {k: np.empty(n_truth) for k in keys}
+    dev = {k: np.empty((n_truth, n_rea, len(P))) for k in keys}
+    dev_bulk = {k: np.empty((n_truth, n_rea)) for k in keys}
+
+    for i, b in enumerate(betas):
+        sig_sh = G.od_sigma(G.stokes_total(b, P, bulk, 2, Lmax, Rref), eps)
+        sig_ch = [
+            G.od_sigma(q["pinv"] @ G.field_total(b, P, q["obs"], bulk), eps)
+            for q in pre
+        ]
+        cases = case_blocks(pre, A_sh, sig_sh, sig_ch, n_cyl, c0, c1)
+        for k, blocks in cases.items():
+            C = np.linalg.inv(G.fisher_masses(blocks))
+            sig[k][i] = np.sqrt(np.diag(C))
+            bulk_sig[k][i] = np.sqrt(one @ C @ one)
+            r = np.random.default_rng(7 + i)
+            e = np.array([G.ls_fit_once(blocks, b, r) - b for _ in range(n_rea)])
+            dev[k][i] = e
+            dev_bulk[k][i] = -e.sum(axis=1)
+    return dict(betas=betas, sig=sig, bulk_sig=bulk_sig, dev=dev,
+                dev_bulk=dev_bulk, cases=keys, n_rea=n_rea)
+
+
+def _jitter_inside(p, spread, V, F, tm, rng, n_try=200):
+    """A truth position drawn uniformly in a ball about `p`, kept inside the body."""
+    for _ in range(n_try):
+        u = rng.normal(size=3)
+        q = p + spread * rng.uniform() ** (1 / 3) * u / np.linalg.norm(u)
+        if G.inside_body(tm, V, F, q[None, :])[0]:
+            return q
+    return p.copy()
+
+
+def truth_mc_position_net(
+    P, f_true, net, bulk, ch_modes, Lmax, Rref, eps, V, F, tm, n_cyl,
+    n_truth=25, seed=202, spread=0.06, pos_bounds=None,
+):
+    """
+    Redraw the truth POSITIONS of every anomaly and refit each one, SH-only and
+    with the full network.  One noisy fit per interior — the loop over interiors
+    already supplies the sample, exactly as in pt1's position experiment.
+    Returns per-anomaly arrays of the realized error, (n_truth, n_anom).
+    """
+    rng = np.random.default_rng(seed)
+    pre = precompute_ch(P, net, ch_modes, bulk)
+    pinv_list = [q["pinv"] for q in pre]
+    errA = np.empty((n_truth, len(P)))
+    errN = np.empty_like(errA)
+    for i in range(n_truth):
+        Pi = np.array([_jitter_inside(p, spread, V, F, tm, rng) for p in P])
+        sig_sh = G.od_sigma(G.stokes_total(f_true, Pi, bulk, 2, Lmax, Rref), eps)
+        sig_ch = [
+            G.od_sigma(q["pinv"] @ G.field_total(f_true, Pi, q["obs"], bulk), eps)
+            for q in pre
+        ]
+        for j in range(len(P)):
+            for use_net, out in ((False, errA), (True, errN)):
+                c = position_mc_net(
+                    j, Pi, f_true, net, ch_modes, Lmax, Rref, sig_sh, sig_ch,
+                    use_net, bulk, bounds=pos_bounds, n_mc=1,
+                    seed=seed + 1000 * i, pinv_list=pinv_list,
+                )
+                out[i, j] = float(np.linalg.norm(c[0] - Pi[j]))
+    return errA, errN
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # MAIN EXPERIMENT
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def run(Lmax_sh=6, eps=0.02, ch_modes=(6, 6), n_cyl=6,
-        n_mc=300, n_mc_pos=60, outdir="Images", verbose=True):
+def run(
+    Lmax_sh=6,
+    eps=0.02,
+    ch_modes=(6, 6),
+    n_cyl=6,
+    # ── truth-mass draws (experiment A) ────────────────────────────────────
+    n_truth_m=60,
+    truth_mag=(0.015, 0.05),
+    seed_mass=101,
+    n_rea=24,
+    # ── truth-position draws (experiment B) ────────────────────────────────
+    n_truth_p=20,
+    pos_spread=0.06,
+    seed_pos=202,
+    outdir="Images",
+    verbose=True,
+):
     V, F, tm, Rb = G.load_eros()
     Rref = Rb
     net = build_network(V, F, tm, n_cyl=n_cyl)
     names, P, f_true = place_mascons(net)
     bulk = G.Bulk(V, F)
     beta_bulk = G.bulk_fraction(f_true)
-    n_m = len(P)
+    c0, c1 = _axis_label(net[0]["dir"]), _axis_label(net[1]["dir"])
 
     if verbose:
         print(SEP)
         print("  PART 2 — SH + CH NETWORK for arbitrary interior anomalies (Eros)")
         print(SEP)
         print(f"  Brillouin R* = {Rb:.3f} LU | {n_cyl} network cylinders | "
-              f"{n_m} anomalies")
-        print(f"  BULK: constant-density polyhedron, β̃ = 1 − Σβ = {beta_bulk:.3f} of M*")
-        print(f"  weights: OD-like σ_i = {eps}·|coeff_i| (floor 10% of RMS); the inner "
-              f"Φ-to-field fit is unweighted")
-        for nm, p, fr in zip(names, P, f_true):
-            print(f"    {nm:16s} p={np.round(p,3)}  β={fr:+.3f}  |r|={np.linalg.norm(p):.2f}")
-        print(f"  CH cylinder sites (farthest-point order; every one of them "
-              f"enters the joint fit):")
+              f"{len(P)} anomalies")
+        print(f"  BULK: constant-density polyhedron, β̃ = 1 − Σβ = {beta_bulk:.3f}"
+              " of M*")
+        print(f"  weights: OD-like σ_i = {eps}·|coeff_i| (floor 10% of RMS); the "
+              "inner Φ-to-field fit is unweighted")
+        print("  CH cylinder sites (farthest-point order; all enter the joint fit):")
         for i_c, c in enumerate(net):
+            tag = ("   <- the 1-CH case" if i_c == 0 else
+                   "   <- added by the 2-CH case" if i_c == 1 else "")
             print(f"    C{i_c} {_axis_label(c['dir']):>3s}  surface="
                   f"{np.round(c['surf'], 3)}  |r|={np.linalg.norm(c['surf']):.2f}"
-                  + ("   <- used by the 1-CH case" if i_c == 0 else
-                     "   <- added by the 2-CH case" if i_c == 1 else ""))
+                  + tag)
 
-    # ── observable design blocks (all of them CONTRASTS vs the bulk) ────────
-    A_sh = G.A_stokes_contrast(P, bulk, 2, Lmax_sh, Rref)
-    sig_sh = G.od_sigma(G.stokes_total(f_true, P, bulk, 2, Lmax_sh, Rref), eps)
-    ch_blocks = ch_blocks_for(P, net, ch_modes, eps, f_true, bulk)  # per-cylinder
-    sig_ch_list = [s for _, s in ch_blocks]
+    # ── EXPERIMENT A — MASS FRACTIONS over TRUTH INTERIORS ──────────────────
+    tmm = truth_mc_masses_net(
+        P, net, bulk, ch_modes, Lmax_sh, Rref, eps, n_cyl, c0, c1,
+        n_truth=n_truth_m, seed=seed_mass, mag=truth_mag, n_rea=n_rea,
+    )
 
-    base = [(A_sh, sig_sh)]
-    # Farthest-point order anchors net[0] at the −z extreme and puts net[1]
-    # farthest from it, so these two are the most widely separated pair.  Name
-    # the reduced configurations by WHERE their cylinders actually sit, since
-    # which patch is included is the whole point of the comparison.
-    c0, c1 = _axis_label(net[0]["dir"]), _axis_label(net[1]["dir"])
-    cases = {
-        "SH only": base,
-        f"SH + 1 CH ({c0})": base + [ch_blocks[0]],
-        f"SH + 2 CH ({c0},{c1})": base + [ch_blocks[0], ch_blocks[1]],
-        f"SH + {n_cyl}-CH network": base + ch_blocks,
-    }
-
-    # ── EXPERIMENT A — MASS FRACTIONS (positions fixed) ─────────────────────
-    if verbose:
-        print(f"\n{'-'*72}\n  A) MASS-FRACTION recovery (1σ on β_j over {n_mc} MC "
-              f"draws)\n{'-'*72}")
-        print(f"  {'anomaly':16s} " + " ".join(f"{k:>14s}" for k in cases))
-    # The body fraction is ESTIMATED too — not as a free parameter, but as the
-    # derived quantity β̃ = 1 − Σβ evaluated on every Monte-Carlo draw.  Mass
-    # conservation makes it a function of the anomalies, so it inherits their
-    # covariance: σ_β̃ = sqrt(1ᵀ Cov(β) 1), which is what the draws measure.
-    sig_by_case, bulk_by_case = {}, {}
-    for k, blocks in cases.items():
-        mc = G.monte_carlo_fit(blocks, f_true, n_mc=n_mc)
-        sig_by_case[k] = mc.std(0)
-        bt = 1.0 - mc.sum(1)
-        bulk_by_case[k] = (float(bt.mean()), float(bt.std()))
-    if verbose:
-        for i, nm in enumerate(names):
-            print(f"  {nm:16s} " + " ".join(f"{sig_by_case[k][i]:14.2e}" for k in cases))
-        print(f"  {'-'*72}")
-        print(f"  {'BODY β̃ =1−Σβ':16s} "
-              + " ".join(f"{bulk_by_case[k][1]:14.2e}" for k in cases))
-        net_k = f"SH + {n_cyl}-CH network"
-        print(f"    (truth β̃ = {beta_bulk:.4f};  recovered {bulk_by_case[net_k][0]:.4f}"
-              f" ± {bulk_by_case[net_k][1]:.4f} with the full network)")
-        gains = sig_by_case["SH only"] / sig_by_case[f"SH + {n_cyl}-CH network"]
-        print(f"  network gain vs SH: min={gains.min():.0f}× median={np.median(gains):.0f}× "
-              f"max={gains.max():.0f}×")
-
-    # ── EXPERIMENT B — POSITION of arbitrary anomalies (masses fixed) ───────
-    if verbose:
-        print(f"\n{'-'*72}\n  B) POSITION recovery ({n_mc_pos} MC draws): SH vs {n_cyl}-CH network\n{'-'*72}")
-    pos_rms = {"SH only": np.zeros(n_m), "network": np.zeros(n_m)}
-    pos_clouds = {}
+    # ── EXPERIMENT B — POSITIONS over TRUTH INTERIORS ───────────────────────
     pos_bounds = (V.min(0) - 0.05, V.max(0) + 0.05)  # keep the solver on the body
-    for j in range(n_m):
-        cloudA = position_mc_net(j, P, f_true, net, ch_modes, Lmax_sh, Rref,
-                                 sig_sh, sig_ch_list, False, bulk,
-                                 bounds=pos_bounds, n_mc=n_mc_pos)
-        cloudN = position_mc_net(j, P, f_true, net, ch_modes, Lmax_sh, Rref,
-                                 sig_sh, sig_ch_list, True, bulk,
-                                 bounds=pos_bounds, n_mc=n_mc_pos)
-        pos_rms["SH only"][j] = np.sqrt(np.mean(np.sum((cloudA - P[j]) ** 2, axis=1)))
-        pos_rms["network"][j] = np.sqrt(np.mean(np.sum((cloudN - P[j]) ** 2, axis=1)))
-        pos_clouds[j] = (cloudA, cloudN)
-        if verbose:
-            print(f"    {names[j]:16s} SH={pos_rms['SH only'][j]:.2e} LU  "
-                  f"network={pos_rms['network'][j]:.2e} LU  "
-                  f"→ {pos_rms['SH only'][j]/pos_rms['network'][j]:.0f}× tighter")
+    errA, errN = truth_mc_position_net(
+        P, f_true, net, bulk, ch_modes, Lmax_sh, Rref, eps, V, F, tm, n_cyl,
+        n_truth=n_truth_p, seed=seed_pos, spread=pos_spread,
+        pos_bounds=pos_bounds,
+    )
 
-    res = dict(V=V, F=F, Rb=Rb, net=net, names=names, P=P, f_true=f_true,
-               bulk=bulk, beta_bulk=beta_bulk, bulk_by_case=bulk_by_case,
-               n_cyl=n_cyl, cases=list(cases.keys()), sig_by_case=sig_by_case,
-               pos_rms=pos_rms, pos_clouds=pos_clouds)
+    # a single nominal interior, for the geometry figure's budget panel
+    a_min, d_surf, d_obs, b_max = G.admissibility(
+        P, f_true, beta_bulk, bulk.volume, np.vstack([c["obs"] for c in net]), tm
+    )
+
+    res = dict(
+        V=V, F=F, Rb=Rb, net=net, names=names, P=P, f_true=f_true, bulk=bulk,
+        beta_bulk=beta_bulk, n_cyl=n_cyl, cases=tmm["cases"], truth_mc=tmm,
+        pos_errA=errA, pos_errN=errN, pos_spread=pos_spread,
+        adm=dict(a_min=a_min, d_surf=d_surf, d_obs=d_obs, b_max=b_max),
+    )
+    if verbose:
+        results_report(res)
     make_plots(res, outdir=outdir)
     return res
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# REPORT  (figures carry no numbers; every quotable value is printed here)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _tex_num(v, nd=2):
+    if v == 0 or not np.isfinite(v):
+        return "0"
+    e = int(math.floor(math.log10(abs(v))))
+    return rf"{v / 10 ** e:.{nd}f}\times10^{{{e}}}"
+
+
+def results_report(res):
+    names, tmm, cases = res["names"], res["truth_mc"], res["cases"]
+    ft, sig, bsig = res["f_true"], tmm["sig"], tmm["bulk_sig"]
+    net_k = cases[-1]
+    rms = lambda M: np.sqrt(np.mean(np.asarray(M) ** 2, axis=0))
+    print(f"\n{SEP}\n  RESULTS  (figures carry no numbers; quote from here)\n{SEP}")
+
+    # ── TABLE 0 — are the truth anomalies physically realizable? ────────────
+    adm = res["adm"]
+    print(f"\n  TABLE 0 — physical admissibility of the truth anomalies "
+          f"(excess ceiling Δρ/ρ = {G.EXCESS_CONTRAST:.2f})")
+    print(f"  {'anomaly':16s} {'β':>8} {'a_min':>8} {'to surf':>8} {'to obs':>8}"
+          f" {'β_max':>9}  verdict")
+    for k, nm in enumerate(names):
+        v = ("breaches the surface" if adm["a_min"][k] > adm["d_surf"][k]
+             else "field points inside it" if adm["a_min"][k] > adm["d_obs"][k]
+             else "buried, clear of the data — exact")
+        print(f"  {nm:16s} {ft[k]:+8.3f} {adm['a_min'][k]:8.3f} "
+              f"{adm['d_surf'][k]:8.3f} {adm['d_obs'][k]:8.3f} "
+              f"{adm['b_max'][k]:+9.4f}  {v}")
+
+    # ── TABLE 1 — mass-fraction uncertainty per case ────────────────────────
+    print(f"\n  TABLE 1 — mass-fraction 1σ, {len(tmm['betas'])} truth interiors,"
+          " median over interiors")
+    print(f"  {'anomaly':16s} " + " ".join(f"{k:>18s}" for k in cases)
+          + f" {'net gain':>9}")
+    for i, nm in enumerate(names):
+        row = [np.median(sig[k][:, i]) for k in cases]
+        print(f"  {nm:16s} " + " ".join(f"{v:18.2e}" for v in row)
+              + f" {row[0] / row[-1]:8.1f}×")
+    print(f"  {'-' * 74}")
+    row = [np.median(bsig[k]) for k in cases]
+    print(f"  {'BODY β̃ = 1−Σβ':16s} " + " ".join(f"{v:18.2e}" for v in row)
+          + f" {row[0] / row[-1]:8.1f}×")
+    g = np.median(sig[cases[0]] / sig[net_k], axis=0)
+    print(f"  network gain vs SH:  min {g.min():.0f}×   median "
+          f"{np.median(g):.0f}×   max {g.max():.0f}×")
+
+    # ── TABLE 1b — does the analytic covariance predict the error made? ─────
+    print(f"\n  TABLE 1b — covariance consistency, "
+          f"{len(tmm['betas']) * tmm['n_rea']} noisy fits per case: "
+          "realized RMS(estimate − truth) vs predicted 1σ")
+    print(f"  {'anomaly':16s} " + " ".join(f"{'realized/pred ' + k.split('(')[0]:>22s}"
+                                           for k in (cases[0], net_k)))
+    for i, nm in enumerate(names):
+        cells = []
+        for k in (cases[0], net_k):
+            r = rms(tmm["dev"][k].reshape(-1, len(names))[:, i])
+            pr = rms(sig[k][:, i])
+            cells.append(f"{r:9.2e} /{pr:9.2e} {r / pr:5.2f}")
+        print(f"  {nm:16s} " + " ".join(f"{c:>22s}" for c in cells))
+    cells = []
+    for k in (cases[0], net_k):
+        r, pr = rms(tmm["dev_bulk"][k].ravel()), rms(bsig[k])
+        cells.append(f"{r:9.2e} /{pr:9.2e} {r / pr:5.2f}")
+    print(f"  {'BODY β̃':16s} " + " ".join(f"{c:>22s}" for c in cells))
+
+    # ── TABLE 2 — position ─────────────────────────────────────────────────
+    eA, eN = res["pos_errA"], res["pos_errN"]
+    print(f"\n  TABLE 2 — anomaly position, {len(eA)} truth interiors, RMS error"
+          " [LU]")
+    print(f"  {'anomaly':16s} {'SH only':>12} {'network':>12} {'gain':>8}")
+    for i, nm in enumerate(names):
+        a, b = rms(eA[:, i]), rms(eN[:, i])
+        print(f"  {nm:16s} {a:12.2e} {b:12.2e} {a / b:7.1f}×")
+
+    # ── LaTeX bodies ───────────────────────────────────────────────────────
+    print(f"\n{'-' * 74}\n  LaTeX tabular bodies\n{'-' * 74}")
+    print("  % Table 1 — mass-fraction 1 sigma per observation model")
+    for i, nm in enumerate(names):
+        row = [np.median(sig[k][:, i]) for k in cases]
+        print(f"  {nm} & " + " & ".join(f"${_tex_num(v)}$" for v in row)
+              + rf" & ${row[0] / row[-1]:.1f}$ \\")
+    row = [np.median(bsig[k]) for k in cases]
+    print(r"  body $\tilde\beta$ & " + " & ".join(f"${_tex_num(v)}$" for v in row)
+          + rf" & ${row[0] / row[-1]:.1f}$ \\")
+    print("  % Table 2 — position RMS error [LU]")
+    for i, nm in enumerate(names):
+        a, b = rms(eA[:, i]), rms(eN[:, i])
+        print(f"  {nm} & ${_tex_num(a)}$ & ${_tex_num(b)}$ & ${a / b:.1f}$ \\\\")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -371,102 +577,134 @@ def run(Lmax_sh=6, eps=0.02, ch_modes=(6, 6), n_cyl=6,
 
 
 def make_plots(res, outdir="Images"):
+    """
+    Three figures, in pt1's conventions: PDF, no numbers in titles (the tables
+    carry them), bracketed units on every axis, "(MC)" wherever a quantity comes
+    from sampling, and the analytic 1-sigma drawn on top of the realized error
+    so bar-vs-tick is a visible consistency check.
+    """
     os.makedirs(outdir, exist_ok=True)
     from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
     V, F, P, net, names = res["V"], res["F"], res["P"], res["net"], res["names"]
-    n_cyl = res["n_cyl"]
-
-    # ---- FIG 1: geometry + the truth mass budget ---------------------------
+    n_cyl, cases, tmm = res["n_cyl"], res["cases"], res["truth_mc"]
     ft, beta_bulk = res["f_true"], res["beta_bulk"]
-    fig = plt.figure(figsize=(15.5, 6.4))
-    ax = fig.add_subplot(1, 2, 1, projection="3d")
+    net_k = cases[-1]
+    rms = lambda M: np.sqrt(np.mean(np.asarray(M) ** 2, axis=0))
+    lab = [n.split()[0] for n in names]          # same split pt1 uses
+
+    # ---- FIG 1: geometry ---------------------------------------------------
+    # Geometry only, at pt1's fig-1 size.  The mass budget lived here as a
+    # second panel; the truth beta_j and beta~ are in TABLE 0/1 instead.
+    fig = plt.figure(figsize=(8.6, 7.2))
+    ax = fig.add_subplot(1, 1, 1, projection="3d")
     step = max(1, len(F) // 9000)
     ax.add_collection3d(Poly3DCollection(V[F[::step]], alpha=0.10,
                         facecolor="#9ecae1", edgecolor="0.6", linewidths=0.1))
     for i_c, c in enumerate(net):
         G.draw_cylinder(ax, c["cyl"])
-        # past the far end of the cylinder, so the label never sits on it
-        t = c["surf"] + 0.42 * c["dir"]
+        t = c["surf"] + 0.42 * c["dir"]   # past the far end, never on the tube
         ax.text(t[0], t[1], t[2], f"C{i_c} ({_axis_label(c['dir'])})",
                 fontsize=8, color="#8b0000", fontweight="bold", ha="center",
                 bbox=dict(fc="white", ec="0.7", alpha=0.8, pad=1.2, lw=0.4))
-    for nm, p, b in zip(names, P, ft):   # colour by SIGN, label with β_j
-        ax.scatter(p[0], p[1], p[2], s=90, depthshade=False, edgecolor="k",
-                   color=G.COLOR[0] if b > 0 else G.COLOR[2])
-        ax.text(p[0], p[1], p[2], f"  {nm.split()[0]} ({b:+.3f})", fontsize=8)
-    ax.plot([], [], color="crimson", lw=2, label=f"{n_cyl} CH cylinders")
-    ax.scatter([], [], color=G.COLOR[0], label=r"anomaly $\beta_j>0$")
-    ax.scatter([], [], color=G.COLOR[2], label=r"anomaly $\beta_j<0$")
-    ax.set_title("Interior = constant-density BODY "
-                 f"($\\tilde\\beta$ = {beta_bulk:.3f})\n"
-                 f"+ {len(P)} anomalies + CH network ({n_cyl} cylinders)")
+    for nm, q, b in zip(names, P, ft):
+        ax.scatter(q[0], q[1], q[2], s=90, depthshade=False, edgecolor="k",
+                   color=COLOR[0] if b > 0 else COLOR[2])
+        ax.text(q[0], q[1], q[2], f"  {nm.split()[0]}", fontsize=8)
+    ax.plot([], [], color="crimson", lw=2, label="CH cylinders")
+    ax.scatter([], [], color=COLOR[0], label=r"anomaly $\beta_j>0$")
+    ax.scatter([], [], color=COLOR[2], label=r"anomaly $\beta_j<0$")
+    ax.set_title("Interior: constant-density body, anomalies, and the CH network")
     ax.set_xlabel("x [LU]"); ax.set_ylabel("y [LU]"); ax.set_zlabel("z [LU]")
     G.set_axes_true_shape(ax, np.vstack([V] + [G.cylinder_hull(c["cyl"])
-                                              for c in net]))
+                                               for c in net]))
     ax.legend(fontsize=9, loc="upper left")
 
-    net_key = f"SH + {n_cyl}-CH network"
-    G.draw_mass_budget(fig.add_subplot(1, 2, 2), names, ft, beta_bulk,
-                       recovered=res["bulk_by_case"][net_key],
-                       rec_label=net_key)
     fig.tight_layout()
     fig.savefig(os.path.join(outdir, "global_pt2_fig1_geometry.pdf"),
                 dpi=180, bbox_inches="tight")
 
-    # ---- FIG 2: mass-fraction uncertainty per anomaly, 4 cases -------------
+    # ---- FIG 2: mass-fraction recovery, four observation models ------------
+    # Bars are the error actually made (RMS over truth interiors x noise draws);
+    # the black ticks are the analytic 1-sigma those same interiors predict.
+    # They are computed independently, so bar == tick is a real check.
     fig, ax = plt.subplots(figsize=(14, 5.8))
-    cases = res["cases"]  # SH / 1CH / 2CH / network
-    sig = res["sig_by_case"]
-    nb = res["bulk_by_case"]
-    # the derived body fraction is shown alongside the anomalies it comes from
-    vals = {c: np.append(sig[c], nb[c][1]) for c in cases}
-    x = np.arange(len(P) + 1)
-    w = 0.2
-    colmap = {cases[0]: COLOR[2], cases[1]: COLOR[1], cases[2]: COLOR[3],
-              cases[3]: COLOR[0]}
+    x = np.arange(len(P) + 1, dtype=float) * 1.25
+    w = 0.22
+    colmap = dict(zip(cases, (COLOR[2], COLOR[1], COLOR[3], COLOR[0])))
     offs = [-1.5 * w, -0.5 * w, 0.5 * w, 1.5 * w]
-    for c, off in zip(cases, offs):
-        ax.bar(x + off, vals[c], w, color=colmap[c], edgecolor="k", label=c)
-    ax.axvline(len(P) - 0.5, color="0.6", ls="--", lw=1.2)
+    real, pred = {}, {}
+    for k in cases:
+        real[k] = np.append(rms(tmm["dev"][k].reshape(-1, len(P))),
+                            rms(tmm["dev_bulk"][k].ravel()))
+        pred[k] = np.append(rms(tmm["sig"][k]), rms(tmm["bulk_sig"][k]))
+    for k, off in zip(cases, offs):
+        ax.bar(x + off, real[k], w, color=colmap[k], edgecolor="k", label=k)
+        ax.plot(x + off, pred[k], "_", ms=9, mew=2.0, color="k", ls="none",
+                zorder=6)
+    ax.plot([], [], "_", ms=9, mew=2.0, color="k", ls="none",
+            label=r"analytic 1$\sigma$ (predicted)")
+    ax.axvline(x[-1] - 0.62, color="0.6", ls="--", lw=1.2)
+    gains = real[cases[0]] / real[net_k]
+    for i in range(len(x)):
+        ax.text(x[i] + 1.5 * w, real[net_k][i] * 1.15, rf"${gains[i]:.0f}\times$",
+                ha="center", va="bottom", fontsize=8, fontweight="bold",
+                color=COLOR[0])
     ax.set_yscale("log")
     ax.set_xticks(x)
-    ax.set_xticklabels([n.replace(" ", "\n", 1) for n in names]
-                       + ["BODY\n$\\tilde\\beta$ (derived)"], fontsize=8)
-    ax.set_ylabel(r"mass-fraction 1$\sigma$ uncertainty $\sigma_\beta$  (MC)")
-    ax.set_title("Mass-fraction recovery: SH to +1 CH to +2 CH to the full network\n"
-                 "(each added patch constrains the anomalies it covers; the full "
-                 "network constrains ALL — and the body fraction with them)")
-    gains = vals[cases[0]] / vals[cases[3]]
-    for i in range(len(x)):
-        ax.text(x[i] + 1.5 * w, vals[cases[3]][i], rf"${gains[i]:.0f}\times$", ha="center",
-                va="bottom", fontsize=8, fontweight="bold")
-    ax.grid(True, axis="y", which="both", alpha=0.3); ax.legend(fontsize=9)
+    ax.set_xticklabels(lab + [r"BODY $\tilde\beta$"], fontsize=9)
+    ax.set_ylabel(r"Mass-fraction Error  $\beta_j$  [-]  (MC)")
+    ax.set_title("Each added near-surface patch constrains the anomalies it "
+                 "covers;\nthe full network constrains all of them, and the body "
+                 "fraction with them")
+    ax.grid(True, axis="y", which="both", alpha=0.3)
+    ax.set_axisbelow(True)
+    ax.legend(fontsize=9, ncol=2)
     fig.tight_layout()
     fig.savefig(os.path.join(outdir, "global_pt2_fig2_massratio.pdf"),
                 dpi=180, bbox_inches="tight")
 
-    # ---- FIG 3: position recovery per anomaly, SH vs network ---------------
-    fig, ax = plt.subplots(figsize=(13, 5.6))
-    pr = res["pos_rms"]
-    # NOT fig 2's `x`: that carries an extra slot for the derived body fraction,
-    # which has no position
-    xp = np.arange(len(P))
-    ax.bar(xp - 0.2, pr["SH only"], 0.4, color=COLOR[2], edgecolor="k",
-           label="SH only")
-    ax.bar(xp + 0.2, pr["network"], 0.4, color=COLOR[0], edgecolor="k",
-           label=f"SH + {n_cyl}-CH network")
+    # ---- FIG 3: position recovery, per anomaly + the distribution ----------
+    eA, eN = res["pos_errA"], res["pos_errN"]
+    fig, axes = plt.subplots(1, 2, figsize=(15.5, 5.6),
+                             gridspec_kw={"width_ratios": [1.25, 1]})
+    ax = axes[0]
+    xp = np.arange(len(P), dtype=float)
+    ax.bar(xp - 0.2, rms(eA), 0.4, color=COLOR[2], edgecolor="k", label="SH only")
+    ax.bar(xp + 0.2, rms(eN), 0.4, color=COLOR[0], edgecolor="k",
+           label="SH + CH network")
+    g = rms(eA) / rms(eN)
+    for i in range(len(P)):
+        ax.text(xp[i] + 0.2, rms(eN)[i] * 1.15, rf"${g[i]:.0f}\times$",
+                ha="center", va="bottom", fontsize=8, fontweight="bold",
+                color=COLOR[0])
     ax.set_yscale("log")
     ax.set_xticks(xp)
-    ax.set_xticklabels([n.replace(" ", "\n", 1) for n in names], fontsize=8)
-    ax.set_ylabel("position RMS error [LU]  (MC)")
-    ax.set_title("Position recovery of arbitrary anomalies: SH vs CH network")
-    g = pr["SH only"] / pr["network"]
-    for i in range(len(P)):
-        ax.text(xp[i] + 0.2, pr["network"][i], f"{g[i]:.0f}" + r"$\times$",
-                ha="center", va="bottom", fontsize=8, fontweight="bold")
-    ax.grid(True, axis="y", which="both", alpha=0.3); ax.legend(fontsize=9)
-    fig.tight_layout()
+    ax.set_xticklabels(lab, fontsize=9)
+    ax.set_ylabel("Position RMS Error over Truth Interiors  [LU]  (MC)")
+    ax.set_title("Position recovery of arbitrary anomalies")
+    ax.grid(True, axis="y", which="both", alpha=0.3)
+    ax.set_axisbelow(True)
+    ax.legend(fontsize=9)
+
+    # (b) the distribution over interiors, pooled — same treatment as pt1 fig 3
+    ax = axes[1]
+    fa, fn = eA.ravel(), eN.ravel()
+    bins = np.logspace(np.log10(min(fa.min(), fn.min()) * 0.8),
+                       np.log10(max(fa.max(), fn.max()) * 1.2), 26)
+    ax.hist(fa, bins=bins, color=COLOR[2], alpha=0.75, edgecolor="k", lw=0.5,
+            label="SH only")
+    ax.hist(fn, bins=bins, color=COLOR[0], alpha=0.75, edgecolor="k", lw=0.5,
+            label="SH + CH network")
+    G.lognormal_overlay(ax, fa, bins, "k", ls="-", name="SH")
+    G.lognormal_overlay(ax, fn, bins, "k", ls="--", name="SH + CH")
+    ax.set_xscale("log")
+    ax.set_xlabel("Position Error, One Fit per Truth Interior  [LU]")
+    ax.set_ylabel(f"Fits  (of {fa.size})  [-]")
+    ax.set_title("Distribution over truth interiors and anomalies")
+    ax.grid(True, which="both", alpha=0.3)
+    ax.legend(fontsize=8, loc="upper left")
+    fig.tight_layout(w_pad=2.0)
     fig.savefig(os.path.join(outdir, "global_pt2_fig3_position.pdf"),
                 dpi=180, bbox_inches="tight")
     plt.show()
@@ -478,8 +716,10 @@ if __name__ == "__main__":
         eps=0.02,
         ch_modes=(6, 6),
         n_cyl=6,
-        n_mc=300,
-        n_mc_pos=60,
+        n_truth_m=60,  # truth interiors for the mass experiment
+        n_rea=24,  # noise draws per interior
+        n_truth_p=20,  # truth interiors for the position experiment
+        pos_spread=0.06,
         outdir="Images",
         verbose=True,
     )

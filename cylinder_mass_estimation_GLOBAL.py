@@ -1838,7 +1838,7 @@ def draw_mass_budget(
         ["BODY\n(const. density)"] + [n.split()[0] for n in names], fontsize=8
     )
     ax.set_ylim(lo, hi)
-    ax.set_ylabel("Cumulative Mass Fraction of $M^*$")
+    ax.set_ylabel("Cumulative Mass Fraction of $M^*$  [-]")
     ax.grid(True, axis="y", alpha=0.3)
     from matplotlib.patches import Patch
     from matplotlib.lines import Line2D
@@ -2104,8 +2104,8 @@ def make_plots(res, outdir="Images"):
     lognormal_overlay(ax, mA, bins, "k", ls="-", name="SH")
     lognormal_overlay(ax, mB, bins, "k", ls="--", name="SH + CH")
     ax.set_xscale("log")
-    ax.set_xlabel(r"Mass-fraction RMS Error over MC noise draws,  $\beta_0$")
-    ax.set_ylabel(f"Truth Interiors  (of {len(mA)})")
+    ax.set_xlabel(r"Mass-fraction RMS Error over MC noise draws,  $\beta_0$  [-]")
+    ax.set_ylabel(f"Truth Interiors  (of {len(mA)})  [-]")
     ax.grid(True, which="both", alpha=0.3)
     ax.legend(fontsize=8, loc="upper left")
 
@@ -2139,7 +2139,7 @@ def make_plots(res, outdir="Images"):
     ax.set_xticks(range(len(names)))
     ax.set_xticklabels([n.split()[0] for n in names], fontsize=10)
     ax.set_xlim(-0.55, len(names) - 0.45)
-    ax.set_ylabel(r"Truth Mass Fraction  $\beta_j$")
+    ax.set_ylabel(r"Truth Mass Fraction  $\beta_j$  [-]")
     ax.grid(True, axis="y", alpha=0.3)
     ax.legend(fontsize=9, loc="upper right")
 
@@ -2219,7 +2219,7 @@ def make_plots(res, outdir="Images"):
         ry = 3.4 * max(np.sqrt(covA[1, 1]), abs(muA[1] - tru[1]))
         axc.set_xlim(muA[0] - rx, muA[0] + rx)
         axc.set_ylim(muA[1] - ry, muA[1] + ry)
-        axc.set_ylabel(rf"$\beta$  {names[ko].split()[0]}", fontsize=10)
+        axc.set_ylabel(rf"$\beta$  {names[ko].split()[0]}  [-]", fontsize=10)
         axc.ticklabel_format(style="sci", scilimits=(-2, 2), useMathText=True)
         axc.yaxis.get_offset_text().set_fontsize(8)
         axc.grid(True, alpha=0.3)
@@ -2284,7 +2284,7 @@ def make_plots(res, outdir="Images"):
             )
             axc.tick_params(labelbottom=False)
         else:
-            axc.set_xlabel(rf"$\beta$  {names[jt].split()[0]}", fontsize=10)
+            axc.set_xlabel(rf"$\beta$  {names[jt].split()[0]}  [-]", fontsize=10)
     fig.tight_layout(w_pad=2.0)
     fig.savefig(
         os.path.join(outdir, "global_fig2a_massfraction.pdf"),
@@ -2311,14 +2311,12 @@ def make_plots(res, outdir="Images"):
     ax.axhline(acc, color="0.3", ls="-", lw=1.4, zorder=4)
     ax.text(
         mug.min() * 0.85,
-        acc * 1.5,
-        rf"worse than {acc:.0f}"
-        + (r"$\%$" if USE_TEX else "%")
-        + " — anomaly not measured",
+        acc * 1.06,
+        rf"Identifiability Threshold: {acc:.0f}" + (r"$\%$" if USE_TEX else "%"),
         fontsize=9,
         ha="left",
         va="bottom",
-        color="0.2",
+        color="0.15",
         zorder=6,
     )
 
@@ -2334,7 +2332,7 @@ def make_plots(res, outdir="Images"):
             ls="--",
             alpha=0.85,
             zorder=3,
-            label=rf"{nm}: $100\,\sigma/\beta_0$ (analytic)",
+            label=rf"{nm}: $100\,\sigma/\beta_0$",
         )
         ax.plot(
             mug,
@@ -2346,7 +2344,7 @@ def make_plots(res, outdir="Images"):
             mew=0.5,
             ls="none",
             zorder=5,
-            label=rf"{nm}: MC RMS error",
+            label=rf"{nm}: MC RMS Error",
         )
 
     # the gain, read horizontally at the accuracy threshold itself
@@ -2359,13 +2357,19 @@ def make_plots(res, outdir="Images"):
     ax.set_yscale("log")
     ax.set_xlim(mug.min() * 0.7, mug.max() * 1.5)
     ax.set_ylim(min(relA.min(), relB.min()) * 0.45, 2.0e4)
-    ax.set_xlabel(r"True Anomaly $\beta_0$")
+    ax.set_xlabel(r"True Anomaly $\beta_0$  [-]")
     ax.set_ylabel(
         r"MC RMS Error / True Anomaly $\beta_0$  " + (r"[$\%$]" if USE_TEX else "[%]")
     )
     ax.grid(True, which="both", alpha=0.3)
     ax.set_axisbelow(True)
     ax.legend(fontsize=8.5, loc="lower left", framealpha=0.93, ncol=2)
+    fig.tight_layout()
+    fig.savefig(
+        os.path.join(outdir, "global_fig2b_detection.pdf"),
+        dpi=180,
+        bbox_inches="tight",
+    )
 
     # ---- FIG 3: EXPERIMENT 2 — position recovery over TRUTH POSITIONS -------
     # (a) how the per-truth error is distributed, (b) where the truths were
@@ -2404,7 +2408,7 @@ def make_plots(res, outdir="Images"):
     lognormal_overlay(ax, eB, bins, "k", ls="--", name="SH + CH")
     ax.set_xscale("log")
     ax.set_xlabel("Position RMS Error over MC noise draws [LU]")
-    ax.set_ylabel(f"Truth Interiors  (of {len(eA)})")
+    ax.set_ylabel(f"Truth Interiors  (of {len(eA)})  [-]")
     ax.grid(True, which="both", alpha=0.3)
     ax.legend(fontsize=8, loc="upper left")
 
@@ -2582,8 +2586,8 @@ def make_plots(res, outdir="Images"):
     for ax, (key, name, xlab) in zip(
         axes,
         [
-            ("sh", "SPHERICAL harmonics", "SH degree $n$"),
-            ("ch", "CYLINDRICAL harmonics", "CH azimuthal order $m$"),
+            ("sh", "SPHERICAL harmonics", "SH degree $n$  [-]"),
+            ("ch", "CYLINDRICAL harmonics", "CH azimuthal order $m$  [-]"),
         ],
     ):
         d = sp[key]
@@ -2630,7 +2634,7 @@ def make_plots(res, outdir="Images"):
 
         ax.set_xticks(xs)
         ax.set_xlabel(xlab)
-        ax.set_ylabel("RMS |residual|")
+        ax.set_ylabel("RMS |residual|  [-]")
         ax.set_yscale("log")
         ax.set_ylim(0.5 * min(y_post.min(), y_sig.min()), 2.5 * y_pre.max())
         ax.set_xlim(xs[0] - 0.4, xs[-1] + 0.4)
