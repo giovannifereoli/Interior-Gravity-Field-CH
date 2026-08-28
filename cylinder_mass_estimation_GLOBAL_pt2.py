@@ -908,8 +908,7 @@ def make_plots(res, outdir="Images"):
             f"C{i_c} ({_axis_label(c['dir'])})",
             fontsize=8,
             color=ACCENT,
-            fontweight="bold",
-            ha="center",
+                        ha="center",
             bbox=dict(fc="white", ec="0.7", alpha=0.8, pad=1.2, lw=0.4),
         )
     for nm, q, b in zip(names, P, ft):
@@ -975,8 +974,7 @@ def make_plots(res, outdir="Images"):
                 ha="center",
                 va="bottom",
                 fontsize=8,
-                fontweight="bold",
-                color=COLOR[0],
+                                color=COLOR[0],
             )
         ax.set_yscale("log")
         ax.set_xticks(x)

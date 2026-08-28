@@ -158,6 +158,39 @@ mpl.rcParams.update(
         "font.size": 12,
         "axes.labelsize": 13,
         "axes.titlesize": 13,
+        # ── journal styling ────────────────────────────────────────────
+        # Ticks inward on all four sides with minors, hairline spines, frameless
+        # legends, faint grids and 300 dpi output: the conventions AAS/Icarus
+        # figures follow.  Titles are NOT bold — a bold title inside a
+        # single-column figure competes with the caption below it.
+        "axes.linewidth": 0.8,
+        "axes.titleweight": "normal",
+        "axes.titlepad": 8.0,
+        "axes.labelpad": 3.5,
+        "xtick.direction": "in",
+        "ytick.direction": "in",
+        "xtick.top": True,
+        "ytick.right": True,
+        "xtick.minor.visible": True,
+        "ytick.minor.visible": True,
+        "xtick.major.width": 0.8,
+        "ytick.major.width": 0.8,
+        "xtick.minor.width": 0.6,
+        "ytick.minor.width": 0.6,
+        "xtick.major.size": 4.0,
+        "ytick.major.size": 4.0,
+        "xtick.minor.size": 2.2,
+        "ytick.minor.size": 2.2,
+        "legend.frameon": False,
+        "legend.handlelength": 1.8,
+        "legend.borderaxespad": 0.6,
+        "grid.linewidth": 0.5,
+        "grid.alpha": 0.25,
+        "lines.linewidth": 1.8,
+        "lines.markeredgewidth": 0.7,
+        "savefig.dpi": 300,
+        "savefig.bbox": "tight",
+        "pdf.fonttype": 42,          # editable text in the PDF, not outlines
         "figure.dpi": 110,
     }
 )
