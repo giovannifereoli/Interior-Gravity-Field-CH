@@ -5,97 +5,85 @@ Author: Giovanni Fereoli / experiment build
 
 Question
 --------
-Can a combined SH + CH gravity model recover INTERIOR density better than SH
-alone — because cylindrical harmonics sit close to the surface and therefore
-carry localized, near-surface information that global spherical harmonics smear
-out?
+Can SH + CH recover INTERIOR density better than SH alone, because cylindrical
+harmonics sit close to the surface and carry localized information that global
+spherical harmonics smear out?
 
-Model  —  a SCALED CONSTANT-DENSITY BULK plus localized anomalies
------------------------------------------------------------------
-The interior is NOT a cloud of mascons that sums to the total mass.  It is the
-constant-density polyhedron of the shape model, scaled by β̃, plus a few
-localized mascons that carry the departures from homogeneity:
+Model — a SCALED CONSTANT-DENSITY BULK plus localized anomalies
+---------------------------------------------------------------
+The interior is not a cloud of mascons summing to the total mass; it is the
+shape model's constant-density polyhedron, scaled by β̃, plus a few mascons
+carrying the departures from homogeneity:
 
     U_T(r) = β̃ · U_CD(r) + Σ_j β_j · U_pt(r; p_j),     β_j = m_j / M* ,
 
-with M* = GM known from tracking (M* = 1 in normalized units).  The mass budget
-β̃ M* + Σ_j m_j = M* fixes the bulk scale outright,
+with M* = GM known from tracking (= 1 in normalized units).  The mass budget
+fixes the bulk scale outright, β̃ = 1 − Σ_j β_j, so β̃ is NOT an independent
+unknown, total mass is exact by construction, and the old "Σβ = 1 known to σ_M"
+pseudo-observation disappears.  The estimated vector is β = {β_j}: positive is
+an over-dense concentration, negative a deficit.  Only m_j = Δρ_j v_j enters the
+field, so the mass FRACTION, not the density contrast, is identifiable.
 
-    β̃ = 1 − Σ_j β_j ,
-
-so β̃ is NOT an independent unknown, the total mass is exact by construction, and
-the old "Σ f = 1 known to σ_M" pseudo-observation disappears.  The estimated
-vector is β = {β_j}: β_j > 0 is an over-dense concentration, β_j < 0 a mass
-deficit.  Only the product m_j = Δρ_j v_j enters the field, so the mass fraction
-— not the density contrast — is the identifiable parameter.
-
-Substituting β̃ isolates the DISCREPANCY between the measured field and the
-constant-density model, which is what the estimator actually fits:
+Substituting β̃ isolates the discrepancy the estimator actually fits,
 
     ΔU(r) = U_T(r) − U_CD(r) = Σ_j β_j [ U_pt(r; p_j) − U_CD(r) ] ,
 
-so every design column is a CONTRAST against the homogeneous body.  Here Eros
+so every design column is a CONTRAST against the homogeneous body.  Eros here
 carries one shallow anomaly under the +z pole (the CH target, whose position is
 recovered too) and two deep ones in the lobes.
 
-Physical mechanism
-------------------
-A deep anomaly is a LOW-degree (quadrupole-scale) feature — spherical harmonics
-constrain it well.  The small near-surface anomaly writes its signature mostly
-into HIGH-degree coefficients that are truncated/noisy from orbit, so SH is
-nearly blind to it and it stays degenerate with the bulk.  Interior cylindrical
-harmonics converge inside the Brillouin sphere right down to the surface (where
-exterior SH diverges); low-altitude data over a cylinder above the anomaly,
-represented by CH, injects exactly the local information SH is missing —
-resolving the anomaly's mass fraction and position.
+Mechanism
+---------
+A deep anomaly is a low-degree feature that SH constrains well.  A small
+near-surface anomaly writes mostly into HIGH-degree coefficients, truncated and
+noisy from orbit, so SH is nearly blind to it and it stays degenerate with the
+bulk.  Interior CH converge inside the Brillouin sphere down to the surface,
+where exterior SH diverges; low-altitude data over a cylinder above the anomaly
+injects exactly the local information SH lacks.
 
-Both observables are LINEAR in β, so mass-fraction recovery is a linear Gaussian
-inverse problem with an exact posterior covariance.  Position recovery is
-nonlinear and handled by a linearized (Fisher) covariance.
+Both observables are LINEAR in β, so mass recovery is a linear Gaussian inverse
+problem with an exact posterior covariance.  Position is nonlinear, handled by a
+linearized (Fisher) covariance.
 
 Truth / units
 -------------
-Eros shape (`3dmeshes/eros.pk`), normalized units (LU), total mass M* = 1.  The
-bulk observables are computed from the shape once and to machine precision: its
-Stokes coefficients by exact tetrahedral quadrature of the solid harmonics (the
-integrand is a polynomial), its near-surface field by polyhedral_gravity.
+Eros shape (`3dmeshes/eros.pk`), normalized units (LU), M* = 1.  Bulk observables
+are computed once to machine precision: Stokes coefficients by exact tetrahedral
+quadrature of the solid harmonics (the integrand is a polynomial), near-surface
+field by polyhedral_gravity.
 
-Two observables  (both fitted as DISCREPANCIES from the constant-density model)
---------------------------------------------------------------------------------
-  A (SH)     : fully-normalized Stokes coefficients C̄_nm, S̄_nm, degree 2..L_SH,
-               the global gravity field from tracking.  No total-mass row: the
-               budget is enforced by β̃ = 1 − Σβ.
-  B (SH+CH)  : the above  PLUS  the CH coefficients of the near-surface field
-               (potential + acceleration) in a cylinder just above the anomaly,
-               obtained by an UNWEIGHTED fit of the Bessel–Fourier basis Φ to the
-               sampled field, c = Φ⁺ field.  Only the part of the near-surface
-               field that Φ can represent survives that fit — the projector
-               P_CH = Φ(ΦᵀΦ)⁻¹Φᵀ says how much (printed as a diagnostic).
+Two observables (both fitted as DISCREPANCIES from the constant-density model)
+------------------------------------------------------------------------------
+  A (SH)    : fully-normalized C̄_nm, S̄_nm, degree 2..L_SH, from tracking.  No
+              total-mass row — the budget is structural, β̃ = 1 − Σβ.
+  B (SH+CH) : plus the CH coefficients of the near-surface field (potential +
+              acceleration) in a cylinder above the anomaly, from an UNWEIGHTED
+              fit of the Bessel–Fourier basis, c = Φ⁺ field.  Only what Φ can
+              represent survives; the projector P_CH = Φ(ΦᵀΦ)⁻¹Φᵀ says how much.
 
-Weights  (see `od_sigma`)
--------------------------
-Estimation happens in COEFFICIENT space and is weighted there, per coefficient:
-σ_i = eps·max(|coefficient_i|, floor), an OD-like "each coefficient known to a
-fixed fraction of itself, above an absolute noise floor".  The inner fit that
-manufactures the CH coefficients from field samples is deliberately unweighted.
-The analytic covariance (Parts 1–2) and the Monte-Carlo fits (Experiments 1–2)
-are fed the SAME (A, σ) blocks, so they describe one and the same estimator.
+Weights (see `od_sigma`)
+------------------------
+Estimation is in COEFFICIENT space, weighted per coefficient by
+σ_i = eps·max(|coeff_i|, floor) — OD-like, "each coefficient known to a fixed
+fraction of itself above a noise floor".  The inner fit manufacturing the CH
+coefficients from field samples is deliberately unweighted.  The analytic
+covariance and the Monte-Carlo fits are fed the SAME (A, σ) blocks, so they
+describe one estimator.
 
 Experiments
 -----------
-  1. MASS FRACTION.  Posterior σ on each anomaly's β_j (and on the derived bulk
-     fraction β̃), SH vs SH+CH — the near-surface anomaly gains the most.
-  2. POSITION.  The near-surface anomaly's location; linearized position
-     covariance (error ellipsoid), SH vs SH+CH.
+  1. MASS FRACTION.  Posterior σ on each β_j and on the derived β̃, SH vs SH+CH.
+  2. POSITION.  The near-surface anomaly's location, linearized covariance.
 
 Formulae
 --------
 SH (exterior) unit-mass Stokes basis, mass at (r,φ,λ), ref radius R*:
-    {C̄,S̄}_nm  =  (r/R*)^n P̄_nm(sinφ) {cos,sin}(mλ)
+    {C̄,S̄}_nm = (1/(2n+1)) (r/R*)^n P̄_nm(sinφ) {cos,sin}(mλ)
 CH (interior) basis in a cylinder (axis ẑ, radius R_cyl, extension α):
     U_mn = J_m(k_mn ρ) e^{-k_mn z} {cos,sin}(mφ),   k_mn = j_{m,n}/(α R_cyl)
-Point mass at p, field at x:  U = Gm/|x-p|,  g = -Gm (x-p)/|x-p|³   (G=1 in LU).
-Constant-density bulk, unit mass:  C̄_nm = (1/Vol) ∫_body (r/R*)^n P̄_nm cos mλ dV.
+Point mass at p:  U = Gm/|x-p|,  g = -Gm (x-p)/|x-p|³   (G = 1 in LU).
+Constant-density bulk, unit mass:
+    C̄_nm = (1/((2n+1) Vol)) ∫_body (r/R*)^n P̄_nm cos mλ dV.
 """
 
 from __future__ import annotations
@@ -230,33 +218,6 @@ def inside_body(tm, V, F, P):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def fully_normalized_legendre(nmax: int, x: float) -> np.ndarray:
-    P = np.zeros((nmax + 1, nmax + 1))
-    P[0, 0] = 1.0
-    if nmax == 0:
-        return P
-    sx = math.sqrt(max(0.0, 1.0 - x * x))
-    for m in range(1, nmax + 1):
-        f = math.sqrt((2.0 * m + 1.0) / (2.0 * m))
-        if m == 1:
-            # the (2 - delta_0m) step: geodesy Pbar_11 = sqrt(3) sx, not
-            # sqrt(3/2) sx.  Without it every m > 0 is short by sqrt(2) and the
-            # addition theorem fails, so the coefficients are not 4pi-normalized.
-            f *= math.sqrt(2.0)
-        P[m, m] = f * sx * P[m - 1, m - 1]
-    for m in range(0, nmax):
-        P[m + 1, m] = math.sqrt(2.0 * m + 3.0) * x * P[m, m]
-    for m in range(0, nmax + 1):
-        for n in range(m + 2, nmax + 1):
-            a = math.sqrt(((2 * n + 1) * (2 * n - 1)) / ((n - m) * (n + m)))
-            b = math.sqrt(
-                ((2 * n + 1) * (n + m - 1) * (n - m - 1))
-                / ((2 * n - 3) * (n - m) * (n + m))
-            )
-            P[n, m] = a * x * P[n - 1, m] - b * P[n - 2, m]
-    return P
-
-
 def fully_normalized_legendre_v(nmax: int, x) -> np.ndarray:
     """Vectorized `fully_normalized_legendre`: same recursions, (nmax+1, nmax+1, N)."""
     x = np.atleast_1d(np.asarray(x, float))
@@ -286,6 +247,19 @@ def fully_normalized_legendre_v(nmax: int, x) -> np.ndarray:
     return P
 
 
+def fully_normalized_legendre(nmax: int, x: float) -> np.ndarray:
+    """
+    Scalar case of `fully_normalized_legendre_v`, as (nmax+1, nmax+1).
+
+    A wrapper, not a second implementation: the two carried the same three
+    recursions line for line, differing only in `math` vs `np`.  Two copies of
+    a normalization recursion is exactly where a silent convention bug hides —
+    the sqrt(2) at m = 1 had to be patched in both, and a future edit to one
+    would not have shown up until the coefficients were wrong.
+    """
+    return fully_normalized_legendre_v(nmax, x)[..., 0]
+
+
 def sh_stokes_basis(pts, Lmin, Lmax, Rref):
     """
     Vectorized `sh_stokes_of_point`: row i is the unit-mass Stokes signature of a
@@ -308,18 +282,15 @@ def sh_stokes_basis(pts, Lmin, Lmax, Rref):
 
 
 def sh_stokes_of_point(p, Lmin, Lmax, Rref):
-    """Unit-mass fully-normalized Stokes coefficients of a point mass at p."""
-    x, y, z = p
-    r = math.sqrt(x * x + y * y + z * z)
-    lam = math.atan2(y, x)
-    Pb = fully_normalized_legendre(Lmax, z / r)
-    out = []
-    for n in range(Lmin, Lmax + 1):
-        rr = (r / Rref) ** n / (2 * n + 1)  # addition-theorem factor
-        for m in range(0, n + 1):
-            out.append(rr * Pb[n, m] * math.cos(m * lam))
-            out.append(rr * Pb[n, m] * math.sin(m * lam))
-    return np.asarray(out)
+    """
+    Unit-mass fully-normalized Stokes coefficients of a point mass at p.
+
+    A wrapper on `sh_stokes_basis`, not a second implementation.  Both carried
+    the same loop and the same 1/(2n+1) addition-theorem factor, and that factor
+    is precisely what was once missing from this file — a convention living in
+    two places is a convention that will eventually disagree with itself.
+    """
+    return sh_stokes_basis(np.asarray(p, float)[None, :], Lmin, Lmax, Rref)[0]
 
 
 def A_stokes(positions, Lmin, Lmax, Rref):
@@ -404,13 +375,13 @@ def cyl_basis(cyl: Cylinder, obs, n_m, n_n):
 
 
 # Truncated-SVD cutoff for every CH pseudo-inverse.  This matters more than it
-# looks.  Over a patch the Bessel-Fourier columns are close to linearly
-# dependent (cond(Phi) ~ 1e16), and `np.linalg.pinv`'s DEFAULT cutoff is
-# machine-epsilon based — max(M,N)*eps*s_max, about 9e-12 relative — so it keeps
-# directions whose singular value is ~1e-13 of the largest.  Their coefficients
-# come out as (projection)/sigma, i.e. enormous, and cancel again when
-# multiplied back by Phi.  That, and nothing else, is why raw CH coefficients
-# come out at 1e10 and refuse to decay with m.  Measured here at (8,8), 200 pts:
+# looks.  Over a patch the Bessel-Fourier columns are nearly linearly dependent
+# (cond(Phi) ~ 1e16), and `np.linalg.pinv`'s DEFAULT cutoff is machine-epsilon
+# based — max(M,N)*eps*s_max, ~9e-12 relative — so it keeps directions whose
+# singular value is ~1e-13 of the largest.  Their coefficients come out as
+# (projection)/sigma, i.e. enormous, and cancel again when multiplied back by
+# Phi.  That, and nothing else, is why raw CH coefficients come out at 1e10 and
+# refuse to decay with m.  Measured here at (8,8), 200 pts:
 #
 #   rcond    kept   ||c||    fit err   m-spectrum last/first
 #   default    82   9.5e+09    2.1 %   3.13   (RISES)
@@ -442,33 +413,30 @@ def ch_projector(Phi, rcond=None):
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION 2b — THE CONSTANT-DENSITY BULK (the polyhedron carries the mass)
 # ═══════════════════════════════════════════════════════════════════════════
-# The interior is NOT a cloud of mascons that sums to the total mass.  It is the
+# The interior is NOT a cloud of mascons summing to the total mass.  It is the
 # constant-density SHAPE MODEL scaled by β̃, plus N localized mascons carrying
 # the departures from homogeneity,
 #
 #     U_T(r) = β̃ · U_CD(r) + Σ_j β_j · U_pt(r; p_j),      β_j = m_j / M* ,
 #
-# and the mass budget β̃ M* + Σ_j m_j = M* fixes the bulk scale outright,
-#
-#     β̃ = 1 − Σ_j β_j ,
-#
-# so β̃ is NOT an independent unknown and the total mass is M* by construction —
-# the old "Σ f = 1 known to σ_M" pseudo-observation is gone with it.  What is
-# left to estimate is β = {β_j}.  Substituting β̃ isolates the discrepancy
-# between the measured field and the constant-density model,
+# and the budget β̃ M* + Σ_j m_j = M* fixes the bulk scale outright, β̃ = 1 − Σβ.
+# So β̃ is NOT an independent unknown, the total mass is M* by construction, and
+# the old "Σ f = 1 known to σ_M" pseudo-observation is gone with it; what is left
+# to estimate is β = {β_j}.  Substituting β̃ isolates the discrepancy between the
+# measured field and the constant-density model,
 #
 #     ΔU(r) = U_T(r) − U_CD(r) = Σ_j β_j [ U_pt(r; p_j) − U_CD(r) ] ,
 #
 # which is what every design matrix below is: column j is a CONTRAST, the
-# signature of taking a fraction β_j out of the homogeneous body and
-# concentrating it at p_j.  β_j > 0 is a local excess (over-dense), β_j < 0 a
-# deficit (under-dense); only the product m_j = Δρ_j v_j is identifiable, so the
-# fraction, not the density contrast, is the estimated parameter.
+# signature of taking β_j out of the homogeneous body and concentrating it at
+# p_j.  β_j > 0 is a local excess, β_j < 0 a deficit; only the product
+# m_j = Δρ_j v_j is identifiable, so the FRACTION, not the density contrast, is
+# the estimated parameter.
 #
 # Both pieces of U_CD are computed once from the shape, to machine precision:
 #   Stokes     — the integrand (r/R*)^n P̄_nm(sinφ){cos,sin}(mλ) is a solid
-#                harmonic, i.e. a homogeneous POLYNOMIAL of degree n, so a
-#                tetrahedral Gauss rule of degree ≥ n is exact (no model error).
+#                harmonic, a homogeneous POLYNOMIAL of degree n, so a tetrahedral
+#                Gauss rule of degree ≥ n is exact (no model error).
 #   near-field — polyhedral_gravity (Werner–Scheeres), which converges right down
 #                to the surface where the SH series does not.
 
@@ -537,13 +505,13 @@ class Bulk:
         Fully-normalized Stokes coefficients of the unit-mass constant-density
         polyhedron, in the ordering of `sh_stokes_of_point`:
 
-            C̄_nm = (1/Vol) ∫_body (r/R*)^n P̄_nm(sinφ) cos mλ dV
+            C̄_nm = (1/((2n+1) Vol)) ∫_body (r/R*)^n P̄_nm(sinφ) cos mλ dV
 
-        Each tetrahedron (origin, v0, v1, v2) is integrated with a Duffy-mapped
-        tensor Gauss rule; the integrand is a polynomial of degree ≤ Lmax and the
-        map contributes (1−u)²(1−v), so `ng` points per direction integrate
-        degree 2·ng−1 ≥ Lmax+2 EXACTLY.  Signed volumes make the decomposition
-        valid for a concave body whatever the origin.
+        Each tetrahedron (origin, v0, v1, v2) uses a Duffy-mapped tensor Gauss
+        rule; the integrand is a polynomial of degree ≤ Lmax and the map
+        contributes (1−u)²(1−v), so `ng` points per direction integrate degree
+        2·ng−1 ≥ Lmax+2 EXACTLY.  Signed volumes keep the decomposition valid
+        for a concave body whatever the origin.
         """
         key = (Lmin, Lmax, round(float(Rref), 12))
         if key in self._sh:
@@ -618,17 +586,16 @@ def field_total(beta, positions, obs, bulk):
 # on purpose:
 #
 #   1. Building the CH coefficients from sampled field values (Φ c = field).
-#      UNWEIGHTED ordinary least squares — c = Φ⁺ field.  The field samples are
-#      a synthetic product of one instrument over one small patch; there is no
-#      per-sample error model to impose, and imposing one would just be a knob.
+#      UNWEIGHTED ordinary least squares, c = Φ⁺ field: the samples are one
+#      instrument's synthetic product over one small patch, with no per-sample
+#      error model to impose — imposing one would just be a knob.
 #
 #   2. Estimating the mass fractions β from the COEFFICIENT discrepancies.
-#      WEIGHTED, with a per-coefficient σ that imitates an OD solution: each
-#      coefficient is delivered to a fixed FRACTION of its own magnitude, with an
-#      absolute noise floor below which the solution cannot resolve anything.
-#      This is the V that whitens the cost — one σ per coefficient, not one σ per
-#      block, so a strong low-degree term and a weak high-degree one are not
-#      given the same absolute weight.
+#      WEIGHTED, with a per-coefficient σ imitating an OD solution: each
+#      coefficient delivered to a fixed FRACTION of its own magnitude, above an
+#      absolute noise floor below which nothing is resolved.  This is the V that
+#      whitens the cost — one σ per COEFFICIENT, not per block, so a strong
+#      low-degree term and a weak high-degree one do not share a weight.
 
 
 # NOTE: Use the OD uncertainty of the absolute coefficients for
@@ -640,17 +607,17 @@ def od_sigma(cs, eps, floor_frac=0.1):
 
         σ_i = eps · max( |cs_i| , floor_frac · RMS(cs) )
 
-    The first branch is "every coefficient is known to eps of itself" — the
-    relative precision an orbit-determination solution quotes.  The second is the
-    absolute noise floor: an OD solution cannot resolve a coefficient far below
-    the scale of the field it is fitting, and without it the entries that are
-    identically zero by construction (the S̄_n0 sine terms) would carry infinite
-    weight.  `cs` must be the FULL measured vector (bulk + anomalies), since that
-    is what the instrument delivers before the constant-density model is removed.
+    First branch: "every coefficient is known to eps of itself", the relative
+    precision an OD solution quotes.  Second: the absolute noise floor — OD
+    cannot resolve a coefficient far below the scale of the field it fits, and
+    without it the entries identically zero by construction (the S̄_n0 sine
+    terms) would carry infinite weight.  `cs` must be the FULL measured vector
+    (bulk + anomalies): that is what the instrument delivers before the
+    constant-density model is removed.
 
-    Caveat worth stating in a paper: constant relative precision across all
-    degrees is optimistic at high degree, where a real OD solution degrades
-    faster than the signal does.  A degree-dependent rule slots in here.
+    Paper caveat: constant relative precision across degrees is optimistic at
+    high degree, where a real OD solution degrades faster than the signal does.
+    A degree-dependent rule slots in here.
     """
     cs = np.asarray(cs, float)
     floor = floor_frac * float(np.sqrt(np.mean(cs**2)))
@@ -670,12 +637,11 @@ def fisher_masses(blocks, prior_sigma=1.0):
 
         F = Σ_blocks  A_wᵀ A_w ,     A_w = A / σ   (row-wise; σ may be a vector)
 
-    so the analytic covariance of Parts 1–2 and the actual fits of Experiments
-    1–2 are guaranteed to describe one and the same estimator.  Every design
-    matrix must be a contrast one (`A_stokes_contrast`, `ch_coeff_design`).
-    There is no total-mass block: the budget β̃ = 1 − Σβ is enforced structurally
-    by the parameterization, not by a pseudo-observation.  A weak Gaussian prior
-    keeps everything finite.
+    so the analytic covariance and the actual fits describe one and the same
+    estimator.  Every design matrix must be a contrast one
+    (`A_stokes_contrast`, `ch_coeff_design`).  There is no total-mass block: the
+    budget β̃ = 1 − Σβ is structural, not a pseudo-observation.  A weak Gaussian
+    prior keeps everything finite.
     """
     n = blocks[0][0].shape[1]
     Fi = np.eye(n) / prior_sigma**2
@@ -730,10 +696,9 @@ def admissible_radius(beta, bulk_frac, volume, contrast=EXCESS_CONTRAST):
     Smallest equivalent sphere [LU] that makes a point anomaly β physical.
 
     Nothing constrains the SIGN of β: it is a CONTRAST against the constant-
-    density bulk, so a void or a porous patch is negative BY CONSTRUCTION and a
-    negative β is not an unphysical mass — it is a mass deficit.  What must stay
-    physical is the TOTAL local density.  Smearing the anomaly over a sphere of
-    volume V_a, the density inside it is
+    density bulk, so a void or porous patch is negative BY CONSTRUCTION — a mass
+    deficit, not an unphysical mass.  What must stay physical is the TOTAL local
+    density.  Smearing the anomaly over a sphere of volume V_a,
 
         ρ = β̃ M*/V_body  +  β M*/V_a  =  ρ_bulk (1 + (β/β̃)(V_body/V_a)),
 
@@ -746,9 +711,9 @@ def admissible_radius(beta, bulk_frac, volume, contrast=EXCESS_CONTRAST):
 
         V_a ≥  β  V_body / (contrast · β̃)         for β > 0.
 
-    By Newton's theorem the exterior field of a uniform sphere is EXACTLY that
-    of the point mass at its centre, so replacing the point by this sphere costs
-    the model nothing — provided every observation point stays outside it.
+    By Newton's theorem a uniform sphere's exterior field is EXACTLY that of the
+    point mass at its centre, so the swap costs the model nothing — provided
+    every observation point stays outside the sphere.
     """
     scale = 1.0 if beta < 0 else contrast
     V_a = abs(beta) * volume / (bulk_frac * scale)
@@ -798,11 +763,11 @@ def position_covariance(
     Linearized position covariance of anomaly `idx`, with its truth mass
     fraction, from SH-only and SH+CH.  Position partials by central differences,
     in the same COEFFICIENT space and with the same per-coefficient weights as
-    the fits: the CH partial is Φ⁺ ∂(field)/∂p, i.e. the position sensitivity of
-    the coefficients the unweighted inner fit would return.  (Other masses /
-    positions held fixed — the near-surface anomaly is the target.)  The bulk
-    term β̃·U_CD does not move with p, so it drops out of ∂y/∂p entirely: only
-    the σ's carry its (large) presence, through the relative-precision rule.
+    the fits: the CH partial is Φ⁺ ∂(field)/∂p, the position sensitivity of the
+    coefficients the unweighted inner fit would return.  (Other masses/positions
+    fixed — the near-surface anomaly is the target.)  The bulk term β̃·U_CD does
+    not move with p and drops out of ∂y/∂p entirely; only the σ's carry its
+    (large) presence, through the relative-precision rule.
     """
     _, _, f = mascon_arrays()
     p0, mass = P[idx].copy(), f[idx]
@@ -841,15 +806,14 @@ def position_covariance(
 def ch_coeff_design(P, obs, cyl, ch_modes, bulk):
     """
     β → CYLINDRICAL-HARMONIC coefficient design matrix.
-    For each anomaly we evaluate the near-surface field of the CONTRAST (unit
-    mass at p_j minus the same mass spread through the body) and fit the
-    Bessel–Fourier basis Φ by ORDINARY (unweighted) least squares, exactly as the
-    reference script fits CH coefficients to a sampled field:
-    A_ch = Φ⁺ A_field_contrast.  The weighting deliberately enters one level up,
-    on the COEFFICIENTS (see `od_sigma`), not on the field samples that produce
-    them.  Fitting the contrast is the near-surface form of ΔU: the
-    constant-density field is known from the shape and subtracted before the
-    anomalies are estimated.
+    Per anomaly, evaluate the near-surface field of the CONTRAST (unit mass at
+    p_j minus the same mass spread through the body) and fit the Bessel–Fourier
+    basis Φ by ORDINARY (unweighted) least squares, as the reference script fits
+    CH coefficients to a sampled field: A_ch = Φ⁺ A_field_contrast.  Weighting
+    deliberately enters one level up, on the COEFFICIENTS (`od_sigma`), not on
+    the field samples producing them.  Fitting the contrast is the near-surface
+    form of ΔU — the constant-density field is known from the shape and
+    subtracted before the anomalies are estimated.
     """
     Phi = cyl_basis(cyl, obs, *ch_modes)
     return ch_pinv(Phi) @ A_field_contrast(P, obs, bulk)  # (n_ch, n_anom)
@@ -884,31 +848,26 @@ def detection_sweep(A_sh, sig_sh, A_ch, sig_ch, f_base, mu_grid, n_mc=250, seed=
     """
     Smallest detectable anomaly with vs without the cylinder.
 
-    Sweeps the TRUE shallow-anomaly fraction β_0 over `mu_grid`, holding the two
-    deep anomalies at their nominal values (β̃ = 1 − Σβ absorbs the change, so
-    the body keeps unit mass), and at each value fits `n_mc` noisy realizations
-    SH-only and SH+CH.  Returns the recovered mean and scatter for both.
+    Sweeps the TRUE shallow fraction β_0 over `mu_grid` (deep anomalies held at
+    nominal; β̃ = 1 − Σβ absorbs the change, so the body keeps unit mass) and at
+    each value fits `n_mc` noisy realizations SH-only and SH+CH.
 
-    Three things are worth knowing before reading the figure it feeds:
+    Three facts govern the figure this feeds:
 
-    * THE SCATTER DOES NOT MOVE ALONG THE SWEEP — not approximately, exactly.
-      `sig_sh`/`sig_ch` are passed in fixed (built once from the nominal truth),
-      and a linear model with fixed weights has covariance (A^T W A)^-1, which
-      contains no truth at all.  Measured across the 16-point grid: 3.211e-3 at
-      every point for SH, 1.652e-4 for SH+CH, varying by 1.00x.  So the sweep
-      computes the same sigma once per grid point.
-    * THAT SIGMA IS THE ANALYTIC ONE.  MC 3.211e-3 vs (A^T W A)^-1 3.169e-3 for
-      SH; 1.652e-4 vs 1.737e-4 for SH+CH.  The detection floor below could be
-      had in closed form, without fitting anything.
-    * SO WHAT IS REPORTED IS THE RMS ERROR, NOT THE MEAN.  The estimator is
-      unbiased — E[β̂_0] = β_0 for ANY β_0, however small — so the MEAN tracks
-      the truth all the way down and says nothing about detectability; it only
-      plateaus at sigma/sqrt(n_mc), a Monte-Carlo artifact.  The RMS error is
-      flat at sigma instead, so the RELATIVE error sigma/β_0 is what degrades
-      as the anomaly shrinks, and that is the performance curve.
+    * THE SCATTER DOES NOT MOVE ALONG THE SWEEP — exactly, not approximately.
+      `sig_sh`/`sig_ch` are fixed (built once from the nominal truth), and a
+      linear model with fixed weights has covariance (A^T W A)^-1, which
+      contains no truth.  Over the 16-point grid: 3.211e-3 everywhere for SH,
+      1.652e-4 for SH+CH, varying by 1.00x.
+    * THAT SIGMA IS THE ANALYTIC ONE: MC 3.211e-3 vs (A^T W A)^-1 3.169e-3 (SH),
+      1.652e-4 vs 1.737e-4 (SH+CH).  The floor needs no fitting at all.
+    * SO THE RMS ERROR IS REPORTED, NOT THE MEAN.  The estimator is unbiased —
+      E[β̂_0] = β_0 for any β_0 — so the mean tracks the truth all the way down
+      and says nothing about detectability, plateauing only at sigma/sqrt(n_mc),
+      an MC artifact.  The RMS error is flat at sigma, so the RELATIVE error
+      sigma/β_0 degrades as the anomaly shrinks: that is the performance curve.
 
-    Returns rmsA/rmsB (MC) alongside sdA/sdB (analytic) so the figure can show
-    the measured performance and the theory it should follow.
+    Returns rmsA/rmsB (MC) beside sdA/sdB (analytic), measurement vs theory.
     """
     cA = np.linalg.inv(fisher_masses([(A_sh, sig_sh)]))
     cB = np.linalg.inv(fisher_masses([(A_sh, sig_sh), (A_ch, sig_ch)]))
@@ -1011,12 +970,12 @@ def draw_truth_positions(n, V, F, tm, rng, center=None, spread=None, n_try=4000)
     """
     n positions inside the body.
 
-    With `center` and `spread` they are drawn uniformly in a BALL of that radius
-    about the nominal site — the anomaly is somewhere near where we thought, not
-    anywhere in the asteroid.  That is the relevant population here, because the
-    cylinder was placed FOR this site; scattering the truth through the whole
-    interior instead answers "what if we pointed the patch at nothing", which is
-    a different question.  Without them, uniform over the whole body.
+    With `center` and `spread`, drawn uniformly in a BALL of that radius about
+    the nominal site — the anomaly is near where we thought, not anywhere in the
+    asteroid.  That is the relevant population, since the cylinder was placed
+    FOR this site; scattering the truth through the whole interior answers "what
+    if we pointed the patch at nothing", a different question.  Without them,
+    uniform over the whole body.
     """
     out = []
     while len(out) < n:
@@ -1052,31 +1011,28 @@ def truth_mc_masses(
 ):
     """
     Redraw the truth MASSES; for each, rebuild σ from that truth's own field and
-    refit.  The outer loop is over INTERIORS, so everything below is "would this
-    survive a different body?" rather than "how precise is this one fit?".
+    refit.  The outer loop is over INTERIORS, so this asks "would this survive a
+    different body?", not "how precise is this one fit?".
 
-    Per truth it returns both halves of the consistency test:
-      PREDICTED  sigA/sigB/bulkA/bulkB — the analytic (A^T W A)^-1, no sampling;
-      REALIZED   devA/devB/devBulk*    — errors from actually fitting noisy data,
+    Per truth, both halves of the consistency test:
+      PREDICTED  sigA/sigB/bulkA/bulkB — analytic (A^T W A)^-1, no sampling;
+      REALIZED   devA/devB/devBulk*    — errors from fitting noisy data,
                  `n_rea` draws per interior.
 
-    m_errA/m_errB are the per-interior RMS of that error on the CH target, and
-    they are what figure 2a histograms.  Two details make that comparison sharp:
+    m_errA/m_errB are the per-interior RMS of that error on the CH target, which
+    figure 2a histograms.  Two details sharpen the comparison:
 
-    `n_rea` draws, not one.  A single draw is half-normal about sigma_i, with
-    76% relative scatter, so a histogram of it comes out ~13x wide even when
-    every interior has the SAME sigma — it would show mostly the noise draw,
-    and it blurs the SH/SH+CH separation (only ~30x) badly.  The RMS of n draws
-    has scatter 1/sqrt(2n) instead: 15% at n = 24.  That is the whole reason
-    this loop exists.
+    `n_rea` draws, not one.  A single draw is half-normal about sigma_i (76%
+    relative scatter), so its histogram comes out ~13x wide even when every
+    interior shares the SAME sigma, badly blurring the ~30x SH/SH+CH separation.
+    The RMS of n draws has scatter 1/sqrt(2n) — 15% at n = 24.  That is the
+    whole reason this loop exists.
 
-    The two cases get fresh generators on the same seed, so SH and SH+CH see the
-    same realization of the SH noise.  Measured, that pairing buys NOTHING here:
-    corr(e_A, e_B) = +0.01 and the scatter of the per-interior gain is identical
-    either way (sd of ln ratio 0.55 vs 0.55, over 300 interiors).  Once the CH
-    block is in, the SH+CH error is set by the CH data, so it barely depends on
-    the SH noise that the SH-only error is made of.  Kept because sharing the
-    seed is the tidier default, not because it helps.
+    Both cases get fresh generators on the same seed, so they see the same SH
+    noise realization.  Measured, that pairing buys NOTHING: corr(e_A, e_B) =
+    +0.01 and the per-interior gain scatter is identical either way (sd of ln
+    ratio 0.55 vs 0.55 over 300 interiors) — once the CH block is in, the SH+CH
+    error is set by the CH data.  Kept as the tidier default, not as a help.
     """
     rng = np.random.default_rng(seed)
     betas = draw_truth_masses(n_truth, rng, mag=mag)
@@ -1317,7 +1273,7 @@ def results_report(res, tex=True):
     # top of the bulk, so the sign is the physics.  What has to hold is that the
     # implied density stays ≥ 0 (deficit) or below the densest realistic
     # inclusion (excess), which sets a minimum size for the equivalent sphere.
-    adm, P_ = res["adm"], res["P"]
+    adm = res["adm"]
     a_min, d_surf, d_obs, b_max = (
         adm["a_min"],
         adm["d_surf"],
@@ -1488,13 +1444,13 @@ def run_experiment(
     """
     `eps` is the RELATIVE measurement precision applied EQUALLY to both
     observables, PER COEFFICIENT: σ_i = eps·|coefficient_i| with a noise floor
-    (see `od_sigma`), on the FULL measured coefficients (bulk included, since
-    that is what an OD solution actually delivers).  Same fractional data quality
-    on the global Stokes coefficients and on the local CH coefficients, so the
-    comparison reflects geometry, not the (different) natural units of the two.
-    What is FITTED is the discrepancy between that measurement and the known
-    constant-density model.  The inner fit that produces the CH coefficients from
-    field samples is unweighted; the weights live here, on the coefficients.
+    (see `od_sigma`), on the FULL measured coefficients (bulk included — what an
+    OD solution actually delivers).  Same fractional data quality on the global
+    Stokes and the local CH coefficients, so the comparison reflects geometry,
+    not the two bases' different natural units.  What is FITTED is the
+    discrepancy between that measurement and the known constant-density model.
+    The inner fit producing the CH coefficients from field samples is
+    unweighted; the weights live here, on the coefficients.
     """
     V, F, tm, Rb = load_eros()
     Rref = Rb
@@ -1651,8 +1607,7 @@ def run_experiment(
         spread=pos_spread,
         n_noise_rep=n_cloud_p,
     )
-    tp_eA, tp_eB, tp_pos = tp["errA"], tp["errB"], tp["pos"]
-    tp_dax, tp_dep = tp["d_axis"], tp["depth"]
+    tp_eA, tp_eB, tp_dax = tp["errA"], tp["errB"], tp["d_axis"]
     if verbose and detail:
         q = lambda v: (np.percentile(v, 10), np.median(v), np.percentile(v, 90))
         print(
@@ -1900,16 +1855,15 @@ def lognormal_overlay(ax, v, bins, color, ls="-", name="", npts=400):
     """
     Fit a LOG-normal to a positive, log-binned series and draw it in counts.
 
-    Not a Gaussian: these errors are positive, span decades, and are plotted on
-    a log axis.  Measured by KS on the four series these panels show, the
-    log-normal wins on three and ties on the fourth, and is never rejected
-    (p = 0.15 to 0.90); a normal is rejected on the position ones (KS 0.18-0.22
-    against 0.08-0.11).  On a log axis a log-normal is simply a Gaussian in
-    ln x, which is why it lies on these histograms so cleanly.
+    Not a Gaussian: these errors are positive, span decades, and sit on a log
+    axis.  By KS on the four series these panels show, the log-normal wins on
+    three, ties on the fourth, and is never rejected (p = 0.15 to 0.90); a
+    normal is rejected on the position ones (KS 0.18-0.22 vs 0.08-0.11).  On a
+    log axis a log-normal is just a Gaussian in ln x, hence the clean fit.
 
-    Returns (median, sigma_factor): for a log-normal the natural centre is the
-    median exp(mu), and the natural width is the MULTIPLICATIVE exp(sigma) —
-    the band [median/f, median*f] is the 1-sigma interval.
+    Returns (median, sigma_factor): the natural centre is the median exp(mu),
+    the natural width the MULTIPLICATIVE exp(sigma) — [median/f, median*f] is
+    the 1-sigma interval.
     """
     lv = np.log(np.asarray(v, float))
     mu, sd = float(lv.mean()), float(lv.std(ddof=1))
@@ -1961,7 +1915,7 @@ def make_plots(res, outdir="Images"):
     from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
     V, F, P = res["V"], res["F"], res["P"]
-    cyl, obs, names = res["cyl"], res["obs"], res["names"]
+    cyl, names = res["cyl"], res["names"]
     tgt = res["target"]
 
     # ---- FIG 1: the interior model in 3-D -----------------------------------
@@ -2449,8 +2403,6 @@ def make_plots(res, outdir="Images"):
     ax.set_xlabel("x [LU]")
     ax.set_ylabel("z [LU]")
     ax.ticklabel_format(style="sci", scilimits=(-2, 2), useMathText=True)
-    sA = np.sqrt(np.trace(covA) / 2)
-    sB = np.sqrt(np.trace(covB) / 2)
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=7.5, loc="upper left", framealpha=0.92)
 
@@ -2530,12 +2482,9 @@ def make_plots(res, outdir="Images"):
 
     fig, axes = plt.subplots(1, 2, figsize=(15, 5.4))
     handles = None
-    for ax, (key, name, xlab) in zip(
+    for ax, (key, xlab) in zip(
         axes,
-        [
-            ("sh", "SPHERICAL harmonics", "SH degree $n$  [-]"),
-            ("ch", "CYLINDRICAL harmonics", "CH azimuthal order $m$  [-]"),
-        ],
+        [("sh", "SH degree $n$  [-]"), ("ch", "CH azimuthal order $m$  [-]")],
     ):
         d = sp[key]
         pre = d["data"]  # measured − homogeneous
@@ -2549,10 +2498,9 @@ def make_plots(res, outdir="Images"):
         # RMS|r| / RMS(σ)  ≠  RMS(r/σ) unless σ is constant across the group.
         # Worst case here is SH degree 3: the plot reads 0.30, the actual
         # whitened statistic is 0.67.  The EXACT consistency numbers are the
-        # pre/post RMS in the panel titles, which are properly whitened.
+        # discrepancy-to-noise and post-fit residual rows of TABLE 4, which
+        # are properly whitened.
         y_pre, y_post, y_sig = rms(np.abs(pre)), rms(np.abs(post)), rms(d["sigma"])
-        rms_pre = np.sqrt(np.mean((pre / d["sigma"]) ** 2))
-        rms_post = np.sqrt(np.mean((post / d["sigma"]) ** 2))
         ax.plot(xs, y_sig, "-o", lw=1.6, color="0.30", zorder=2, label=r"1$\sigma$")
         ax.plot(
             xs,

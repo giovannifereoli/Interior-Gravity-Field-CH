@@ -1,97 +1,90 @@
 """
-Bennu Pre-TAG / Post-TAG — Cylindrical Harmonic Gravity Fitting (SI units)
-==========================================================================
-Estimates the mass moved by the OSIRIS-REx TAG event from the *difference*
-of cylindrical-harmonic gravity coefficients fitted before and after TAG,
-and validates the gravimetric estimate against the geometric ground truth
-(the DTM height change itself).
+Bennu Pre-TAG / Post-TAG — Cylindrical Harmonic Gravity Fitting
+===============================================================
+Estimates the mass moved by the OSIRIS-REx TAG event from the *difference* of
+cylindrical-harmonic coefficients fitted before and after TAG, and validates it
+against the geometric ground truth (the DTM height change itself).  Units are
+selected by the module-level `MODE` switch: "SI" (m, kg, s) or "NORM" (L_REF,
+RHO_REF, G = 1); every physical result is identical, only the numbers scale.
 
 Input data
 ----------
 `Bennu_preTag.obj` / `Bennu_afterTag.obj` are local DTM patches of the
-Nightingale TAG site (~44 m x 44 m, heights 0..9.5 m, y-up, metres).
-They are scan products: full of holes, with a detached bottom plate, and
-with slightly different extents — NOT directly usable as closed polyhedra.
+Nightingale site (~44 x 44 m, heights 0..9.5 m, y-up, metres).  They are scan
+products — holes, a detached bottom plate, slightly different extents — so NOT
+usable as closed polyhedra without rebuilding.
 
-Pipeline (all quantities SI: m, kg, s)
---------------------------------------
+Pipeline
+--------
 1.  Extract the terrain sheet from each OBJ, rotate to z-up.
-2.  Rasterise both onto ONE common (x, y) grid -> height maps h_pre, h_post.
-    A common grid guarantees a common frame: walls/bottom cancel exactly in
-    the pre/post difference.  (Per-mesh centring/scaling would corrupt Δg.)
-3.  Rebuild each state as a watertight "slab" polyhedron (top = terrain,
-    bottom z=0, side walls) -> valid input for the Tsoulis/Werner method.
-4.  Locate the TAG crater from Δh = h_post − h_pre; centre the analysis
-    cylinder there.  The harmonic expansion plane (the "sheet") is placed
-    at the mean pre-TAG surface height inside the footprint.  Field points
-    are drawn UNIFORMLY over the vacuum volume of the cylinder — constant
-    density per unit volume, with no coordinate deliberately over-sampled
-    (see `make_cylinder_field_points`).  Their lower bound follows the
-    LOCAL terrain (small clearance, point-by-point); inside the crater
-    bowl points may sit slightly below the sheet plane, which is fine
-    because the local Δ sources are still below them.
-5.  Evaluate polyhedral gravity (U [m²/s²], g [m/s²]) at identical field
-    points for both states  (polyhedral_gravity: U > 0, g = +∇U, verified).
-6.  Weighted least-squares fit of the cylindrical-harmonic coefficients
-    for each state (identical design matrix & weights) -> ΔA = A_post−A_pre.
-    Since LS is linear, this equals fitting the difference field directly:
-    every static source cancels exactly in Δc.  This is WHY only the local
-    DTM patch needs to be meshed even though the gravity inside the
-    cylinder is really dominated by the whole ~490 m asteroid: the TAG
-    event changed only the local site, so the entire unchanged bulk of
-    Bennu — inside the cylinder, outside it, or far away — contributes
-    IDENTICALLY to U_pre and U_post and vanishes in the difference.  The
-    weights are therefore built from the DIFFERENCE field (post − pre),
-    not the absolute pre field, because the absolute field is set by the
-    unchanged background (Bennu's gravity gradient across the site dwarfs
-    the local TAG signal) and would otherwise leak a few-% background-
-    dependent bias into ΔM (verified: absolute-field weights drift ΔM by
-    ~7 % as the modelled bulk deepens 0→500 m; difference-field weights
-    give an identical ΔM at every depth).  The fit is regularised by
-    truncated SVD (`cond`).  Caveat: this cancellation assumes the local
-    Δh map captures ALL the mass that moved — ejecta that landed beyond
-    the meshed patch, or mass redistributed to ρ > R*, is not counted.
+2.  Rasterise both onto ONE common (x, y) grid -> h_pre, h_post.  A common grid
+    guarantees a common frame, so walls/bottom cancel exactly in the pre/post
+    difference (per-mesh centring/scaling would corrupt Δg).
+3.  Rebuild each state as a watertight "slab" polyhedron (top = terrain, bottom
+    z = 0, side walls) -> valid input for the Tsoulis/Werner method.
+4.  Locate the TAG crater from Δh = h_post − h_pre and centre the analysis
+    cylinder there; the expansion plane (the "sheet") sits at the mean pre-TAG
+    height inside the footprint.  Field points are drawn UNIFORMLY over the
+    cylinder's vacuum volume — constant density per unit volume, no coordinate
+    over-sampled (see `make_cylinder_field_points`) — with a lower bound that
+    follows the LOCAL terrain (small clearance, point-by-point).  Inside the
+    crater bowl points may sit slightly below the sheet plane; harmless, since
+    the local Δ sources are still below them.
+5.  Evaluate polyhedral gravity (U, g) at identical field points for both
+    states (polyhedral_gravity: U > 0, g = +∇U, verified).
+6.  Weighted LS fit of the CH coefficients per state, identical design matrix
+    and weights -> ΔA = A_post − A_pre.  LS being linear, this equals fitting
+    the difference field directly: every static source cancels exactly in Δc.
+    That is WHY only the local patch needs meshing even though the field inside
+    the cylinder is dominated by the whole ~490 m asteroid — TAG changed only
+    the local site, so the unchanged bulk contributes IDENTICALLY to U_pre and
+    U_post.  The weights are likewise built from the DIFFERENCE field, not the
+    absolute pre field: the absolute field is set by the unchanged background
+    (Bennu's gradient across the site dwarfs the TAG signal) and would leak a
+    few-% background-dependent bias into ΔM (verified: absolute-field weights
+    drift ΔM ~7 % as the modelled bulk deepens 0→500 m; difference-field
+    weights give an identical ΔM at every depth).  Regularised by truncated SVD
+    (`cond`).  Caveat: the cancellation assumes the local Δh map captures ALL
+    the mass that moved — ejecta beyond the meshed patch, or mass moved to
+    ρ > R*, is not counted.
 
-    Validated against the geometric ground truth (3 draws, cond 1e-4,
-    uniform volume sampling, 0.5 m clearance):
+    Validated against the geometric truth (3 draws, cond 1e-4, uniform volume
+    sampling, 0.5 m clearance):
         (m,n) = (5,6)  → ΔM ratio 1.018 ± 0.021
         (m,n) = (6,8)  → ΔM ratio 1.012 ± 0.012   (default)
         (m,n) = (8,10) → collapses to 0.464 ± 0.060 (unobservable modes)
     The (8,10) collapse is the price of an unbiased sample: only ~2 % of a
-    uniform draw sits within one e-folding 1/k_max of the sheet, so the
-    shortest modes are not observed at all and the SVD cutoff discards
-    them.  The earlier altitude-biased sampler (z ∝ u², ~8 % of points
-    that low) held (8,10) at ≈ 0.78–0.88, but carried a slightly larger
-    ΔM bias at the default truncation: 1.024 ± 0.009 against 1.008 ± 0.019
-    over 5 draws, with the per-draw spread halved (0.9 % vs 1.9 %) and the
-    formal √Σ_ΔM 0.17 % against 0.29 %.  Unbiased sampling therefore trades
-    precision, and the headroom to raise the truncation, for a little less
-    bias.  The residual deficit at the default is bandlimit truncation plus
-    the thin-sheet approximation (sources spread ±1 m about the sheet).
-7.  Wahr-like inversion of ΔA -> ΔM [kg] and Δσ(ρ,φ) [kg/m²].
-8.  Ground truth from geometry: ΔM_true = ρ_bulk ∫∫ Δh dA (footprint),
-    Δσ_true = ρ_bulk Δh — direct validation of the inversion.
+    uniform draw sits within one e-folding 1/k_max of the sheet, so the shortest
+    modes are never observed and the SVD cutoff discards them.  An altitude-
+    biased sampler (z ∝ u², ~8 % of points that low) held (8,10) at ≈0.78–0.88
+    but carried more ΔM bias at the default truncation (1.024 ± 0.009 vs
+    1.008 ± 0.019 over 5 draws), with half the per-draw spread (0.9 % vs 1.9 %)
+    and formal √Σ_ΔM 0.17 % vs 0.29 %.  Unbiased sampling therefore trades
+    precision, and headroom to raise the truncation, for less bias.  The
+    residual deficit at the default is bandlimit truncation plus the thin-sheet
+    approximation (sources spread ±1 m about the sheet).
+7.  Wahr-like inversion of ΔA -> ΔM and Δσ(ρ,φ).
+8.  Geometric ground truth: ΔM_true = ρ_bulk ∫∫ Δh dA over the footprint,
+    Δσ_true = ρ_bulk Δh — a direct validation of the inversion.
 
 Formulae
 --------
-Basis (solves Laplace's eq. for sources below the sheet plane z = z0):
+Basis (solves Laplace for sources below the sheet plane z = z0):
     U(ρ,φ,z) = Σ_{m,n} J_m(k_mn ρ) exp(−k_mn (z−z0)) [A_mn cos mφ + B_mn sin mφ]
-    k_mn = j_{m,n} / (α R*),   α > 1  (Dirichlet zeros pushed to α R*)
+    k_mn = j_{m,n} / (α R*),   α > 1  (Dirichlet zeros pushed out to α R*)
 
 Gradients (g = +∇U, attraction convention, matches polyhedral_gravity):
-    g_ρ = ∂U/∂ρ = Σ k_mn J'_m(k_mn ρ) e^{−k_mn(z−z0)} [A cos + B sin]
-    g_φ = (1/ρ) ∂U/∂φ = Σ (m/ρ) J_m e^{−k_mn(z−z0)} [−A sin + B cos]
-    g_z = ∂U/∂z = Σ (−k_mn) J_m e^{−k_mn(z−z0)} [A cos + B sin]
+    g_ρ = ∂U/∂ρ      = Σ k_mn J'_m(k_mn ρ) e^{−k_mn(z−z0)} [A cos + B sin]
+    g_φ = (1/ρ)∂U/∂φ = Σ (m/ρ) J_m       e^{−k_mn(z−z0)} [−A sin + B cos]
+    g_z = ∂U/∂z      = Σ (−k_mn) J_m     e^{−k_mn(z−z0)} [A cos + B sin]
 
-Thin-sheet (Wahr-like) inversion — a surface-density mode
-σ_mn J_m(k ρ) e^{imφ} on the plane z = z0 generates, for z > z0,
-    U = (2πG σ_mn / k) J_m(kρ) e^{imφ} e^{−k(z−z0)}
-        ⇒  σ_mn = k_mn A_mn / (2πG)
-so
-    Δσ(ρ,φ) = 1/(2πG α R*) Σ_{m,n} j_{mn} J_m(k_mn ρ)[ΔA cos mφ + ΔB sin mφ]   [kg/m²]
-    ΔM(ρ<R*) = ∫Δσ dA = (R*/G) Σ_n J_1(j_{0n}/α) ΔA_{0n}                        [kg]
-(using ∫_0^{R*} J_0(k ρ) ρ dρ = (R*/k) J_1(k R*);  only m=0 survives ∫dφ).
-Both formulae are dimensionally consistent in SI.
+Thin-sheet (Wahr-like) inversion — a surface-density mode σ_mn J_m(kρ) e^{imφ}
+on z = z0 generates, for z > z0, U = (2πG σ_mn/k) J_m(kρ) e^{imφ} e^{−k(z−z0)},
+hence σ_mn = k_mn A_mn / (2πG) and
+    Δσ(ρ,φ) = 1/(2πG α R*) Σ_{m,n} j_{mn} J_m(k_mn ρ)[ΔA cos mφ + ΔB sin mφ]
+    ΔM(ρ<R*) = ∫Δσ dA = (R*/G) Σ_n J_1(j_{0n}/α) ΔA_{0n}
+(using ∫_0^{R*} J_0(kρ) ρ dρ = (R*/k) J_1(k R*); only m = 0 survives ∫dφ).
+Both are dimensionally consistent in either unit system.
 """
 
 import numpy as np
@@ -110,9 +103,70 @@ from polyhedral_gravity import Polyhedron, PolyhedronIntegrity, GravityEvaluable
 import time, os
 
 # ── physical constants (SI) ────────────────────────────────────────────────
-G_SI = 6.67430e-11  # m³ kg⁻¹ s⁻²
-RHO_BULK = 1190.0  # kg/m³  — Bennu bulk density (Lauretta et al. 2019)
-UGAL = 1.0e-8  # 1 µGal = 1e-8 m/s²
+# ═══════════════════════════════════════════════════════════════════════════
+# UNIT SYSTEM — the one switch that decides how the whole script computes
+# ═══════════════════════════════════════════════════════════════════════════
+# "SI"   : metres, kilograms, seconds; G carries its physical value.
+# "NORM" : dimensionless.  Three choices fix the system —
+#             L_REF    the length unit, the analysis cylinder radius, so R* = 1
+#                      and every length reads "in cylinder radii";
+#             RHO_REF  the density unit, Bennu's bulk density, so rho_bulk = 1;
+#             G = 1    the gravitational constant absorbed into the field scale.
+#          Then  x~ = x/L,  M~ = M/(rho L^3),  sigma~ = sigma/(rho L),
+#                U~ = U/(G rho L^2),  g~ = g/(G rho L),  and Poisson's equation
+#          becomes lap U~ = -4 pi rho~.  That single substitution is what strips
+#          G out of the inversion, the surface-density functional and the mass
+#          functional.  The estimator itself is scale-free — the design matrix,
+#          the Bessel basis and the weights were always dimensionless — so the
+#          recovery ratio DeltaM/DeltaM_true is comparable between the modes.
+#          Only `load_terrain_points` and `make_evaluable` touch a unit; nothing
+#          downstream ever sees one.
+MODE = "SI"  # "SI" or "NORM"
+
+G_SI = 6.67430e-11  # [m³/kg/s²]  the physical constant, always
+RHO_BULK_SI = 1190.0  # [kg/m³]  Bennu bulk density (Lauretta et al. 2019)
+R_STAR_SI = 8.0  # [m]  the cylinder radius, and NORM's length unit
+UGAL = 1.0e-8  # 1 µGal = 1e-8 m/s²  (SI only; see ACC_SCALE below)
+
+if MODE == "NORM":
+    L_REF, RHO_REF, G_W = R_STAR_SI, RHO_BULK_SI, 1.0
+elif MODE == "SI":
+    L_REF, RHO_REF, G_W = 1.0, 1.0, G_SI
+else:
+    raise ValueError(f"MODE must be 'SI' or 'NORM', got {MODE!r}")
+
+RHO_BULK = RHO_BULK_SI / RHO_REF  # 1190 in SI, exactly 1 in NORM
+PREFIX = "bennu_tag_" if MODE == "SI" else "bennu_tag_norm_"
+
+# multiply a working-unit quantity by these to get SI back
+TO_SI = dict(
+    length=L_REF,
+    area=L_REF**2,
+    volume=L_REF**3,
+    density=RHO_REF,
+    mass=RHO_REF * L_REF**3,
+    surface_density=RHO_REF * L_REF,
+    # U~ = U/(G rho L^2) and g~ = g/(G rho L); in SI every factor is 1 already
+    potential=1.0 if MODE == "SI" else G_SI * RHO_REF * L_REF**2,
+    acceleration=1.0 if MODE == "SI" else G_SI * RHO_REF * L_REF,
+    wavenumber=1.0 / L_REF,
+)
+
+# unit strings for labels and prints: empty in NORM, where nothing has units
+ACC_SCALE = UGAL if MODE == "SI" else 1.0
+
+# Unit strings.  _U is PLAIN TEXT, for the terminal; _UL is the same set in
+# mathtext, for figure labels.  Both collapse to "-" in NORM, where nothing in
+# the computation carries a unit.
+if MODE == "SI":
+    _U = dict(len="m", mass="kg", sd="kg/m²", dens="kg/m³", pot="m²/s²",
+              accraw="m/s²", acc="µGal", k="1/m")
+    _UL = dict(len="m", mass="kg", sd=r"kg/m$^2$", dens=r"kg/m$^3$",
+               pot=r"m$^2$/s$^2$", accraw=r"m/s$^2$", acc=r"$\mu$Gal",
+               k="1/m")
+else:
+    _U = _UL = dict(len="-", mass="-", sd="-", dens="-", pot="-",
+                    accraw="-", acc="-", k="-")
 
 # Okabe-Ito, the colour-vision-deficiency-safe palette used by the GLOBAL
 # scripts, in the same role order.  The previous set opened with #d7191c and
@@ -195,23 +249,26 @@ def load_terrain_points(path: str) -> np.ndarray:
     Load a TAG-site OBJ and return the terrain-sheet vertices in a z-up
     working frame [m].
 
-    The raw OBJs contain the terrain sheet, a detached flat bottom plate
-    (area ~1920 m² at y=0) and thousands of small scan fragments; only the
-    largest-area component (the terrain sheet) is kept.
+    The raw OBJs hold the terrain sheet, a detached flat bottom plate (~1920 m²
+    at y=0) and thousands of scan fragments; only the largest-area component
+    (the sheet) is kept.
 
-    Frame change  (x, y, z)_obj -> (x, −z, y):  y-up  ->  z-up
-    (equivalent to the +90° rotation about X used previously, but applied
-    identically to both meshes — NO per-mesh centring or scaling, so pre
-    and post stay in the SAME metric frame).
+    Frame change (x, y, z)_obj -> (x, −z, y): y-up -> z-up, a +90° rotation
+    about X applied identically to both meshes — NO per-mesh centring or
+    scaling, so pre and post stay in the SAME metric frame.
     """
     mesh = trimesh.load(path, force="mesh")
     comps = mesh.split(only_watertight=False)
     terrain = comps[np.argmax([c.area for c in comps])]
-    V = np.asarray(terrain.vertices, dtype=float)
+    # The one line in the script that touches a physical unit.  The OBJ is in
+    # metres; everything after this is in working units.  It is a single COMMON
+    # factor applied identically to both epochs, so unlike a per-mesh centring
+    # it cannot corrupt the pre/post difference.  L_REF = 1 in SI mode.
+    V = np.asarray(terrain.vertices, dtype=float) / L_REF
     return np.column_stack([V[:, 0], -V[:, 2], V[:, 1]])
 
 
-def common_grid(P_pre, P_post, grid_res=0.30, edge_margin=0.5):
+def common_grid(P_pre, P_post, grid_res=0.30 / L_REF, edge_margin=0.5 / L_REF):
     """
     Regular (x, y) grid over the intersection of both footprints [m].
 
@@ -227,7 +284,7 @@ def common_grid(P_pre, P_post, grid_res=0.30, edge_margin=0.5):
     return gx, gy, GX, GY
 
 
-def height_map(P, GX, GY, h_min=0.05):
+def height_map(P, GX, GY, h_min=0.05 / L_REF):
     """
     Rasterise scattered terrain vertices to a height map h(x, y) [m].
     Linear interpolation on the Delaunay triangulation fills the scan
@@ -277,7 +334,7 @@ def build_slab_mesh(h, gx, gy) -> trimesh.Trimesh:
     return mesh
 
 
-def locate_tag_site(dh, GX, GY, margin=3.0):
+def locate_tag_site(dh, GX, GY, margin=3.0 / L_REF):
     """
     TAG-site centre = |Δh|-weighted centroid of the excavated (Δh < 0)
     region, excluding a border strip of `margin` [m] (edge noise).
@@ -314,7 +371,10 @@ def make_evaluable(mesh: trimesh.Trimesh, density: float) -> GravityEvaluable:
             np.asarray(mesh.vertices, dtype=float),
             np.asarray(mesh.faces, dtype=int),
         ),
-        density=density,
+        # polyhedral_gravity applies the SI G internally.  Scaling the density
+        # by G_W/G_SI makes what comes back already in working units — a no-op
+        # in SI mode, and the 1/G_SI that defines the normalized field in NORM.
+        density=density * (G_W / G_SI),
         integrity_check=PolyhedronIntegrity.DISABLE,
     )
     return GravityEvaluable(poly)
@@ -343,7 +403,7 @@ def make_cylinder_field_points(
     R_star,
     H,
     h_itp,
-    clearance=0.5,
+    clearance=0.5 / L_REF,
     N=2000,
     seed=1,
 ):
@@ -351,27 +411,25 @@ def make_cylinder_field_points(
     N points drawn UNIFORMLY over the vacuum volume of the cylinder ρ < R_star,
     between the local terrain (+ `clearance`) and the top z = z_sheet + H.
 
-    "Uniform" here means constant density per unit VOLUME — no coordinate is
+    "Uniform" means constant density per unit VOLUME — no coordinate is
     deliberately over-sampled:
 
-        ρ = R*·√u     constant density per unit AREA.  (ρ = R*·u would instead
-                      pile points onto the axis: it is uniform per unit RADIUS,
-                      which is a density gradient, not an unbiased sample.)
+        ρ = R*·√u     constant density per unit AREA.  (ρ = R*·u is uniform per
+                      unit RADIUS, i.e. a density gradient piling points onto
+                      the axis — not an unbiased sample.)
         φ ~ U(0, 2π)
         z ~ U(z_lo, H), keeping only points above the LOCAL terrain.
 
     The rejection step is what makes this uniform rather than merely
     uniform-per-column: the terrain under the footprint varies by several metres
-    (~22 % of H for the TAG site), so giving every column the same number of
-    points would leave the deep parts of the crater ~1.3× less densely sampled
-    than the high ground.  Drawing z over one common range and rejecting what
-    falls below the terrain removes that gradient.
+    (~22 % of H here), so a fixed count per column would sample the deep crater
+    ~1.3× less densely than the high ground.  Drawing z over one common range
+    and rejecting below the terrain removes that gradient.
 
-    NOTE on observability: the CH modes decay as e^{−k_mn (z−z0)}, so a uniform
-    sample spends most of its points at altitudes where the short modes are
-    already negligible.  That is the price of an unbiased sample and it is
-    deliberate here; `clearance` still sets how close to the surface the lowest
-    points may come.
+    NOTE on observability: CH modes decay as e^{−k_mn (z−z0)}, so a uniform
+    sample spends most points at altitudes where the short modes are already
+    negligible.  That is the deliberate price of an unbiased sample;
+    `clearance` still sets how close to the surface the lowest points come.
 
     Returns
     -------
@@ -438,17 +496,16 @@ def cart_to_cyl_g(gx, gy, phi_pts):
 # ═══════════════════════════════════════════════════════════════════════════
 
 # Validated bandlimit target: k_max·R* for the (α=2, m_max=6, n_max=8) config
-# that was checked against geometric ground truth (ΔM ratio ≈ 0.96, module
-# docstring).  k_mn = j_{m,n}/(α R*) — α only sets WHERE the fictitious
-# Dirichlet boundary sits; n_max sets the highest wavenumber (resolution)
-# reachable at that α.  Raising α without raising n_max shrinks k_max
-# proportionally and the basis loses the ability to represent the crater
-# at all (empirically: α=100 with n_max=8 gives k_max·R* ≈ 0.3, i.e. a
-# shortest representable wavelength of ~340 m against a ~16 m crater —
-# the fit aliases noise into a wrong answer, ΔM ratio ≈ +1.25, not merely
-# "worse"). This is NOT a bug: it is the Bessel-series analogue of a
-# Nyquist limit. To use a large α "because physics wants the boundary far
-# away", n_max must grow ~linearly with α to keep the same resolution.
+# checked against geometric ground truth (ΔM ratio ≈ 0.96, module docstring).
+# k_mn = j_{m,n}/(α R*) — α only sets WHERE the fictitious Dirichlet boundary
+# sits; n_max sets the highest wavenumber (resolution) reachable at that α.
+# Raising α without raising n_max shrinks k_max proportionally and the basis
+# loses the ability to represent the crater at all (empirically: α=100 with
+# n_max=8 gives k_max·R* ≈ 0.3, a shortest representable wavelength of ~340 m
+# against a ~16 m crater — the fit aliases noise into a wrong answer, ΔM ratio
+# ≈ +1.25, not merely "worse").  This is NOT a bug but the Bessel-series
+# analogue of a Nyquist limit: a large α "because physics wants the boundary far
+# away" requires n_max to grow ~linearly with α to hold the resolution.
 KR_TARGET_DEFAULT = 12.0
 
 
@@ -519,18 +576,16 @@ def make_weights(U, gr, gphi, gz, U2=None, gr2=None, gphi2=None, gz2=None):
     the unit system).  The SAME weight vector is used for the pre and post
     fits so that Δc = c_post − c_pre stays meaningful.
 
-    If the post-TAG fields (U2, gr2, ...) are supplied, the weights are
-    built from the DIFFERENCE field (post − pre) rather than the absolute
-    pre-TAG field.  This matters physically: the field inside the cylinder
-    is dominated by the WHOLE asteroid (Bennu is ~490 m across, not 16 m),
-    whose gravity gradient over the TAG site is far larger than the local
-    TAG signal — so absolute-field weights are set by unchanged background
-    mass, not by the change we are trying to measure, and the recovered ΔM
-    then drifts by a few % depending on how much of Bennu is meshed.  The
-    difference field cancels every static source exactly (verified: ΔU is
-    bit-identical whether the slab bottom sits at 0 m or −500 m), so
-    difference-field weights make ΔM INVARIANT to all mass outside that
-    did not move — which is the correct behaviour for a change detector.
+    If the post-TAG fields (U2, gr2, ...) are supplied, the weights come from
+    the DIFFERENCE field (post − pre), not the absolute pre-TAG field.  This
+    matters physically: the field inside the cylinder is dominated by the WHOLE
+    asteroid (~490 m across, not 16 m), whose gradient over the site far exceeds
+    the local TAG signal — so absolute-field weights are set by unchanged
+    background mass rather than by the change being measured, and ΔM then drifts
+    a few % with how much of Bennu is meshed.  The difference field cancels
+    every static source exactly (verified: ΔU is bit-identical with the slab
+    bottom at 0 m or −500 m), so difference-field weights make ΔM INVARIANT to
+    all mass that did not move — correct behaviour for a change detector.
     """
     rms = lambda v: np.sqrt(np.mean(v**2)) + 1e-30
     if U2 is not None:  # difference-field weights (background-invariant)
@@ -575,9 +630,8 @@ def wahr_invert(
         Δσ(ρ,φ)  = 1/(2πG αR*) Σ_{m,n} j_mn J_m(k_mn ρ)[ΔA cos mφ + ΔB sin mφ]
         ΔM(ρ<R*) = (R*/G) Σ_n J_1(j_0n/α) ΔA_0n
 
-    ΔM is the integral of Δσ over the cylinder FOOTPRINT (ρ < R*); mass
-    change in the buffer annulus R* < ρ < αR* is representable by the
-    basis but not counted here.
+    ΔM integrates Δσ over the cylinder FOOTPRINT (ρ < R*); mass change in the
+    buffer annulus R* < ρ < αR* is representable by the basis but not counted.
 
     Returns delta_M [kg], sigma_map [kg/m²] (n_rho, n_phi), RHO, PHI [m, rad].
     """
@@ -587,13 +641,13 @@ def wahr_invert(
     for n in range(1, n_max + 1):
         j0n = zeros_dict[0][n - 1]
         col = 2 * (0 * n_max + (n - 1))
-        delta_M += (R_star / G_SI) * BesselJ(1, j0n / alpha) * delta_coeffs[col]
+        delta_M += (R_star / G_W) * BesselJ(1, j0n / alpha) * delta_coeffs[col]
 
     rho_1d = np.linspace(0.02 * R_star, 0.98 * R_star, n_rho)
     phi_1d = np.linspace(0, 2 * np.pi, n_phi, endpoint=False)
     RHO, PHI = np.meshgrid(rho_1d, phi_1d, indexing="ij")
     sigma_map = np.zeros_like(RHO)
-    pref = 1.0 / (2.0 * np.pi * G_SI * R_alpha)
+    pref = 1.0 / (2.0 * np.pi * G_W * R_alpha)
 
     for m in range(m_max):
         for n in range(1, n_max + 1):
@@ -622,12 +676,11 @@ def wahr_invert(
 #     q = f_qᵀ ΔCS          ⇒        Σ_q = f_qᵀ Σ_ΔCS f_q ,
 #
 # for q ∈ {Δσ(ρ,φ), ΔM}.  Nothing is linearized: unlike the global estimator,
-# which has to be expanded about a reference state before its covariance can be
-# written, these covariances are EXACT consequences of Σ_ΔCS.  They describe
-# dispersion only — the truncation bias, the mass that left the footprint, and
-# the thin-sheet idealization are systematic and invisible to them, so a quoted
-# √Σ_ΔM is a LOWER BOUND on the total error.  The whole analysis therefore
-# reduces to writing down f_Δσ and f_ΔM, which is what this section does.
+# which must be expanded about a reference state first, these covariances are
+# EXACT consequences of Σ_ΔCS.  They describe dispersion only — truncation bias,
+# mass that left the footprint, and the thin-sheet idealization are systematic
+# and invisible to them, so a quoted √Σ_ΔM is a LOWER BOUND on the total error.
+# The analysis thus reduces to writing down f_Δσ and f_ΔM, as done below.
 
 
 def projection_matrix(A_des, W, cond=CH_COND):
@@ -656,15 +709,15 @@ def diff_field_variance(
     Diagonal of Σ_Δy, the covariance of the DIFFERENCED field samples.
 
     Route A (default — `meas_rel`).  Book the precision on the difference
-    directly:  σ_i = meas_rel / W_i.  W is 1/RMS of the Δ-field for each
-    observable type, so this reads "the epoch-to-epoch INDEPENDENT error of each
-    sample is meas_rel of the RMS of the signal being measured".  It also makes
-    the fit's own weights the whitening matrix, W = Σ_Δy^{-1/2}/meas_rel, so the
-    information form  Σ_ΔCS = 2(Ψᵀ Σ_y⁻¹ Ψ)⁻¹  applies exactly.
+    directly: σ_i = meas_rel / W_i, with W = 1/RMS of the Δ-field per observable
+    type — "each sample's epoch-to-epoch INDEPENDENT error is meas_rel of the
+    RMS of the signal being measured".  It also makes the fit's own weights the
+    whitening matrix, W = Σ_Δy^{-1/2}/meas_rel, so the information form
+    Σ_ΔCS = 2(Ψᵀ Σ_y⁻¹ Ψ)⁻¹ applies exactly.
 
     Route B (`epoch_rel` with `y_pre`, `y_post`).  Book it per epoch on the
     ABSOLUTE field, σ_pre = epoch_rel·RMS(y_pre) per observable type, and remove
-    the common-mode part through the cross-covariance:
+    the common mode through the cross-covariance:
 
         Σ_Δy = σ_pre² + σ_post² − 2 ρ σ_pre σ_post ,    ρ = `rho_epoch` ∈ [0,1)
 
@@ -706,7 +759,7 @@ def sigma_functional(RHO, PHI, R_alpha, m_max, n_max, zeros_dict):
         cm, sm = np.cos(m * ph), np.sin(m * ph)
         for n in range(1, n_max + 1):
             kmn = zeros_dict[m][n - 1] / R_alpha
-            base = kmn / (2.0 * np.pi * G_SI) * BesselJ(m, kmn * r)
+            base = kmn / (2.0 * np.pi * G_W) * BesselJ(m, kmn * r)
             col = 2 * (m * n_max + (n - 1))
             F[:, col] = base * cm
             F[:, col + 1] = base * sm
@@ -718,19 +771,18 @@ def mass_functional(R_star, alpha, m_max, n_max, zeros_dict):
     f_ΔM ∈ R^{N_k}:  f_0n = (R*/G) J₁(j_{0,n}/α)  on the ZONAL COSINE entries,
     zero everywhere else.
 
-    Two properties of this vector explain why ΔM survives what destroys the
-    pointwise map.  (i) The azimuthal integration annihilates every m ≥ 1 mode
-    exactly, so the N_k − N_c coefficients that carry the localized structure —
-    and that are amplified hardest in Σ_Δσ — do not enter Σ_ΔM at all.  (ii) The
-    entries carry NO factor k_0n, where those of f_Δσ carry one apiece: the k
-    from the differentiation is cancelled term by term by the 1/k from the radial
-    integration.  The weights are therefore bounded by 0.5819·R*/G (the maximum
-    of J₁) and decay only as n^{-1/2}, so coefficient errors enter the mass
-    essentially unamplified.
+    Two properties explain why ΔM survives what destroys the pointwise map.
+    (i) Azimuthal integration annihilates every m ≥ 1 mode exactly, so the
+    N_k − N_c coefficients carrying the localized structure — the ones amplified
+    hardest in Σ_Δσ — never enter Σ_ΔM.  (ii) The entries carry NO factor k_0n,
+    where those of f_Δσ carry one apiece: the k from the differentiation is
+    cancelled term by term by the 1/k from the radial integration.  The weights
+    are therefore bounded by 0.5819·R*/G (max of J₁) and decay only as n^{-1/2},
+    so coefficient errors enter the mass essentially unamplified.
     """
     f = np.zeros(2 * m_max * n_max)
     for n in range(1, n_max + 1):
-        f[2 * (0 * n_max + (n - 1))] = (R_star / G_SI) * BesselJ(
+        f[2 * (0 * n_max + (n - 1))] = (R_star / G_W) * BesselJ(
             1, zeros_dict[0][n - 1] / alpha
         )
     return f
@@ -875,23 +927,23 @@ def covariance_report(cov, res, verbose=True):
         f"(cond={cov['cond']:.0e}, smallest kept s/s_max = {cov['s_ratio']:.1e})"
     )
     print(
-        f"    √Σ_ΔM           = {sd:.3e} kg   "
-        f"({100*sd/abs(dM):.2f} % of ΔM = {dM:+.3e} kg)"
+        f"    √Σ_ΔM           = {sd:.3e} {_U['mass']}   "
+        f"({100*sd/abs(dM):.2f} % of ΔM = {dM:+.3e} {_U['mass']})"
     )
-    print(f"    ΔM = {dM:+.3e} ± {sd:.2e} kg  (1σ, formal)")
+    print(f"    ΔM = {dM:+.3e} ± {sd:.2e} {_U['mass']}  (1σ, formal)")
     scale = cov["meas_rel"] if cov["epoch_rel"] is None else cov["epoch_rel"]
     print(
         f"      Σ_ΔM is quadratic in the assumed precision, so √Σ_ΔM is LINEAR in it:"
-        f"\n      {sd/(100*scale):.2e} kg per 1% — rescale rather than re-running."
+        f"\n      {sd/(100*scale):.2e} {_U['mass']} per 1% — rescale rather than re-running."
     )
     sm = cov["sigma_map_1sig"]
     print(
         f"    √Σ_Δσ pointwise : centre {sm[0].mean():.1f}, median "
-        f"{np.median(sm):.1f}, max {sm.max():.1f} kg/m²  "
-        f"(map peak |Δσ| = {np.abs(res['sigma_map']).max():.0f} kg/m²)"
+        f"{np.median(sm):.1f}, max {sm.max():.1f} {_U['sd']}  "
+        f"(map peak |Δσ| = {np.abs(res['sigma_map']).max():.0f} {_U['sd']})"
     )
     print(
-        f"    WRONG route ∫√Σ_Δσ dA = {cov['naive_dM']:.3e} kg — "
+        f"    WRONG route ∫√Σ_Δσ dA = {cov['naive_dM']:.3e} {_U['mass']} — "
         f"{cov['naive_dM']/sd:.0f}× the correct √Σ_ΔM: it sums standard"
     )
     print(
@@ -900,7 +952,7 @@ def covariance_report(cov, res, verbose=True):
     )
 
     md = cov["modal"]
-    bound = 0.5819 * R_star / G_SI
+    bound = 0.5819 * R_star / G_W
     print(
         f"\n    zonal weights f_0n (the only ones ΔM sees): "
         f"|f| ≤ {np.abs(md['f0n']).max():.3e} vs bound 0.5819·R*/G = {bound:.3e}"
@@ -947,7 +999,7 @@ def covariance_report(cov, res, verbose=True):
     )
     print(
         f"      so the errors are correlated: 1/e correlation length "
-        f"{cov['corr_len']:.2f} m vs shortest\n      retained wavelength "
+        f"{cov['corr_len']:.2f} {_U['len']} vs shortest\n      retained wavelength "
         f"2π/k_max = {cov['lam_min']:.2f} m.  Refining the grid does not buy "
         f"independent points."
     )
@@ -1038,9 +1090,10 @@ def latex_tables(res, cov=None):
         print("\n  % Table — Monte-Carlo verification of the analytic covariance")
         r_dM = mc["mc_sigma_dM"] / mc["an_sigma_dM"]
         rat = mc["mc_sigma_map"] / np.maximum(mc["an_sigma_map"], 1e-300)
-        tol = 100.0 / np.sqrt(2.0 * mc["n_mc"])
+        tol = 100.0 / np.sqrt(2.0 * mc["n_map"])   # the map is the shallower one
         for lab, v, u in [
-            ("Noise realizations", mc["n_mc"], "--"),
+            ("Noise realizations, $\\Delta M$", mc["n_mc"], "--"),
+            ("Noise realizations, map", mc["n_map"], "--"),
             ("MC $\\sqrt{\\Sigma_{\\Delta M}}$", mc["mc_sigma_dM"], "kg"),
             ("Analytic $\\sqrt{\\Sigma_{\\Delta M}}$", mc["an_sigma_dM"], "kg"),
             ("Ratio MC/analytic", r_dM, "--"),
@@ -1062,7 +1115,7 @@ def latex_tables(res, cov=None):
         )
 
 
-def covariance_mc(res, cov, n_mc=4000, seed=3):
+def covariance_mc(res, cov, n_mc=40000, n_map=4000, seed=3):
     """
     Monte-Carlo check of the analytic covariance chain.
 
@@ -1072,131 +1125,126 @@ def covariance_mc(res, cov, n_mc=4000, seed=3):
     and compare the realized spread against Sigma_dM and diag(Sigma_dsigma).
 
     Nothing here re-derives the covariance: it re-measures it.  The propagation
-    is exact linear algebra, so agreement is expected to sampling precision;
-    what the test can actually catch is an implementation error -- a wrong
-    column ordering in F_sigma or f_dM, a stale M, a mis-scaled var_dy -- which
-    is exactly the class of bug that would otherwise pass unnoticed because the
-    analytic number looks perfectly reasonable on its own.
+    is exact linear algebra, so agreement is expected to sampling precision.
+    What the test catches is an implementation error -- wrong column ordering in
+    F_sigma or f_dM, a stale M, a mis-scaled var_dy -- the class of bug that
+    would otherwise pass unnoticed because the analytic number looks perfectly
+    reasonable on its own.
 
     Errors here are GAUSSIAN, unlike the positive RMS quantities of the GLOBAL
-    scripts: dM is a fixed linear functional of Gaussian sample noise, so a
-    normal overlay is the right reference, not a log-normal.
+    scripts: dM is a fixed linear functional of Gaussian sample noise, so the
+    right reference overlay is normal, not log-normal.
     """
     rng = np.random.default_rng(seed)
     sd_y = np.sqrt(cov["var_dy"])
-    # noise-only coefficient realizations: dCS = M (dy + n) - M dy = M n
+    # noise-only coefficient realizations: dCS = M (dy + n) - M dy = M n.
+    # E is (N_k x n_mc) and tiny, and dM is one inner product against it, so the
+    # mass histogram is essentially free — hence n_mc large.  The MAP costs
+    # F_sigma @ E, which is (N_grid x n) and hundreds of megabytes, so it uses
+    # the first n_map columns only: same realizations, shallower.
     E = cov["M"] @ (rng.normal(size=(sd_y.size, n_mc)) * sd_y[:, None])
     dM_err = cov["f_dM"] @ E  # (n_mc,)
-    map_err = cov["F_sigma"] @ E  # (N_g, n_mc)
+    n_map = min(n_map, n_mc)
+    map_err = cov["F_sigma"] @ E[:, :n_map]  # (N_g, n_map)
+    an_map = np.ravel(cov["sigma_map_1sig"])
     return dict(
         dM_err=dM_err,
         mc_sigma_dM=float(dM_err.std(ddof=1)),
         an_sigma_dM=float(cov["sigma_dM"]),
         mc_sigma_map=map_err.std(axis=1, ddof=1),
-        an_sigma_map=np.ravel(cov["sigma_map_1sig"]),
+        an_sigma_map=an_map,
         n_mc=n_mc,
+        n_map=n_map,
     )
 
 
-def plot_covariance_mc(res, cov, outdir="Images", n_mc=4000, mc=None):
+def plot_covariance_mc(res, cov, outdir="Images", n_mc=40000, n_map=4000,
+                       mc=None):
     """
-    One panel per product of the inversion, each verifying its own covariance.
+    The predicted 1-sigma map of Delta sigma against the one the Monte-Carlo
+    actually produces, and their ratio.
 
-      LEFT   Delta sigma, the density MAP.  Every grid point's realized spread
-             against the analytic sqrt(Sigma_dsigma) it was predicted to have,
-             on the 1:1 line, with the ratio distribution inset.  This is the
-             pointwise statement: does F Sigma_dCS F^T describe the map errors
-             point by point?
-      RIGHT  Delta M, the moved MASS.  The realized error distribution against
-             the analytic N(0, Sigma_dM).  This is the scalar statement, and it
-             is NOT implied by the left panel: DeltaM is a quadratic form over
-             the whole coefficient covariance, off-diagonals included, and the
-             map's pointwise variances alone would give the wrong answer by 8x
-             (the "wrong route" line in the covariance report).
+      LEFT    ANALYTIC   sqrt(diag(F Sigma_dCS F^T)), the pointwise 1-sigma the
+              covariance predicts, before any sampling.
+      MIDDLE  NUMERICAL  the spread of `n_map` noise realizations pushed through
+              the same inversion, measured point by point.
+      RIGHT   their RATIO, on a scale centred at 1.  Agreement means the two
+              differ only by Monte-Carlo scatter, of size 1/sqrt(2 n_map) at
+              this many draws; the colour range is four times that, so anything
+              structural would be unmistakable.
 
-    `mc` lets the caller pass an already-computed `covariance_mc` result — the
-    tables need those numbers before the figures are drawn, and the map-error
-    array is (N_grid x n_mc), so computing it twice is neither free nor small.
+    The two maps share one colour scale for direct comparison; the ratio keeps
+    its own, living in a narrow band about unity.
     """
-    mc = covariance_mc(res, cov, n_mc=n_mc) if mc is None else mc
-    C = COLOR_PALETTE
-    fig, axes = plt.subplots(1, 2, figsize=(12.6, 5.0), gridspec_kw={"wspace": 0.28})
+    mc = covariance_mc(res, cov, n_mc=n_mc, n_map=n_map) if mc is None else mc
+    RHO, PHI, R = res["RHO"], res["PHI"], res["R_star"]
+    Xp, Yp = RHO * np.cos(PHI), RHO * np.sin(PHI)
+    _wrap = lambda A: np.column_stack([A, A[:, :1]])
+    Xw, Yw = _wrap(Xp), _wrap(Yp)
+    tc = np.linspace(0, 2 * np.pi, 200)
 
-    # ── LEFT: the MAP covariance, point by point ──────────────────────────
-    ax = axes[0]
-    an, mcs = mc["an_sigma_map"], mc["mc_sigma_map"]
-    ax.scatter(
-        an, mcs, s=5, color=C[2], alpha=0.30, lw=0, rasterized=True, label="Grid points"
-    )
-    lim = [min(an.min(), mcs.min()) * 0.85, max(an.max(), mcs.max()) * 1.15]
-    ax.plot(lim, lim, "k--", lw=1.6, zorder=4, label="1:1")
-    ax.set_xscale("log")
-    ax.set_yscale("log")
-    ax.set_xlim(lim)
-    ax.set_ylim(lim)
-    ax.set_aspect("equal")
-    ax.set_xlabel(r"Analytic $\sqrt{\Sigma_{\Delta\sigma}}$  [kg/m$^2$]")
-    ax.set_ylabel(r"MC $\sqrt{\Sigma_{\Delta\sigma}}$  [kg/m$^2$]")
-    ax.grid(True, which="both", alpha=0.22)
-    ax.legend(fontsize=9, loc="upper left")
+    an = mc["an_sigma_map"].reshape(RHO.shape)
+    nu = mc["mc_sigma_map"].reshape(RHO.shape)
+    ratio = nu / np.maximum(an, 1e-300)
+    tol = 1.0 / np.sqrt(2.0 * mc["n_map"])
 
-    axin = ax.inset_axes([0.60, 0.10, 0.36, 0.28], facecolor="white")
-    axin.set_zorder(6)
-    axin.patch.set_alpha(0.95)
-    ratio = mcs / np.maximum(an, 1e-300)
-    axin.hist(ratio, bins=45, color=C[2], alpha=0.8, edgecolor="k", lw=0.3)
-    axin.axvline(1.0, color="k", lw=1.4)
-    # the precision n_mc draws buy on a standard deviation
-    tol = 1.0 / np.sqrt(2.0 * mc["n_mc"])
-    axin.axvspan(1 - tol, 1 + tol, color="0.5", alpha=0.30, lw=0)
-    axin.set_yticks([])
-    axin.tick_params(labelsize=6.5)
-    axin.set_xlabel("MC / analytic  [-]", fontsize=7)
+    # TWO figures, not one row of four.  Delta sigma is a field and needs
+    # three maps; DeltaM is a scalar and needs one histogram.  Forcing them
+    # onto one row squeezed the maps and left the histogram in a cell of the
+    # wrong shape.  Split, and each gets the aspect it wants.
+    fig, axes = plt.subplots(
+        1, 3, figsize=(16.5, 5.0), gridspec_kw={"wspace": 0.40}
+    )
+    CBAR = dict(fraction=0.046, pad=0.03)
+    vmax = max(an.max(), nu.max())
+    for ax, mp, lab in (
+        (axes[0], an, rf"Analytic $\sqrt{{\Sigma_{{\Delta\sigma}}}}$  [{_UL['sd']}]"),
+        (axes[1], nu, rf"Monte-Carlo $\sqrt{{\Sigma_{{\Delta\sigma}}}}$  [{_UL['sd']}]"),
+    ):
+        c = ax.pcolormesh(Xw, Yw, _wrap(mp)[:-1, :-1], cmap="viridis",
+                          shading="flat", vmin=0.0, vmax=vmax)
+        fig.colorbar(c, ax=ax, **CBAR).set_label(lab)
 
-    # ── RIGHT: the MASS covariance ────────────────────────────────────────
-    ax = axes[1]
-    e, sd = mc["dM_err"], mc["an_sigma_dM"]
-    ax.hist(
-        e,
-        bins=48,
-        density=True,
-        color=C[0],
-        alpha=0.78,
-        edgecolor="k",
-        lw=0.4,
-        label="MC realizations",
-    )
-    x = np.linspace(e.min(), e.max(), 400)
-    ax.plot(
-        x,
-        np.exp(-0.5 * (x / sd) ** 2) / (sd * np.sqrt(2 * np.pi)),
-        color="k",
-        lw=2.2,
-        zorder=4,
-        label=r"Analytic $N(0,\Sigma_{\Delta M})$",
-    )
-    for k in (-1, 1):
-        ax.axvline(
-            k * sd,
-            color="0.30",
-            ls="--",
-            lw=1.5,
-            zorder=3,
-            label=r"Analytic $\pm\sqrt{\Sigma_{\Delta M}}$" if k == 1 else None,
-        )
-    ax.set_xlabel(r"$\widehat{\Delta M}-\Delta M$  [kg]")
-    ax.set_ylabel("Density  [1/kg]")
-    ax.grid(True, alpha=0.22)
-    ax.set_axisbelow(True)
-    ax.legend(fontsize=9)
+    cr = axes[2].pcolormesh(Xw, Yw, _wrap(ratio)[:-1, :-1], cmap="RdBu_r",
+                            shading="flat", vmin=1 - 4 * tol, vmax=1 + 4 * tol)
+    fig.colorbar(cr, ax=axes[2], **CBAR).set_label("Monte-Carlo / analytic  [-]")
+    for ax in axes[:3]:
+        ax.plot(R * np.cos(tc), R * np.sin(tc), "k--", lw=1.2, alpha=0.65)
+        ax.set_aspect("equal")
+        ax.set_xlabel(rf"$x-x_0$  [{_UL['len']}]")
+        ax.set_ylabel(rf"$y-y_0$  [{_UL['len']}]")
 
     if outdir:
         os.makedirs(outdir, exist_ok=True)
-        fig.savefig(
-            os.path.join(outdir, "bennu_tag_fig4_covariance_mc.pdf"),
+        fig.savefig(os.path.join(outdir, PREFIX + "fig4_covariance_map.pdf"),
+                    bbox_inches="tight")
+
+    # ── the mass, on its own: a scalar, so one histogram against its predicted
+    # Gaussian.  Kept in kg rather than normalized — the kilograms make the size
+    # of the uncertainty readable straight off the axis.
+    fig_m, ax = plt.subplots(figsize=(7.4, 5.0))
+    e, sd = mc["dM_err"], mc["an_sigma_dM"]
+    ax.hist(e, bins=60, density=True, color=COLOR_PALETTE[0], alpha=0.78,
+            edgecolor="k", lw=0.3, label="Monte-Carlo realizations")
+    xg = np.linspace(e.min(), e.max(), 400)
+    ax.plot(xg, np.exp(-0.5 * (xg / sd) ** 2) / (sd * np.sqrt(2 * np.pi)),
+            color="k", lw=2.2, zorder=4,
+            label=r"Analytic $N(0,\Sigma_{\Delta M})$")
+    for k in (-1, 1):
+        ax.axvline(k * sd, color="0.30", ls="--", lw=1.5, zorder=3,
+                   label=r"Analytic $\pm\sqrt{\Sigma_{\Delta M}}$" if k == 1
+                   else None)
+    ax.set_xlabel(rf"$\widehat{{\Delta M}}-\Delta M$  [{_UL['mass']}]")
+    ax.set_ylabel(f"PDF  [1/{_U['mass']}]")
+    ax.grid(True, alpha=0.22)
+    ax.set_axisbelow(True)
+    ax.legend(fontsize=9)
+    if outdir:
+        fig_m.savefig(
+            os.path.join(outdir, PREFIX + "fig5_covariance_mass.pdf"),
             bbox_inches="tight",
         )
-    return fig, mc
+    return fig, fig_m, mc
 
 
 def _selftest_covariance(res, cov):
@@ -1233,12 +1281,12 @@ def _selftest_covariance(res, cov):
 def run_bennu_tag(
     path_pre: str = "3dmeshes/Bennu_preTag.obj",
     path_post: str = "3dmeshes/Bennu_afterTag.obj",
-    density: float = RHO_BULK,  # bulk density [kg/m³]
+    density: float = RHO_BULK,  # bulk density (1 in NORM)
     grid_res: float = 0.30,  # DTM raster resolution [m]
     # Cylinder / basis parameters (SI metres)
     site_center=None,  # (x, y) [m]; None → auto-detect from Δh
-    R_star: float = 8.0,  # cylinder radius [m]
-    H: float = 16.0,  # cylinder height above sheet [m]
+    R_star: float = R_STAR_SI / L_REF,  # cylinder radius (1 in NORM)
+    H: float = 16.0 / L_REF,  # cylinder height above the sheet
     clearance: float = 0.5,  # local terrain clearance of field points [m]
     alpha: float = 2.0,  # Bessel extension — boundary-placement only (α > 1)
     m_max: int = 6,  # azimuthal orders 0..m_max−1
@@ -1257,29 +1305,27 @@ def run_bennu_tag(
     verbose: bool = True,
 ):
     """
-    Full pre/post TAG pipeline in SI units.  Returns a dict with all
-    intermediate and final results (see bottom of function).
+    Full pre/post TAG pipeline in the unit system selected by `MODE`.  Returns
+    a dict of all intermediate and final results (see bottom of function).
 
-    `n_ensemble` > 1 repeats field-point generation + gravity + LS fit for
-    `n_ensemble` independent seeds (seed, seed+1, ...) and reports ΔM as a
-    mean ± standard deviation over the ensemble, instead of a single
-    Monte-Carlo draw.  This does NOT remove the systematic bandlimit /
-    thin-sheet bias (validated ≈ 4-5 % low against geometric truth at
-    m_max=6, n_max=8) — it only replaces a single, possibly lucky/unlucky
-    draw with an honest estimate of the fit's Monte-Carlo scatter (± 1-2 %
-    at n_ensemble=5).  The returned `sigma_map`/plots use the ensemble-
-    averaged coefficients; all other diagnostics come from the first draw.
+    `n_ensemble` > 1 repeats field-point generation + gravity + LS fit for that
+    many independent seeds (seed, seed+1, ...) and reports ΔM as a mean ± sd
+    over the ensemble instead of a single draw.  This does NOT remove the
+    systematic bandlimit / thin-sheet bias (validated ≈ 4-5 % low against
+    geometric truth at m_max=6, n_max=8) — it replaces one possibly lucky draw
+    with an honest estimate of the fit's Monte-Carlo scatter (± 1-2 % at
+    n_ensemble=5).  `sigma_map`/plots use the ensemble-averaged coefficients;
+    all other diagnostics come from the first draw.
 
-    On α and n_max: k_mn = j_{m,n}/(α R*) — α only sets where the
-    fictitious Dirichlet boundary sits, n_max sets the highest wavenumber
-    (spatial resolution) reachable at that α.  Raising α without raising
-    n_max shrinks k_max proportionally and silently destroys resolution
-    (validated: α=100 with n_max=8 gives a shortest representable
-    wavelength of ~340 m against a ~16 m crater and a wrong ΔM, not just a
-    noisier one).  Pass `n_max="auto"` to have n_max computed from α so
-    that k_max·R* ≥ `k_target_R` is preserved automatically (see
-    `required_n_max`); with an explicit int n_max, an under-resolved
-    combination raises instead of silently returning garbage.
+    On α and n_max: k_mn = j_{m,n}/(α R*) — α only sets where the fictitious
+    Dirichlet boundary sits, n_max sets the highest wavenumber (resolution)
+    reachable at that α.  Raising α without raising n_max shrinks k_max
+    proportionally and silently destroys resolution (validated: α=100 with
+    n_max=8 gives a shortest representable wavelength of ~340 m against a ~16 m
+    crater, and a wrong ΔM rather than merely a noisier one).  `n_max="auto"`
+    derives n_max from α so that k_max·R* ≥ `k_target_R` holds automatically
+    (see `required_n_max`); with an explicit int, an under-resolved combination
+    raises instead of silently returning garbage.
     """
     if verbose:
         print(SEP)
@@ -1303,12 +1349,12 @@ def run_bennu_tag(
     if verbose:
         print(f"    grid: {len(gx)} × {len(gy)} @ {grid_res} m")
         print(
-            f"    pre : {len(mesh_pre.faces):6d} faces, V = {mesh_pre.volume:9.2f} m³"
+            f"    pre : {len(mesh_pre.faces):6d} faces, V = {mesh_pre.volume:9.2f} {_U['len']}³"
         )
         print(
-            f"    post: {len(mesh_post.faces):6d} faces, V = {mesh_post.volume:9.2f} m³"
+            f"    post: {len(mesh_post.faces):6d} faces, V = {mesh_post.volume:9.2f} {_U['len']}³"
         )
-        print(f"    total ΔV (patch)  = {mesh_post.volume - mesh_pre.volume:+8.2f} m³")
+        print(f"    total ΔV (patch)  = {mesh_post.volume - mesh_pre.volume:+8.2f} {_U['len']}³")
 
     # ── 2. TAG SITE & CYLINDER GEOMETRY ────────────────────────────────
     if site_center is None:
@@ -1339,7 +1385,7 @@ def run_bennu_tag(
             raise ValueError(
                 f"α={alpha}, m_max={m_max}, n_max={n_max} gives k_max·R* = "
                 f"{k_max_R:.2f}, below the {k_target_R} needed to resolve "
-                f"this crater (~{R_star:.0f} m radius) — the fit would "
+                f"this crater (~{R_star:.0f} {_U['len']} radius) — the fit would "
                 f"alias, not just get noisier (validated failure mode: "
                 f"ΔM comes out with the wrong sign/magnitude, not merely "
                 f"attenuated). Raising α increases the required n_max "
@@ -1355,9 +1401,9 @@ def run_bennu_tag(
         print(f"\n[2] TAG site (auto): ({cx:+.2f}, {cy:+.2f}) m")
         print(f"    cylinder R* = {R_star} m, H = {H} m, α = {alpha}, n_max = {n_max}")
         print(f"    sheet plane z0 = {z_sheet:.2f} m")
-        print(f"    GROUND TRUTH  ΔV(ρ<R*) = {dV_foot:+.2f} m³")
-        print(f"                  ΔM(ρ<R*) = {dM_true:+.4e} kg  (ρ={density} kg/m³)")
-        print(f"                  ΔV(patch) = {dV_total:+.2f} m³")
+        print(f"    GROUND TRUTH  ΔV(ρ<R*) = {dV_foot:+.2f} {_U['len']}³")
+        print(f"                  ΔM(ρ<R*) = {dM_true:+.4e} {_U['mass']}  (ρ={density} {_U['dens']})")
+        print(f"                  ΔV(patch) = {dV_total:+.2f} {_U['len']}³")
 
     # ── 3./4./5. FIELD POINTS, GRAVITY, LS FIT — repeated per ensemble ─
     # GravityEvaluable depends only on the mesh, not the field points, so
@@ -1429,8 +1475,8 @@ def run_bennu_tag(
             f"    observability k_max·z_q10 = {k_max*z_q10:.2f} "
             f"(keep ≲ 4, else lower n_max)"
         )
-        print(f"    U_pre ∈ [{U_pre.min():.3e}, {U_pre.max():.3e}] m²/s²")
-        print(f"    gz_pre ∈ [{gz_pre.min():.3e}, {gz_pre.max():.3e}] m/s²")
+        print(f"    U_pre ∈ [{U_pre.min():.3e}, {U_pre.max():.3e}] {_U['pot']}")
+        print(f"    gz_pre ∈ [{gz_pre.min():.3e}, {gz_pre.max():.3e}] {_U['accraw']}")
         print(f"    rel RMS  pre = {rel_pre:.3e},  post = {rel_post:.3e}")
         rel_delta = float(np.mean(rel_delta_draws))
         print(f"    rel RMS  Δ-field fit = {rel_delta:.3e}   <-- quality metric")
@@ -1452,8 +1498,8 @@ def run_bennu_tag(
     dM_ens_std = float(dM_draws.std()) if n_ens > 1 else 0.0
     if verbose and n_ens > 1:
         print(
-            f"    ensemble ΔM: mean={dM_draws.mean():+.4e} kg, "
-            f"std={dM_ens_std:.2e} kg ({100*dM_ens_std/abs(dM_draws.mean()):.1f}%)"
+            f"    ensemble ΔM: mean={dM_draws.mean():+.4e} {_U['mass']}, "
+            f"std={dM_ens_std:.2e} {_U['mass']} ({100*dM_ens_std/abs(dM_draws.mean()):.1f}%)"
         )
 
     # ── 6. WAHR INVERSION ──────────────────────────────────────────────
@@ -1516,7 +1562,7 @@ def run_bennu_tag(
     if verbose:
         print(
             f"    Δσ central peak (ρ<1 m): recovered {sigma_peak_rec:+.0f} vs "
-            f"true {sigma_peak_true:+.0f} kg/m² "
+            f"true {sigma_peak_true:+.0f} {_U['sd']} "
             f"({sigma_peak_rec/sigma_peak_true:.2f}×; deepest pixel "
             f"{sigma_peak_true_pix:+.0f})"
         )
@@ -1539,19 +1585,19 @@ def run_bennu_tag(
         print(f"\n{DASH}\n  RESULTS (SI)\n{DASH}")
         if n_ens > 1:
             print(
-                f"  ΔM  gravimetric       = {dM_est:+.4e} ± {dM_ens_std:.1e} kg  "
+                f"  ΔM  gravimetric       = {dM_est:+.4e} ± {dM_ens_std:.1e} {_U['mass']}  "
                 f"(n_ensemble={n_ens})"
             )
         else:
-            print(f"  ΔM  gravimetric       = {dM_est:+.4e} kg")
-        print(f"  ΔM  geometric truth   = {dM_true:+.4e} kg   (ρ·∫Δh dA, ρ<R*)")
+            print(f"  ΔM  gravimetric       = {dM_est:+.4e} {_U['mass']}")
+        print(f"  ΔM  geometric truth   = {dM_true:+.4e} {_U['mass']}   (ρ·∫Δh dA, ρ<R*)")
         print(f"  recovery ratio        = {dM_est / dM_true:8.3f}")
-        print(f"  ΔV  equivalent        = {dM_est/density:+.2f} m³")
+        print(f"  ΔV  equivalent        = {dM_est/density:+.2f} {_U['len']}³")
         print(f"  mean Δh over footprint= {dh_equiv:+.4f} m")
         print(
-            f"  Δρ_eff (ΔM/V_cyl)     = {delta_rho:+.4f} kg/m³  (V_cyl={V_cyl:.0f} m³)"
+            f"  Δρ_eff (ΔM/V_cyl)     = {delta_rho:+.4f} {_U['dens']}  (V_cyl={V_cyl:.0f} {_U['len']}³)"
         )
-        print(f"  Δgz RMS               = {np.std(dgz)/UGAL:.2f} µGal")
+        print(f"  Δgz RMS               = {np.std(dgz)/UGAL:.2f} {_U['acc']}")
         print(f"  ΔU/U                  = {sig_ratio:.3e}")
         print(f"  ||Δc||/||c||          = {coeff_ratio:.3e}")
         print(DASH)
@@ -1651,11 +1697,19 @@ def plot_results(res, outdir=None):
     cx, cy, z0 = res["cx"], res["cy"], res["z_sheet"]
     gx, gy = res["gx"], res["gy"]
     GX, GY = np.meshgrid(gx, gy, indexing="ij")
-    rp, pp, zp = res["rp"], res["pp"], res["zp"]
+    rp, zp = res["rp"], res["zp"]
     RHO, PHI = res["RHO"], res["PHI"]
     Xp, Yp = RHO * np.cos(PHI), RHO * np.sin(PHI)
     sm, st = res["sigma_map"], res["sigma_true"]
     dU, dgz = res["dU"], res["dgz"]
+    # |Delta g|, the magnitude of the acceleration change, rather than its
+    # vertical component alone: the fit consumes all three components, so the
+    # figure should show what changed, not one projection of it.
+    dgvec = np.sqrt(
+        (res["gr_post"] - res["gr_pre"]) ** 2
+        + (res["gphi_post"] - res["gphi_pre"]) ** 2
+        + dgz**2
+    )
 
     if outdir:
         os.makedirs(outdir, exist_ok=True)
@@ -1667,9 +1721,9 @@ def plot_results(res, outdir=None):
             axis.pane.fill = False
             axis.pane.set_edgecolor("white")
         ax.tick_params(labelsize=8)
-        ax.set_xlabel("$x$ [m]", fontsize=8)
-        ax.set_ylabel("$y$ [m]", fontsize=8)
-        ax.set_zlabel("$z$ [m]", fontsize=8)
+        ax.set_xlabel(f"$x$ [{_UL['len']}]", fontsize=8)
+        ax.set_ylabel(f"$y$ [{_UL['len']}]", fontsize=8)
+        ax.set_zlabel(f"$z$ [{_UL['len']}]", fontsize=8)
         ax.view_init(elev=28, azim=-60)
 
     def _draw_cylinder(ax, color="tab:cyan"):
@@ -1737,7 +1791,7 @@ def plot_results(res, outdir=None):
     cbar_src = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
     cbar_src.set_array([])
     fig1.colorbar(cbar_src, ax=ax, pad=0.10, shrink=0.65).set_label(
-        r"$\Delta h$ (post $-$ pre)  [m]"
+        rf"$\Delta h$ (post $-$ pre)  [{_UL['len']}]"
     )
     ax.set_xlim(cx - W, cx + W)
     ax.set_ylim(cy - W, cy + W)
@@ -1756,7 +1810,7 @@ def plot_results(res, outdir=None):
     )
     if outdir:
         fig1.savefig(
-            os.path.join(outdir, "bennu_tag_fig1_geometry.pdf"),
+            os.path.join(outdir, PREFIX + "fig1_geometry.pdf"),
             dpi=200,
             bbox_inches="tight",
         )
@@ -1770,38 +1824,54 @@ def plot_results(res, outdir=None):
     # on.  Three panels, one story, left to right.
     fig2, axes2 = plt.subplots(1, 3, figsize=(17.0, 4.9), gridspec_kw={"wspace": 0.42})
 
-    def _scatter_cyl(ax, vals, title, label):
-        vmax = np.percentile(np.abs(vals), 98)
+    def _scatter_cyl(ax, vals, title, label, diverging=True):
+        if diverging:
+            v = np.percentile(np.abs(vals), 98)
+            kw = dict(cmap="RdBu_r", vmin=-v, vmax=v)
+        else:  # a magnitude is one-signed, so a sequential map, not RdBu
+            kw = dict(cmap="viridis", vmin=0.0, vmax=np.percentile(vals, 98))
         sc = ax.scatter(
             rp,
             zp,
             c=vals,
-            cmap="RdBu_r",
             s=14,
             lw=0,
-            vmin=-vmax,
-            vmax=vmax,
             rasterized=True,
+            **kw,
         )
         cb = fig2.colorbar(sc, ax=ax, pad=0.035, fraction=0.046)
         cb.set_label(label, fontsize=10)
         cb.ax.tick_params(labelsize=8)
         ax.axhline(0.0, color="0.35", ls="--", lw=1.1, zorder=1)  # the sheet plane
-        ax.set_xlabel(r"$\rho$  [m]")
-        ax.set_ylabel(r"$z-z_0$  [m]")
+        # Equal-AREA radial axis.  The points are uniform in VOLUME, so their
+        # number per unit rho grows as rho, and on a linear axis they look
+        # bunched at the rim — an artefact of projecting a 3-D uniform cloud
+        # onto (rho, z), not of the sampler.  Stretching x as rho^2 gives equal
+        # areas equal widths, and a uniform cloud then looks uniform.  Checked:
+        # equal-area rho bins hold 232-271 of 2000 points, and rho^2/R^2 passes
+        # a KS test against uniform at D = 0.017.
+        ax.set_xscale(
+            "function",
+            functions=(lambda r: np.maximum(r, 0.0) ** 2,
+                       lambda a: np.sqrt(np.maximum(a, 0.0))),
+        )
+        ax.set_xticks([0, 2, 4, 6, 8])
+        ax.set_xlabel(rf"$\rho$  [{_UL['len']}]  (equal-area scale)")
+        ax.set_ylabel(rf"$z-z_0$  [{_UL['len']}]")
         ax.grid(True, alpha=0.2, lw=0.6)
         ax.set_axisbelow(True)
         for sd_ in ("top", "right"):
             ax.spines[sd_].set_visible(False)
 
     _scatter_cyl(
-        axes2[0], dU, r"Differenced potential  $\Delta U$", r"$\Delta U$  [m$^2$/s$^2$]"
+        axes2[0], dU, r"Differenced potential  $\Delta U$", rf"$\Delta U$  [{_UL['pot']}]"
     )
     _scatter_cyl(
         axes2[1],
-        dgz / UGAL,
-        r"Differenced acceleration  $\Delta g_z$",
-        r"$\Delta g_z$  [$\mu$Gal]",
+        dgvec / ACC_SCALE,
+        "",
+        rf"$|\Delta \mathbf{{g}}|$  [{_UL['acc']}]",
+        diverging=False,
     )
 
     # (c) the SPECTRUM of the differenced coefficients the two panels project
@@ -1846,7 +1916,7 @@ def plot_results(res, outdir=None):
     ax.set_ylim((rms_m / gsd).min() * 0.45, (rms_m * gsd).max() * 2.2)
     ax.set_xticks(ms)
     ax.set_xlabel(r"Azimuthal order $m$  [-]")
-    ax.set_ylabel(r"$|\Delta\mathbf{CS}_{mn}|$  [m$^2$/s$^2$]")
+    ax.set_ylabel(rf"$|\Delta\mathbf{{CS}}_{{mn}}|$  [{_UL['pot']}]")
     ax.grid(True, which="both", alpha=0.2, lw=0.6)
     ax.set_axisbelow(True)
     ax.legend(fontsize=8.5, loc="upper right", framealpha=0.92)
@@ -1855,7 +1925,7 @@ def plot_results(res, outdir=None):
 
     if outdir:
         fig2.savefig(
-            os.path.join(outdir, "bennu_tag_fig2_gravity_change.pdf"),
+            os.path.join(outdir, PREFIX + "fig2_gravity_change.pdf"),
             bbox_inches="tight",
         )
 
@@ -1868,7 +1938,6 @@ def plot_results(res, outdir=None):
     # azimuthal structure better than three slices through it.
     fig3 = plt.figure(figsize=(16.5, 5.2))
     gs3 = GridSpec(1, 3, figure=fig3, wspace=0.34)
-    dM_unc = f" ± {res['dM_ens_std']:.1e}" if res.get("n_ensemble", 1) > 1 else ""
     vmax = max(np.percentile(np.abs(sm), 98), np.percentile(np.abs(st), 98))
     tc = np.linspace(0, 2 * np.pi, 200)
 
@@ -1884,8 +1953,8 @@ def plot_results(res, outdir=None):
     CBAR = dict(fraction=0.046, pad=0.03)
     for k, (mp, lab) in enumerate(
         [
-            (sm, r"Estimated $\Delta\sigma$  [kg/m$^2$]"),
-            (st, r"True $\rho\,\Delta h$  [kg/m$^2$]"),
+            (sm, rf"Estimated $\Delta\sigma$  [{_UL['sd']}]"),
+            (st, rf"True $\rho\,\Delta h$  [{_UL['sd']}]"),
         ]
     ):
         ax = fig3.add_subplot(gs3[k])
@@ -1900,8 +1969,8 @@ def plot_results(res, outdir=None):
         )
         ax.plot(R * np.cos(tc), R * np.sin(tc), "k--", lw=1.2, alpha=0.65)
         ax.set_aspect("equal")
-        ax.set_xlabel(r"$x-x_0$  [m]")
-        ax.set_ylabel(r"$y-y_0$  [m]")
+        ax.set_xlabel(rf"$x-x_0$  [{_UL['len']}]")
+        ax.set_ylabel(rf"$y-y_0$  [{_UL['len']}]")
         fig3.colorbar(c, ax=ax, **CBAR).set_label(lab)
 
     # third panel, drawn exactly like the first two: the ERROR map, recovered
@@ -1933,15 +2002,15 @@ def plot_results(res, outdir=None):
     )
     ax3C.plot(R * np.cos(tc), R * np.sin(tc), "k--", lw=1.2, alpha=0.65)
     ax3C.set_aspect("equal")
-    ax3C.set_xlabel(r"$x-x_0$  [m]")
-    ax3C.set_ylabel(r"$y-y_0$  [m]")
+    ax3C.set_xlabel(rf"$x-x_0$  [{_UL['len']}]")
+    ax3C.set_ylabel(rf"$y-y_0$  [{_UL['len']}]")
 
     # (the old Summary text panel lived at gs3[1, 2]; every number in it
     #  is now in the terminal's LaTeX tables — figures carry no numbers)
 
     if outdir:
         fig3.savefig(
-            os.path.join(outdir, "bennu_tag_fig3_mass_change.pdf"),
+            os.path.join(outdir, PREFIX + "fig3_mass_change.pdf"),
             dpi=200,
             bbox_inches="tight",
         )
@@ -1951,137 +2020,13 @@ def plot_results(res, outdir=None):
     return fig1, fig2, fig3
 
 
-def plot_covariance(res, outdir=None):
-    """
-    Figure 4 — the covariance analysis of Section 4b.
-      top    : the recovered Δσ map, its pointwise 1σ, and the mass summary;
-      bottom : where Σ_ΔM comes from (zonal weights and their share), the
-               coefficient σ against wavenumber (downward continuation, capped
-               by the SVD cutoff), and the spatial coherence of the map error.
-    Returns the figure, or None if the run had `do_covariance=False`.
-    """
-    cov = res.get("cov")
-    if cov is None:
-        return None
-    RHO, PHI, R = res["RHO"], res["PHI"], res["R_star"]
-    Xp, Yp = RHO * np.cos(PHI), RHO * np.sin(PHI)
-    _wrap = lambda a: np.column_stack([a, a[:, :1]])
-    tc = np.linspace(0, 2 * np.pi, 200)
-    md = cov["modal"]
-    n_max, m_max = res["n_max"], res["m_max"]
-
-    fig = plt.figure(figsize=(17.5, 9.5))
-    gs = GridSpec(2, 3, figure=fig, hspace=0.38, wspace=0.32)
-
-    # ── top: the map and its pointwise 1σ ────────────────────────────────
-    for k, (mp, cm, lab) in enumerate(
-        [
-            (res["sigma_map"], "RdBu_r", r"$\Delta\sigma$  [kg/m$^2$]"),
-            (cov["sigma_map_1sig"], "viridis", r"$\sigma$  [kg/m$^2$]"),
-        ]
-    ):
-        ax = fig.add_subplot(gs[0, k])
-        kw = dict(cmap=cm, shading="flat")
-        if k == 0:
-            v = np.percentile(np.abs(mp), 98)
-            kw.update(vmin=-v, vmax=v)
-        c = ax.pcolormesh(_wrap(Xp), _wrap(Yp), _wrap(mp)[:-1, :-1], **kw)
-        fig.colorbar(c, ax=ax, label=lab)
-        ax.plot(R * np.cos(tc), R * np.sin(tc), "k--", lw=1.2, alpha=0.65)
-        ax.set_aspect("equal")
-        ax.set_xlabel(r"$x-x_0$  [m]")
-        ax.set_ylabel(r"$y-y_0$  [m]")
-
-    # ── top right: the headline numbers ──────────────────────────────────
-    # (a numbers panel lived at gs[0, 2]: DM, its 1-sigma, the noise model,
-    #  the SVD modes kept and the "wrong route" figure.  All of it is in the
-    #  terminal's LaTeX tables now — figures carry no numbers.)
-
-    # ── bottom left: zonal weights + their share of the mass variance ────
-    ax = fig.add_subplot(gs[1, 0])
-    n = np.arange(1, n_max + 1)
-    ax.bar(
-        n, md["f0n"], color=COLOR_PALETTE[2], edgecolor="k", label=r"$f_{0n}$ (left)"
-    )
-    ax.axhline(0, color="k", lw=0.8)
-    for sgn in (+1, -1):
-        ax.axhline(sgn * 0.5819 * R / G_SI, color=COLOR_PALETTE[0], ls=":", lw=1.5)
-    ax.set_xlabel(r"Zonal mode $n$  [-]")
-    ax.set_ylabel(r"$f_{0n}$   [kg / (m$^2$ s$^{-2}$)]")
-    ax.grid(alpha=0.3, axis="y")
-    ax2 = ax.twinx()
-    ax2.plot(
-        n,
-        100 * md["share_dM"],
-        "o--",
-        color=COLOR_PALETTE[3],
-        lw=2,
-        label=r"Share of $\Sigma_{\Delta M}$ (right)",
-    )
-    ax2.set_ylabel(r"Share of $\Sigma_{\Delta M}$  " + (r"[\%]" if USE_TEX else "[%]"))
-    h1, l1 = ax.get_legend_handles_labels()
-    h2, l2 = ax2.get_legend_handles_labels()
-    ax.legend(h1 + h2, l1 + l2, fontsize=9, loc="lower left")
-
-    # ── bottom middle: coefficient sigma against wavenumber ──────────────
-    ax = fig.add_subplot(gs[1, 1])
-    m_of = np.repeat(np.arange(m_max), n_max)
-    sc = ax.scatter(
-        md["k_all"],
-        md["sigma_all"],
-        c=m_of,
-        cmap="plasma",
-        s=34,
-        edgecolor="k",
-        linewidths=0.4,
-    )
-    fig.colorbar(sc, ax=ax, label="Azimuthal order $m$")
-    ax.set_yscale("log")
-    ax.set_xlabel(r"Wavenumber $k_{mn}$  [1/m]")
-    ax.set_ylabel(r"$\sigma(\Delta\mathcal{C}_{mn})$  [-]")
-    ax.grid(alpha=0.3, which="both")
-
-    # ── bottom right: spatial coherence of the map error ─────────────────
-    ax = fig.add_subplot(gs[1, 2])
-    ax.plot(cov["d_rad"], cov["corr_rad"], lw=2.2, color=COLOR_PALETTE[2])
-    ax.axhline(np.exp(-1), color="0.5", ls=":", lw=1.2)
-    ax.axvline(
-        cov["corr_len"],
-        color=COLOR_PALETTE[0],
-        ls="--",
-        lw=1.5,
-        label=f"1/e length = {cov['corr_len']:.2f} m",
-    )
-    ax.axvline(
-        cov["lam_min"],
-        color=COLOR_PALETTE[3],
-        ls="-.",
-        lw=1.5,
-        label=rf"shortest $\lambda$ = {cov['lam_min']:.2f} m",
-    )
-    ax.axhline(0, color="k", lw=0.8)
-    ax.set_xlabel("Radial separation from the centre  [m]")
-    ax.set_ylabel("Map-error correlation  [-]")
-    ax.grid(alpha=0.3)
-    ax.legend(fontsize=9)
-
-    if outdir:
-        os.makedirs(outdir, exist_ok=True)
-        fig.savefig(
-            os.path.join(outdir, "bennu_tag_fig4_covariance.pdf"),
-            dpi=170,
-            bbox_inches="tight",
-        )
-    return fig
-
-
 if __name__ == "__main__":
 
     result = run_bennu_tag(
         path_pre="3dmeshes/Bennu_preTag.obj",
         path_post="3dmeshes/Bennu_afterTag.obj",
         density=RHO_BULK,  # [kg/m³]
-        grid_res=0.30,  # [m]
+        grid_res=0.30 / L_REF,
         site_center=None,  # auto-detect TAG crater from Δh
         # R_star controls PEAK resolution (k ∝ 1/R*): a smaller cylinder
         # concentrates the basis on the crater and recovers the sharp
@@ -2090,9 +2035,9 @@ if __name__ == "__main__":
         #   R*=16 → 0.59×  (over-smoothed;  ΔM ratio 1.100 ± 0.065)
         #   R*=8  → 0.79×  (best mass/peak balance; ΔM 1.012 ± 0.012)
         #   R*=6  → 0.94×  (best peak, but ΔM 0.800 ± 0.012 — 20% low)
-        R_star=8.0,  # [m]  (use 6 to prioritise the peak, 12+ only for mass)
-        H=16.0,  # [m]
-        clearance=0.25,  # points hug the surface: local terrain + 0.5 m
+        R_star=R_STAR_SI / L_REF,  # use 6 m to prioritise the peak, 12+ for mass
+        H=16.0 / L_REF,
+        clearance=0.25 / L_REF,  # points hug the surface: local terrain + this
         alpha=2.0,  # boundary placement only; n_max scales with α ("auto")
         m_max=6,
         n_max="auto",  # → 8 at α=2 (see required_n_max)
@@ -2109,7 +2054,7 @@ if __name__ == "__main__":
     latex_tables(result, result.get("cov"))
 
     fig1, fig2, fig3 = plot_results(result, outdir="Images")
-    fig4, _ = plot_covariance_mc(
+    fig4, fig5, _ = plot_covariance_mc(
         result, result["cov"], outdir="Images", mc=result["cov"]["mc"]
     )
 

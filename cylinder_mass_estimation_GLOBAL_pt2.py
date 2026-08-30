@@ -6,8 +6,8 @@ Author: Giovanni Fereoli / experiment build
 Question (different from pt1)
 -----------------------------
 pt1 showed that ONE near-surface CH cylinder resolves ONE anomaly sitting under
-it.  But a real body has many mass concentrations at unknown, scattered
-locations.  A single cylinder only helps whatever is beneath it.
+it.  A real body has many mass concentrations at unknown, scattered locations,
+and a single cylinder only helps whatever is beneath it.
 
     Does SH + a NETWORK of CH cylinders (near-surface data all around the body)
     let us estimate the mass fraction and position of MANY, arbitrarily placed
@@ -15,38 +15,36 @@ locations.  A single cylinder only helps whatever is beneath it.
 
 Interior model (same as pt1)
 ----------------------------
-The mass lives in the CONSTANT-DENSITY POLYHEDRON scaled by β̃ = 1 − Σβ; the
-mascons are the localized DEPARTURES from homogeneity, β_j = m_j/M*, positive
-for an excess and negative for a deficit.  Every design matrix below is
-therefore a contrast against the constant-density model — what is fitted is the
-discrepancy ΔU = U_measured − U_CD — and there is no Σβ = 1 pseudo-observation,
-because the mass budget is structural.  Note what this changes about the
-experiment: pt1's "core" mascon was standing in for the bulk, so here the deep
-mascon is a genuine deep ANOMALY, and the noise is referred to the full measured
-field (bulk included), which the anomalies perturb by only a few per cent.
+Mass lives in the CONSTANT-DENSITY POLYHEDRON scaled by β̃ = 1 − Σβ; the mascons
+are the localized DEPARTURES from homogeneity, β_j = m_j/M*, positive for an
+excess and negative for a deficit.  Every design matrix is therefore a contrast
+against the constant-density model — what is fitted is ΔU = U_measured − U_CD —
+and there is no Σβ = 1 pseudo-observation, the budget being structural.  Two
+consequences for the experiment: pt1's "core" mascon stood in for the bulk, so
+here the deep mascon is a genuine deep ANOMALY; and the noise is referred to the
+full measured field (bulk included), which the anomalies perturb by a few %.
 
 Idea
 ----
-Place ~6 anomalies at scattered interior locations of Eros.  Build a NETWORK of
-CH cylinders on the surface (each a patch of near-surface / low-altitude data,
-represented by its own Bessel–Fourier expansion).  The cylinders are put on the
-parts of the surface that lie INSIDE the Brillouin sphere (the sides / waist),
-where exterior SH is weakest and CH converges — the long-axis tips sit on the
-Brillouin sphere and are skipped.
+Place ~6 anomalies at scattered interior locations of Eros and build a NETWORK
+of CH cylinders on the surface, each a patch of near-surface / low-altitude data
+with its own Bessel–Fourier expansion.  Cylinders go on the surface INSIDE the
+Brillouin sphere (the sides / waist), where exterior SH is weakest and CH
+converges; the long-axis tips, which sit on the Brillouin sphere, are skipped.
 
 Three observation models are compared:
-    A  : SH only                    (global Stokes, degree 2..L, + total mass)
-    A1 : SH + ONE CH cylinder       (pt1-style, single near-surface patch)
-    AN : SH + the CH NETWORK        (all cylinders' coefficients)
+    A  : SH only               (global Stokes, degree 2..L, + total mass)
+    A1 : SH + ONE CH cylinder  (pt1-style, single near-surface patch)
+    AN : SH + the CH NETWORK   (all cylinders' coefficients)
 
-Because an anomaly's localized signature is captured by whatever cylinder is
-near it, the NETWORK constrains every anomaly; the single cylinder constrains
-only its neighbour; SH alone leaves them degenerate.
+Since an anomaly's localized signature is captured by whatever cylinder is near
+it, the NETWORK constrains every anomaly, the single cylinder only its
+neighbour, and SH alone leaves them degenerate.
 
-Both observables are linear in β (mass-fraction experiment = linear LS), and
-nonlinear in an anomaly's position (position experiment = TRF).  All heavy
-machinery (Legendre, Stokes design, Bessel basis, the constant-density bulk,
-fits) is reused from `cylinder_mass_estimation_GLOBAL` (imported as G).
+Both observables are linear in β (mass-fraction experiment = linear LS) and
+nonlinear in position (position experiment = TRF).  All heavy machinery
+(Legendre, Stokes design, Bessel basis, constant-density bulk, fits) is reused
+from `cylinder_mass_estimation_GLOBAL`, imported as G.
 
 Units: Eros normalized (LU), total mass M* = 1, G = 1.
 """
@@ -141,15 +139,15 @@ def place_mascons(net, seed=2):
     the first (n_cyl-1) cylinder SITES, plus one DEEP anomaly near the centre of
     the shape (the hard case, far from every near-surface patch).
 
-    The cylinders are not assigned to anomalies: they are near-surface data
-    patches, every one of them enters the same joint least squares, and every
-    anomaly is estimated from all of them at once.  The shallow anomalies are
-    merely PLACED under cylinder sites so that "covered" and "uncovered" cases
-    both exist; the naming reflects where things sit, not who owns what.
-    Returns names, positions and
-    truth mass fractions β_j = m_j/M* — a few per cent each, mixed signs
-    (over- and under-dense), NOT ratios summing to one: the remaining
-    β̃ = 1 − Σβ stays in the constant-density polyhedron.
+    Cylinders are not assigned to anomalies: they are near-surface data patches,
+    all entering the same joint least squares, and every anomaly is estimated
+    from all of them at once.  Shallow anomalies are merely PLACED under
+    cylinder sites so that "covered" and "uncovered" cases both exist; the names
+    say where things sit, not who owns what.
+
+    Returns names, positions and truth mass fractions β_j = m_j/M* — a few per
+    cent each, mixed signs (over- and under-dense), NOT ratios summing to one:
+    the remaining β̃ = 1 − Σβ stays in the constant-density polyhedron.
     """
     names, pos = [], []
     for i, c in enumerate(net[:-1]):
@@ -197,28 +195,6 @@ def _axis_label(d):
 # ═══════════════════════════════════════════════════════════════════════════
 # OBSERVABLE BLOCKS
 # ═══════════════════════════════════════════════════════════════════════════
-
-
-def ch_blocks_for(P, net, ch_modes, eps, f_true, bulk):
-    """
-    (A_ch, sigma) for every cylinder in the network — β → CH coefficients.
-
-    The inner fit of the Bessel–Fourier basis to the sampled field is UNWEIGHTED
-    (c = Φ⁺ field); A_ch is that fit applied to the CONTRAST field (mass at p_j
-    minus the same mass spread through the body), i.e. to ΔU.  The weights enter
-    on the COEFFICIENTS: sigma is `G.od_sigma` of the CH coefficients of the FULL
-    measured field (bulk + anomalies) — one sigma per coefficient, since that is
-    what the instrument delivers before the known constant-density part is
-    removed.
-    """
-    blocks = []
-    for c in net:
-        Phi = G.cyl_basis(c["cyl"], c["obs"], *ch_modes)
-        pinv = G.ch_pinv(Phi)  # unweighted inner fit, trunc. SVD
-        A_ch = pinv @ G.A_field_contrast(P, c["obs"], bulk)
-        y_ch = pinv @ G.field_total(f_true, P, c["obs"], bulk)
-        blocks.append((A_ch, G.od_sigma(y_ch, eps)))
-    return blocks
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -269,12 +245,12 @@ def position_mc_net(
     Monte-Carlo NONLINEAR least-squares (scipy TRF) recovery of anomaly j's
     position; mass fractions & other positions fixed.  `use_net` selects the CH
     patches: False → SH only, True → the whole network, or a SEQUENCE OF INDICES
-    → just those cylinders, so the same reduced configurations the mass
-    experiment compares can be run here too.  Each draw fits noisy data starting from a small
-    random offset (`start_jitter`) about the truth, within `bounds` (which keep
-    the solver on the body so a weakly-constrained near-central mascon degrades
-    to a large-but-finite error instead of diverging).  Returns positions
-    (n_mc, 3) — still an actual fit, just robustified.
+    → just those cylinders, so the mass experiment's reduced configurations can
+    be run here too.  Each draw fits noisy data from a small random offset
+    (`start_jitter`) about the truth, within `bounds` — which keep the solver on
+    the body, so a weakly-constrained near-central mascon degrades to a
+    large-but-finite error instead of diverging.  Returns positions (n_mc, 3):
+    still an actual fit, just robustified.
     """
     ch_data = []
     sig_blocks = [sig_sh]
@@ -381,17 +357,16 @@ def truth_mc_masses_net(
 
     Identical in construction to `G.truth_mc_masses`, so pt1 and pt2 report the
     same kind of number:
-      PREDICTED  sig[case]  — analytic (A^T W A)^-1, no sampling at all;
-      REALIZED   dev[case]  — errors from actually fitting noisy data, `n_rea`
-                              draws per interior (a single draw is half-normal
-                              about sigma with 76% scatter, which would swamp
-                              the interior-to-interior spread the figure shows).
-    The two are computed independently, so comparing them is a real consistency
-    test.  All four cases get fresh generators on the same seed, so they see the
-    same realization of the SH noise.
+      PREDICTED  sig[case]  — analytic (A^T W A)^-1, no sampling;
+      REALIZED   dev[case]  — errors from fitting noisy data, `n_rea` draws per
+                              interior (a single draw is half-normal about sigma
+                              with 76% scatter, swamping the interior-to-interior
+                              spread the figure shows).
+    Computed independently, so comparing them is a real consistency test.  All
+    four cases get fresh generators on the same seed, seeing the same SH noise.
 
-    beta_tilde = 1 - sum(beta) is DERIVED, so its variance is 1^T C 1 and its
-    error is minus the sum of the anomaly errors — never a free parameter.
+    beta_tilde = 1 - sum(beta) is DERIVED: its variance is 1^T C 1 and its error
+    is minus the sum of the anomaly errors — never a free parameter.
     """
     rng = np.random.default_rng(seed)
     betas = rng.uniform(mag[0], mag[1], size=(n_truth, len(P))) * rng.choice(
@@ -469,11 +444,10 @@ def truth_mc_position_net(
     pos_bounds=None,
 ):
     """
-    Redraw the truth POSITIONS of every anomaly and refit each one in EVERY
-    observation model — SH only, +1 CH, +2 CH, the full network — so this
-    experiment mirrors the mass one and the two can be read side by side.
-    One noisy fit per interior; the loop over interiors supplies the sample,
-    exactly as in pt1's position experiment.
+    Redraw the truth POSITIONS of every anomaly and refit each in EVERY
+    observation model — SH only, +1 CH, +2 CH, full network — so this mirrors
+    the mass experiment and the two read side by side.  One noisy fit per
+    interior; the loop over interiors supplies the sample, as in pt1.
 
     Returns {case: (n_truth, n_anom)} of the realized position error [LU].
     """
@@ -878,7 +852,7 @@ def make_plots(res, outdir="Images"):
 
     V, F, P, net, names = res["V"], res["F"], res["P"], res["net"], res["names"]
     n_cyl, cases, tmm = res["n_cyl"], res["cases"], res["truth_mc"]
-    ft, beta_bulk = res["f_true"], res["beta_bulk"]
+    ft = res["f_true"]
     net_k = cases[-1]
     rms = lambda M: np.sqrt(np.mean(np.asarray(M) ** 2, axis=0))
     lab = [n.replace(" ", "\n", 1) for n in names]  # full name, wrapped once
@@ -1166,16 +1140,9 @@ def make_plots(res, outdir="Images"):
 
     fig, axes = plt.subplots(1, 2, figsize=(15, 5.4))
     handles = None
-    for ax, (key, xlab, ttl) in zip(
+    for ax, (key, xlab) in zip(
         axes,
-        [
-            ("sh", r"SH degree $n$  [-]", "Spherical harmonics"),
-            (
-                "ch",
-                r"CH azimuthal order $m$  [-]",
-                f"Cylindrical harmonics, {sp['n_cyl']} patches pooled",
-            ),
-        ],
+        [("sh", r"SH degree $n$  [-]"), ("ch", r"CH azimuthal order $m$  [-]")],
     ):
         d = sp[key]
         pre, post = d["data"], d["data"] - d["model"]
