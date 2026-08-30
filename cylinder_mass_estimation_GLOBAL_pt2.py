@@ -215,9 +215,12 @@ def _pos_forward_net(posj, j, P, masses, Lmax, Rref, ch_data, bulk):
     """
     positions = P.copy()
     positions[j] = posj
+    # one batched Stokes evaluation for all the anomalies, not one call each —
+    # see the same note in `G._pos_forward`; with 6 anomalies it matters more
+    S = G.sh_stokes_basis(np.asarray(positions, float), 2, Lmax, Rref)
     y_sh = G.bulk_fraction(masses) * bulk.stokes(2, Lmax, Rref)
-    for mk, pk in zip(masses, positions):
-        y_sh = y_sh + mk * G.sh_stokes_of_point(pk, 2, Lmax, Rref)
+    for mk, Sk in zip(masses, S):
+        y_sh = y_sh + mk * Sk
     blocks = [y_sh]
     for pinvPhi, obs in ch_data:  # each cylinder's CH coefficients
         field = G.bulk_fraction(masses) * bulk.field(obs)

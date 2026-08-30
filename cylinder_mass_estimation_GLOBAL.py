@@ -269,16 +269,28 @@ def sh_stokes_basis(pts, Lmin, Lmax, Rref):
     r = np.linalg.norm(pts, axis=1)
     lam = np.arctan2(pts[:, 1], pts[:, 0])
     Pb = fully_normalized_legendre_v(Lmax, pts[:, 2] / r)
-    cols = []
+    # cos/sin(m*lam) depend on m alone, but the loop below visits each m once
+    # per degree n >= m, so the inner trig was being recomputed up to Lmax times
+    # over.  Building the tables once is bit-identical (same arguments, same
+    # function) and is ~30% of this routine, which the position fit calls once
+    # per residual evaluation.  NOTE: (r/Rref)**n stays inside the loop with a
+    # PYTHON int exponent — hoisting it as x ** arange(...) takes a different
+    # numpy code path and shifts the last bits of the coefficients.
+    ml = np.arange(Lmax + 1)[:, None] * lam[None, :]
+    cosm, sinm = np.cos(ml), np.sin(ml)
+    out = np.empty((r.size, sum(2 * (n + 1) for n in range(Lmin, Lmax + 1))))
+    k = 0
     for n in range(Lmin, Lmax + 1):
         # 1/(2n+1) is the addition-theorem factor in the standard (4pi-
         # normalized, geodesy/OD) definition of a Stokes coefficient
         rr = (r / Rref) ** n / (2 * n + 1)
         for m in range(0, n + 1):
             base = rr * Pb[n, m]
-            cols.append(base * np.cos(m * lam))
-            cols.append(base * np.sin(m * lam))
-    return np.column_stack(cols)
+            out[:, k] = base * cosm[m]
+            k += 1
+            out[:, k] = base * sinm[m]
+            k += 1
+    return out
 
 
 def sh_stokes_of_point(p, Lmin, Lmax, Rref):
@@ -295,7 +307,7 @@ def sh_stokes_of_point(p, Lmin, Lmax, Rref):
 
 def A_stokes(positions, Lmin, Lmax, Rref):
     """Design matrix: mascon masses -> Stokes coefficients (n_coeff, n_mascon)."""
-    return np.column_stack([sh_stokes_of_point(p, Lmin, Lmax, Rref) for p in positions])
+    return sh_stokes_basis(np.asarray(positions, float), Lmin, Lmax, Rref).T
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -913,9 +925,18 @@ def _pos_forward(pos0, masses, lobe_pos, Lmax, Rref, obs, pinvPhi, use_ch, bulk)
     one the paper writes down.
     """
     positions = [pos0, lobe_pos[0], lobe_pos[1]]
+    # ONE batched Stokes evaluation for all three anomalies, not one call each.
+    # This runs inside every least-squares residual evaluation (~83k times per
+    # run), and `sh_stokes_of_point` is a wrapper that would re-pay the whole
+    # vectorized setup — Legendre recursion, 2*(Lmax+1)^2 column ops, a
+    # column_stack — for a single point, three times over.  Rows of the batched
+    # call are bit-identical to the per-point call (every numpy op here is
+    # elementwise across points), and the accumulation order below is unchanged,
+    # so this is purely a cost fix.
+    S = sh_stokes_basis(np.asarray(positions, float), 2, Lmax, Rref)
     y_sh = bulk_fraction(masses) * bulk.stokes(2, Lmax, Rref)
-    for mj, pj in zip(masses, positions):
-        y_sh = y_sh + mj * sh_stokes_of_point(pj, 2, Lmax, Rref)
+    for mj, Sj in zip(masses, S):
+        y_sh = y_sh + mj * Sj
     blocks = [y_sh]
     if use_ch:
         field = bulk_fraction(masses) * bulk.field(obs)
@@ -2155,7 +2176,7 @@ def make_plots(res, outdir="Images"):
         # would be as wide as the panel and magnify nothing.
         rbx = 3.4 * max(np.sqrt(covB[0, 0]), abs(muB[0] - tru[0]))
         rby = 3.4 * max(np.sqrt(covB[1, 1]), abs(muB[1] - tru[1]))
-        axin = axc.inset_axes([0.635, 0.07, 0.345, 0.50], facecolor="white")
+        axin = axc.inset_axes([0.665, 0.07, 0.315, 0.40], facecolor="white")
         axin.set_zorder(10)
         axin.patch.set_alpha(1.0)
         axin.scatter(
@@ -2171,9 +2192,23 @@ def make_plots(res, outdir="Images"):
         axin.plot(*tru, "*", color=COLOR[1], ms=12, mec="k", mew=0.6, zorder=8)
         axin.set_xlim(muB[0] - rbx, muB[0] + rbx)
         axin.set_ylim(muB[1] - rby, muB[1] + rby)
-        axin.set_title(r"SH + CH 1$\sigma$, zoomed", fontsize=7, color=COLOR[0], pad=2)
+        # same wording as the position panel's inset.  White backing: the title
+        # sits OUTSIDE the inset's own patch, over the parent SH scatter, and
+        # points showing through the letters make it hard to read at print size.
+        axin.set_title(
+            "SH + CH zoom",
+            fontsize=7,
+            color=COLOR[0],
+            pad=4,  # clears the inset's own top spine
+            bbox=dict(fc="white", ec="none", pad=1.5),
+        )
         axin.tick_params(labelsize=5.5, pad=1)
-        axin.locator_params(nbins=2)  # 3 ticks collide at this width
+        # 3 ticks collide at this width, so 2 -- and the TOP y label is pruned:
+        # it sits at the frame's top-left corner, exactly where the title is, and
+        # once the component is negative the minus sign makes it wide enough to
+        # run into the title text.
+        axin.xaxis.set_major_locator(mpl.ticker.MaxNLocator(nbins=2))
+        axin.yaxis.set_major_locator(mpl.ticker.MaxNLocator(nbins=2, prune="upper"))
         # plain, not sci: an inset's offset text is drawn OUTSIDE its frame,
         # so a "x1e-2" would float onto the parent axes
         axin.ticklabel_format(style="plain", useOffset=False)
@@ -2435,9 +2470,18 @@ def make_plots(res, outdir="Images"):
     axin.set_xlim(muB[0] - rB, muB[0] + rB)
     axin.set_ylim(muB[1] - rB, muB[1] + rB)
     axin.set_aspect("equal")
-    axin.set_title("SH + CH zoom", fontsize=8, color=COLOR[0], pad=2)
+    axin.set_title(
+        "SH + CH zoom",
+        fontsize=8,
+        color=COLOR[0],
+        pad=4,
+        bbox=dict(fc="white", ec="none", pad=1.5),  # see the note in fig 2a
+    )
     axin.tick_params(labelsize=5.5)
-    axin.locator_params(nbins=3)
+    axin.xaxis.set_major_locator(mpl.ticker.MaxNLocator(nbins=3))
+    # top y label pruned for the same reason as fig 2a's insets: it lands at the
+    # frame's top-left corner, under the title
+    axin.yaxis.set_major_locator(mpl.ticker.MaxNLocator(nbins=3, prune="upper"))
     for sp_ in axin.spines.values():
         sp_.set_edgecolor(COLOR[0])
     # no indicate_inset_zoom: the zoomed region is smaller than a marker here,
