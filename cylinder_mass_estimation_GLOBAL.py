@@ -1910,6 +1910,21 @@ def draw_silhouette(ax, V, F, i, j, color="0.82", edge="0.6", zorder=0):
     ax.plot(V[order, i], V[order, j], ",", color=edge, alpha=0.0)  # keep autoscale sane
 
 
+# Every panel below is written to its OWN file: the paper places the figures
+# individually, so nothing is composed into a multi-panel sheet here.  The sizes
+# are single-panel canvases; `bbox_inches="tight"` trims whatever the
+# equal-aspect panels leave over.
+FS = (7.2, 5.4)  # default standalone panel
+FS_SQ = (6.6, 6.2)  # equal-aspect scatter (the position clouds)
+FS_WIDE = (8.4, 5.0)  # equal-aspect panel with a wide footprint (silhouette)
+
+
+def _save(fig, outdir, name):
+    """Tight-layout and tight-crop one standalone panel to `outdir/name`."""
+    fig.tight_layout()
+    fig.savefig(os.path.join(outdir, name), dpi=180, bbox_inches="tight")
+
+
 def make_plots(res, outdir="Images"):
     os.makedirs(outdir, exist_ok=True)
     from mpl_toolkits.mplot3d.art3d import Poly3DCollection
@@ -1964,25 +1979,19 @@ def make_plots(res, outdir="Images"):
     )
     ax.legend(loc="upper left", fontsize=8)
 
-    fig.tight_layout()
-    fig.savefig(
-        os.path.join(outdir, "global_fig1_geometry.pdf"),
-        dpi=180,
-        bbox_inches="tight",
-    )
+    _save(fig, outdir, "global_fig1_geometry.pdf")
 
     # ---- FIG 2a: EXPERIMENT 1 — mass recovery over TRUTH MASS FRACTIONS ----
-    # Same three questions fig 3 asks of position: (a) how the per-truth error
-    # is distributed, (b) which interiors were drawn, (c) for one of them, does
-    # the analytic covariance actually describe the estimator's scatter.
+    # Same three questions fig 3 asks of position, one file each: (a) how the
+    # per-truth error is distributed, (b) which interiors were drawn, (c) for
+    # one of them, does the analytic covariance actually describe the
+    # estimator's scatter — (c) splitting again, one file per companion anomaly.
     tmc = res["truth_mc"]
     mA, mB = tmc["m_errA"], tmc["m_errB"]
     bts, jt = tmc["betas"], tmc["m_tgt"]
-    fig = plt.figure(figsize=(17.5, 5.4))
-    gs = fig.add_gridspec(1, 3)
 
     # (a) distribution of the per-truth mass-fraction error on the CH target
-    ax = fig.add_subplot(gs[0, 0])
+    fig, ax = plt.subplots(figsize=FS)
     bins = np.logspace(
         np.log10(min(mA.min(), mB.min()) * 0.8),
         np.log10(max(mA.max(), mB.max()) * 1.2),
@@ -2009,9 +2018,10 @@ def make_plots(res, outdir="Images"):
     ax.set_ylabel(f"Truth Interiors  (of {len(mA)})  [-]")
     ax.grid(True, which="both", alpha=0.3)
     ax.legend(fontsize=8, loc="upper left")
+    _save(fig, outdir, "global_fig2a_massfraction_hist.pdf")
 
     # (b) which interiors were drawn: |beta| uniform, sign random, per component
-    ax = fig.add_subplot(gs[0, 1])
+    fig, ax = plt.subplots(figsize=FS)
     rj = np.random.default_rng(5)
     for k in range(bts.shape[1]):
         xk = k + rj.uniform(-0.16, 0.16, len(bts))
@@ -2034,7 +2044,7 @@ def make_plots(res, outdir="Images"):
         color=ACCENT,
         ms=11,
         zorder=5,
-        label="Interior shown at right",
+        label="Interior used for the ellipses",
     )
     ax.axhline(0.0, color="k", lw=0.8)
     ax.set_xticks(range(len(names)))
@@ -2042,26 +2052,36 @@ def make_plots(res, outdir="Images"):
     ax.set_xlim(-0.55, len(names) - 0.45)
     ax.set_ylabel(r"Truth Mass Fraction  $\beta_j$  [-]")
     ax.grid(True, axis="y", alpha=0.3)
-    ax.legend(fontsize=9, loc="upper right")
+    # above the axes: the draws fill the panel top to bottom, so any in-axes
+    # legend lands on data
+    ax.legend(
+        fontsize=9,
+        ncol=3,
+        frameon=False,
+        loc="lower left",
+        bbox_to_anchor=(0.0, 1.01, 1.0, 0.2),
+        mode="expand",
+        borderaxespad=0.0,
+    )
+    _save(fig, outdir, "global_fig2a_massfraction_truths.pdf")
 
     # (c) ONE interior: the estimate clouds against the PREDICTED covariance,
-    # for both of the other anomalies in turn.  CH collapses the target
-    # direction (x) only and leaves the lobes almost untouched, so each ellipse
-    # is a vertical sliver — that anisotropy IS the result.
+    # for both of the other anomalies in turn, ONE FIGURE EACH.  CH collapses
+    # the target direction (x) only and leaves the lobes almost untouched, so
+    # each ellipse is a vertical sliver — that anisotropy IS the result.
     from matplotlib.patches import Rectangle
 
-    inner = gs[0, 2].subgridspec(2, 1, hspace=0.14)
-    ax_hi = fig.add_subplot(inner[0])
-    ax_lo = fig.add_subplot(inner[1], sharex=ax_hi)
     others = [k for k in range(len(names)) if k != jt]
-    for row, (axc, ko) in enumerate(zip((ax_hi, ax_lo), others)):
+    for row, ko in enumerate(others):
+        fig, axc = plt.subplots(figsize=FS)
+        # each panel now stands alone, so each carries the full legend
+        first = True
         ix = np.ix_([jt, ko], [jt, ko])
         cA = tmc["m_cloudA"][:, [jt, ko]]
         cB = tmc["m_cloudB"][:, [jt, ko]]
         covA, covB = tmc["m_covA"][ix], tmc["m_covB"][ix]
         muA, muB = cA.mean(axis=0), cB.mean(axis=0)
         tru = tmc["m_rep_beta"][[jt, ko]]
-        first = row == 0
         axc.scatter(
             cA[:, 0],
             cA[:, 1],
@@ -2169,29 +2189,21 @@ def make_plots(res, outdir="Images"):
                 zorder=9,
             )
         )
-        if first:
-            # above the axes, not inside: an opaque box here would sit on the
-            # SH cloud, which is the widest thing in the panel
-            axc.legend(
-                fontsize=7.5,
-                ncol=3,
-                frameon=False,
-                loc="lower left",
-                bbox_to_anchor=(0.0, 1.12, 1.0, 0.2),  # clears the 1e-2 offset text
-                mode="expand",
-                borderaxespad=0.0,
-                handletextpad=0.4,
-                columnspacing=1.0,
-            )
-            axc.tick_params(labelbottom=False)
-        else:
-            axc.set_xlabel(rf"$\beta$  {names[jt].split()[0]}  [-]", fontsize=10)
-    fig.tight_layout(w_pad=2.0)
-    fig.savefig(
-        os.path.join(outdir, "global_fig2a_massfraction.pdf"),
-        dpi=180,
-        bbox_inches="tight",
-    )
+        # above the axes, not inside: an opaque box here would sit on the
+        # SH cloud, which is the widest thing in the panel
+        axc.legend(
+            fontsize=7.5,
+            ncol=3,
+            frameon=False,
+            loc="lower left",
+            bbox_to_anchor=(0.0, 1.12, 1.0, 0.2),  # clears the 1e-2 offset text
+            mode="expand",
+            borderaxespad=0.0,
+            handletextpad=0.4,
+            columnspacing=1.0,
+        )
+        axc.set_xlabel(rf"$\beta$  {names[jt].split()[0]}  [-]", fontsize=10)
+        _save(fig, outdir, f"global_fig2a_massfraction_cov{row + 1}.pdf")
 
     # ---- FIG 2b: estimator performance vs anomaly size ---------------------
     # MAIN AXES — performance: the MC RMS error as a PERCENT OF THE ANOMALY
@@ -2265,23 +2277,17 @@ def make_plots(res, outdir="Images"):
     ax.grid(True, which="both", alpha=0.3)
     ax.set_axisbelow(True)
     ax.legend(fontsize=8.5, loc="lower left", framealpha=0.93, ncol=2)
-    fig.tight_layout()
-    fig.savefig(
-        os.path.join(outdir, "global_fig2b_detection.pdf"),
-        dpi=180,
-        bbox_inches="tight",
-    )
+    _save(fig, outdir, "global_fig2b_detection.pdf")
 
     # ---- FIG 3: EXPERIMENT 2 — position recovery over TRUTH POSITIONS -------
-    # (a) how the per-truth error is distributed, (b) where the truths were
-    # drawn, (c) the estimator's own scatter for one of them.
+    # One file each: (a) how the per-truth error is distributed, (b) where the
+    # truths were drawn, (c) the estimator's own scatter for one of them.
     tmc = res["truth_mc"]
     eA, eB = tmc["errA"], tmc["errB"]
     pos, cylc = tmc["pos"], res["cyl"].center
-    fig, axes = plt.subplots(1, 3, figsize=(17.5, 5.4))
 
     # (a) distribution of the per-truth RMS position error
-    ax = axes[0]
+    fig, ax = plt.subplots(figsize=FS)
     bins = np.logspace(
         np.log10(min(eA.min(), eB.min()) * 0.8),
         np.log10(max(eA.max(), eB.max()) * 1.2),
@@ -2312,9 +2318,10 @@ def make_plots(res, outdir="Images"):
     ax.set_ylabel(f"Truth Interiors  (of {len(eA)})  [-]")
     ax.grid(True, which="both", alpha=0.3)
     ax.legend(fontsize=8, loc="upper left")
+    _save(fig, outdir, "global_fig3_position_hist.pdf")
 
     # (b) where the truth anomalies were drawn
-    ax = axes[1]
+    fig, ax = plt.subplots(figsize=FS_WIDE)
     draw_silhouette(ax, V, F, 0, 2)
     ax.scatter(
         pos[:, 0],
@@ -2341,11 +2348,12 @@ def make_plots(res, outdir="Images"):
     ax.set_ylabel("z [LU]")
     ax.set_aspect("equal")
     ax.legend(fontsize=9, loc="lower right")
+    _save(fig, outdir, "global_fig3_position_truths.pdf")
 
     # (c) ONE truth: BOTH estimates with their analytic covariances.  The main
     # axes are scaled to the SH cloud; SH+CH is ~20x tighter and collapses to a
     # dot there, so it gets an inset at its own scale.
-    ax = axes[2]
+    fig, ax = plt.subplots(figsize=FS_SQ)
     ix = np.ix_([0, 2], [0, 2])
     cA, cB, p_rep = tmc["cloudA"], tmc["cloudB"], tmc["rep_truth"]
     covA, covB = tmc["covA"][ix], tmc["covB"][ix]
@@ -2449,10 +2457,7 @@ def make_plots(res, outdir="Images"):
             zorder=9,
         )
     )
-    fig.tight_layout(w_pad=2.0)
-    fig.savefig(
-        os.path.join(outdir, "global_fig3_position.pdf"), dpi=180, bbox_inches="tight"
-    )
+    _save(fig, outdir, "global_fig3_position_cov.pdf")
 
     # ---- FIG 4: residual power spectrum, before and after the fit ----------
     # Per-degree (SH) / per-radial-mode (CH) RMS of the WHITENED residual,
@@ -2480,12 +2485,11 @@ def make_plots(res, outdir="Images"):
         xs = np.arange(n_m)
         return xs, [np.where(azi == m)[0] for m in xs]
 
-    fig, axes = plt.subplots(1, 2, figsize=(15, 5.4))
-    handles = None
-    for ax, (key, xlab) in zip(
-        axes,
-        [("sh", "SH degree $n$  [-]"), ("ch", "CH azimuthal order $m$  [-]")],
-    ):
+    for key, xlab in [
+        ("sh", "SH degree $n$  [-]"),
+        ("ch", "CH azimuthal order $m$  [-]"),
+    ]:
+        fig, ax = plt.subplots(figsize=FS)
         d = sp[key]
         pre = d["data"]  # measured − homogeneous
         post = d["data"] - d["model"]  # measured − fitted
@@ -2537,26 +2541,26 @@ def make_plots(res, outdir="Images"):
         ax.set_axisbelow(True)
         for sd_ in ("top", "right"):
             ax.spines[sd_].set_visible(False)
-        if handles is None:
-            handles, labels = ax.get_legend_handles_labels()
 
-    # one legend for both panels, in a reserved strip under the axes — an
-    # in-axes legend here covered the degree-3 peak
-    fig.tight_layout(rect=[0, 0.09, 1, 1])
-    fig.legend(
-        handles,
-        labels,
-        loc="lower center",
-        ncol=3,
-        fontsize=9.5,
-        frameon=False,
-        bbox_to_anchor=(0.5, 0.012),
-    )
-    fig.savefig(
-        os.path.join(outdir, "global_fig4_coefficients.pdf"),
-        dpi=180,
-        bbox_inches="tight",
-    )
+        # legend in a reserved strip under the axes — an in-axes legend here
+        # covered the degree-3 peak.  One column, not three: a single-panel
+        # canvas cannot fit these labels side by side.
+        handles, labels = ax.get_legend_handles_labels()
+        fig.tight_layout(rect=[0, 0.13, 1, 1])
+        fig.legend(
+            handles,
+            labels,
+            loc="lower center",
+            ncol=1,
+            fontsize=9.5,
+            frameon=False,
+            bbox_to_anchor=(0.5, 0.012),
+        )
+        fig.savefig(
+            os.path.join(outdir, f"global_fig4_coefficients_{key}.pdf"),
+            dpi=180,
+            bbox_inches="tight",
+        )
 
     plt.show()
 
@@ -2575,10 +2579,19 @@ if __name__ == "__main__":
         outdir="Images",
         verbose=True,
     )
-    print(
-        "\nSaved: Images/global_fig1_geometry.pdf, "
-        "global_fig2a_massfraction.pdf, global_fig2b_detection.pdf, "
-        "global_fig3_position.pdf, "
-        "global_fig4_coefficients.pdf"
-    )
+    print("\nSaved to Images/ (one file per panel):")
+    for _f in (
+        "global_fig1_geometry.pdf",
+        "global_fig2a_massfraction_hist.pdf",
+        "global_fig2a_massfraction_truths.pdf",
+        "global_fig2a_massfraction_cov1.pdf",
+        "global_fig2a_massfraction_cov2.pdf",
+        "global_fig2b_detection.pdf",
+        "global_fig3_position_hist.pdf",
+        "global_fig3_position_truths.pdf",
+        "global_fig3_position_cov.pdf",
+        "global_fig4_coefficients_sh.pdf",
+        "global_fig4_coefficients_ch.pdf",
+    ):
+        print("  " + _f)
     print("Done.")

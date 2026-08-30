@@ -98,7 +98,6 @@ from scipy.interpolate import (
 )
 import matplotlib.pyplot as plt
 import matplotlib as mpl
-from matplotlib.gridspec import GridSpec
 from polyhedral_gravity import Polyhedron, PolyhedronIntegrity, GravityEvaluable
 import time, os
 
@@ -237,6 +236,21 @@ mpl.rcParams.update(
 
 SEP = "=" * 65
 DASH = "─" * 65
+
+# Every panel is written to its OWN file: the paper places the figures
+# individually, so nothing is composed into a multi-panel sheet here.
+FS = (7.0, 5.0)  # default standalone panel
+FS_MAP = (6.4, 5.4)  # equal-aspect map with its own colour bar
+FS_HIST = (7.4, 5.0)  # the Delta M histogram
+
+
+def _save(fig, outdir, name, dpi=None):
+    """Tight-crop one standalone panel to `outdir/PREFIX+name`; no-op if outdir is None."""
+    if not outdir:
+        return
+    os.makedirs(outdir, exist_ok=True)
+    kw = {"dpi": dpi} if dpi else {}
+    fig.savefig(os.path.join(outdir, PREFIX + name), bbox_inches="tight", **kw)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1162,19 +1176,23 @@ def plot_covariance_mc(res, cov, outdir="Images", n_mc=40000, n_map=4000,
                        mc=None):
     """
     The predicted 1-sigma map of Delta sigma against the one the Monte-Carlo
-    actually produces, and their ratio.
+    actually produces, their ratio, and the Delta M histogram — one file each.
 
-      LEFT    ANALYTIC   sqrt(diag(F Sigma_dCS F^T)), the pointwise 1-sigma the
-              covariance predicts, before any sampling.
-      MIDDLE  NUMERICAL  the spread of `n_map` noise realizations pushed through
-              the same inversion, measured point by point.
-      RIGHT   their RATIO, on a scale centred at 1.  Agreement means the two
-              differ only by Monte-Carlo scatter, of size 1/sqrt(2 n_map) at
-              this many draws; the colour range is four times that, so anything
-              structural would be unmistakable.
+      ANALYTIC   sqrt(diag(F Sigma_dCS F^T)), the pointwise 1-sigma the
+                 covariance predicts, before any sampling.
+      NUMERICAL  the spread of `n_map` noise realizations pushed through the
+                 same inversion, measured point by point.
+      RATIO      the two divided, on a scale centred at 1.  Agreement means they
+                 differ only by Monte-Carlo scatter, of size 1/sqrt(2 n_map) at
+                 this many draws; the colour range is four times that, so
+                 anything structural would be unmistakable.
+      MASS       Delta M is a scalar, so one histogram against its predicted
+                 Gaussian.
 
-    The two maps share one colour scale for direct comparison; the ratio keeps
-    its own, living in a narrow band about unity.
+    The two maps share one colour scale so they can be compared across files;
+    the ratio keeps its own, living in a narrow band about unity.
+
+    Returns (list of figures, the Monte-Carlo dict).
     """
     mc = covariance_mc(res, cov, n_mc=n_mc, n_map=n_map) if mc is None else mc
     RHO, PHI, R = res["RHO"], res["PHI"], res["R_star"]
@@ -1188,41 +1206,47 @@ def plot_covariance_mc(res, cov, outdir="Images", n_mc=40000, n_map=4000,
     ratio = nu / np.maximum(an, 1e-300)
     tol = 1.0 / np.sqrt(2.0 * mc["n_map"])
 
-    # TWO figures, not one row of four.  Delta sigma is a field and needs
-    # three maps; DeltaM is a scalar and needs one histogram.  Forcing them
-    # onto one row squeezed the maps and left the histogram in a cell of the
-    # wrong shape.  Split, and each gets the aspect it wants.
-    fig, axes = plt.subplots(
-        1, 3, figsize=(16.5, 5.0), gridspec_kw={"wspace": 0.40}
-    )
+    # The maps and the mass go to separate files.  Delta sigma is a field and
+    # needs three maps; Delta M is a scalar and needs one histogram — forcing
+    # them onto one row squeezed the maps and left the histogram in a cell of
+    # the wrong shape.  One panel per file, and each gets the aspect it wants.
     CBAR = dict(fraction=0.046, pad=0.03)
     vmax = max(an.max(), nu.max())
-    for ax, mp, lab in (
-        (axes[0], an, rf"Analytic $\sqrt{{\Sigma_{{\Delta\sigma}}}}$  [{_UL['sd']}]"),
-        (axes[1], nu, rf"Monte-Carlo $\sqrt{{\Sigma_{{\Delta\sigma}}}}$  [{_UL['sd']}]"),
-    ):
-        c = ax.pcolormesh(Xw, Yw, _wrap(mp)[:-1, :-1], cmap="viridis",
-                          shading="flat", vmin=0.0, vmax=vmax)
-        fig.colorbar(c, ax=ax, **CBAR).set_label(lab)
 
-    cr = axes[2].pcolormesh(Xw, Yw, _wrap(ratio)[:-1, :-1], cmap="RdBu_r",
-                            shading="flat", vmin=1 - 4 * tol, vmax=1 + 4 * tol)
-    fig.colorbar(cr, ax=axes[2], **CBAR).set_label("Monte-Carlo / analytic  [-]")
-    for ax in axes[:3]:
+    def _decor(ax):
+        """Footprint circle, equal aspect and axis labels, on every map."""
         ax.plot(R * np.cos(tc), R * np.sin(tc), "k--", lw=1.2, alpha=0.65)
         ax.set_aspect("equal")
         ax.set_xlabel(rf"$x-x_0$  [{_UL['len']}]")
         ax.set_ylabel(rf"$y-y_0$  [{_UL['len']}]")
 
-    if outdir:
-        os.makedirs(outdir, exist_ok=True)
-        fig.savefig(os.path.join(outdir, PREFIX + "fig4_covariance_map.pdf"),
-                    bbox_inches="tight")
+    figs = []
+    for tag, mp, lab in (
+        ("analytic", an,
+         rf"Analytic $\sqrt{{\Sigma_{{\Delta\sigma}}}}$  [{_UL['sd']}]"),
+        ("numerical", nu,
+         rf"Monte-Carlo $\sqrt{{\Sigma_{{\Delta\sigma}}}}$  [{_UL['sd']}]"),
+    ):
+        fig, ax = plt.subplots(figsize=FS_MAP)
+        c = ax.pcolormesh(Xw, Yw, _wrap(mp)[:-1, :-1], cmap="viridis",
+                          shading="flat", vmin=0.0, vmax=vmax)
+        fig.colorbar(c, ax=ax, **CBAR).set_label(lab)
+        _decor(ax)
+        _save(fig, outdir, f"fig4_covariance_map_{tag}.pdf")
+        figs.append(fig)
+
+    fig, ax = plt.subplots(figsize=FS_MAP)
+    cr = ax.pcolormesh(Xw, Yw, _wrap(ratio)[:-1, :-1], cmap="RdBu_r",
+                       shading="flat", vmin=1 - 4 * tol, vmax=1 + 4 * tol)
+    fig.colorbar(cr, ax=ax, **CBAR).set_label("Monte-Carlo / analytic  [-]")
+    _decor(ax)
+    _save(fig, outdir, "fig4_covariance_map_ratio.pdf")
+    figs.append(fig)
 
     # ── the mass, on its own: a scalar, so one histogram against its predicted
     # Gaussian.  Kept in kg rather than normalized — the kilograms make the size
     # of the uncertainty readable straight off the axis.
-    fig_m, ax = plt.subplots(figsize=(7.4, 5.0))
+    fig_m, ax = plt.subplots(figsize=FS_HIST)
     e, sd = mc["dM_err"], mc["an_sigma_dM"]
     ax.hist(e, bins=60, density=True, color=COLOR_PALETTE[0], alpha=0.78,
             edgecolor="k", lw=0.3, label="Monte-Carlo realizations")
@@ -1239,12 +1263,8 @@ def plot_covariance_mc(res, cov, outdir="Images", n_mc=40000, n_map=4000,
     ax.grid(True, alpha=0.22)
     ax.set_axisbelow(True)
     ax.legend(fontsize=9)
-    if outdir:
-        fig_m.savefig(
-            os.path.join(outdir, PREFIX + "fig5_covariance_mass.pdf"),
-            bbox_inches="tight",
-        )
-    return fig, fig_m, mc
+    _save(fig_m, outdir, "fig5_covariance_mass.pdf")
+    return figs + [fig_m], mc
 
 
 def _selftest_covariance(res, cov):
@@ -1692,7 +1712,8 @@ def run_bennu_tag(
 
 
 def plot_results(res, outdir=None):
-    """Three figures: geometry, gravity change, recovered vs true Δσ."""
+    """Geometry, gravity change (3 panels) and recovered vs true Δσ (3 panels),
+    each panel its own file.  Returns the list of figures."""
     R, H = res["R_star"], res["H"]
     cx, cy, z0 = res["cx"], res["cy"], res["z_sheet"]
     gx, gy = res["gx"], res["gy"]
@@ -1808,22 +1829,15 @@ def plot_results(res, outdir=None):
         loc="upper right",
         fontsize=9,
     )
-    if outdir:
-        fig1.savefig(
-            os.path.join(outdir, PREFIX + "fig1_geometry.pdf"),
-            dpi=200,
-            bbox_inches="tight",
-        )
+    _save(fig1, outdir, "fig1_geometry.pdf", dpi=200)
 
     # ── FIGURE 2 — what TAG changed ────────────────────────────────────
     # Everything static cancels in the difference, so the differences ARE the
     # measurement: the absolute field panel was showing the background the
-    # estimator never sees.  Left and centre are the two differenced
-    # observables the fit consumes; right is what they become after projection
-    # onto the Bessel-Fourier basis, i.e. the vector the mass functional acts
-    # on.  Three panels, one story, left to right.
-    fig2, axes2 = plt.subplots(1, 3, figsize=(17.0, 4.9), gridspec_kw={"wspace": 0.42})
-
+    # estimator never sees.  The first two panels are the differenced
+    # observables the fit consumes; the third is what they become after
+    # projection onto the Bessel-Fourier basis, i.e. the vector the mass
+    # functional acts on.  Three panels, one story, three files.
     def _scatter_cyl(ax, vals, title, label, diverging=True):
         if diverging:
             v = np.percentile(np.abs(vals), 98)
@@ -1839,7 +1853,7 @@ def plot_results(res, outdir=None):
             rasterized=True,
             **kw,
         )
-        cb = fig2.colorbar(sc, ax=ax, pad=0.035, fraction=0.046)
+        cb = ax.get_figure().colorbar(sc, ax=ax, pad=0.035, fraction=0.046)
         cb.set_label(label, fontsize=10)
         cb.ax.tick_params(labelsize=8)
         ax.axhline(0.0, color="0.35", ls="--", lw=1.1, zorder=1)  # the sheet plane
@@ -1863,22 +1877,27 @@ def plot_results(res, outdir=None):
         for sd_ in ("top", "right"):
             ax.spines[sd_].set_visible(False)
 
+    fig2a, ax = plt.subplots(figsize=FS)
     _scatter_cyl(
-        axes2[0], dU, r"Differenced potential  $\Delta U$", rf"$\Delta U$  [{_UL['pot']}]"
+        ax, dU, r"Differenced potential  $\Delta U$", rf"$\Delta U$  [{_UL['pot']}]"
     )
+    _save(fig2a, outdir, "fig2_gravity_change_potential.pdf")
+
+    fig2b, ax = plt.subplots(figsize=FS)
     _scatter_cyl(
-        axes2[1],
+        ax,
         dgvec / ACC_SCALE,
         "",
         rf"$|\Delta \mathbf{{g}}|$  [{_UL['acc']}]",
         diverging=False,
     )
+    _save(fig2b, outdir, "fig2_gravity_change_acceleration.pdf")
 
     # (c) the SPECTRUM of the differenced coefficients the two panels project
     # onto.  Same construction the GLOBAL scripts use for their CH panel: the
     # RMS over the radial modes at each azimuthal order, so one number per m
     # rather than 48 bars.
-    ax = axes2[2]
+    fig2c, ax = plt.subplots(figsize=FS)
     dc = res["d_coeffs"]
     n_max, m_max = res["n_max"], res["m_max"]
     amp = np.sqrt(dc[0::2] ** 2 + dc[1::2] ** 2).reshape(m_max, n_max)
@@ -1922,22 +1941,15 @@ def plot_results(res, outdir=None):
     ax.legend(fontsize=8.5, loc="upper right", framealpha=0.92)
     for sd_ in ("top", "right"):
         ax.spines[sd_].set_visible(False)
-
-    if outdir:
-        fig2.savefig(
-            os.path.join(outdir, PREFIX + "fig2_gravity_change.pdf"),
-            bbox_inches="tight",
-        )
+    _save(fig2c, outdir, "fig2_gravity_change_spectrum.pdf")
 
     # ── FIGURE 3 — recovered vs true mass change ───────────────────────
-    # One row of three: the two maps and the radial profile that compares
-    # them.  The coefficient spectrum moved to figure 2, beside the differenced
-    # fields it is the projection of; the numeric summary became the terminal's
-    # LaTeX tables; and the azimuthal profiles were dropped — the radial cut
-    # already carries the bandlimit story, and the map itself shows the
-    # azimuthal structure better than three slices through it.
-    fig3 = plt.figure(figsize=(16.5, 5.2))
-    gs3 = GridSpec(1, 3, figure=fig3, wspace=0.34)
+    # Three panels, three files: the two maps and the error between them.  The
+    # coefficient spectrum moved to figure 2, beside the differenced fields it
+    # is the projection of; the numeric summary became the terminal's LaTeX
+    # tables; and the azimuthal profiles were dropped — the radial cut already
+    # carries the bandlimit story, and the map itself shows the azimuthal
+    # structure better than three slices through it.
     vmax = max(np.percentile(np.abs(sm), 98), np.percentile(np.abs(st), 98))
     tc = np.linspace(0, 2 * np.pi, 200)
 
@@ -1949,15 +1961,25 @@ def plot_results(res, outdir=None):
     # One colourbar per panel.  With the titles gone the bar labels are what
     # identify the panels, so each says explicitly which field it shows; and
     # all three use the same fraction/pad on equal-aspect axes, so the bars come
-    # out the same size across the row.
+    # out the same size from file to file.
     CBAR = dict(fraction=0.046, pad=0.03)
-    for k, (mp, lab) in enumerate(
+
+    def _decor3(ax):
+        """Footprint circle, equal aspect and axis labels, on every Δσ map."""
+        ax.plot(R * np.cos(tc), R * np.sin(tc), "k--", lw=1.2, alpha=0.65)
+        ax.set_aspect("equal")
+        ax.set_xlabel(rf"$x-x_0$  [{_UL['len']}]")
+        ax.set_ylabel(rf"$y-y_0$  [{_UL['len']}]")
+
+    figs3 = []
+    for tag, (mp, lab) in zip(
+        ("estimated", "true"),
         [
             (sm, rf"Estimated $\Delta\sigma$  [{_UL['sd']}]"),
             (st, rf"True $\rho\,\Delta h$  [{_UL['sd']}]"),
-        ]
+        ],
     ):
-        ax = fig3.add_subplot(gs3[k])
+        fig3, ax = plt.subplots(figsize=FS_MAP)
         c = ax.pcolormesh(
             Xw,
             Yw,
@@ -1967,17 +1989,16 @@ def plot_results(res, outdir=None):
             vmin=-vmax,
             vmax=vmax,
         )
-        ax.plot(R * np.cos(tc), R * np.sin(tc), "k--", lw=1.2, alpha=0.65)
-        ax.set_aspect("equal")
-        ax.set_xlabel(rf"$x-x_0$  [{_UL['len']}]")
-        ax.set_ylabel(rf"$y-y_0$  [{_UL['len']}]")
+        _decor3(ax)
         fig3.colorbar(c, ax=ax, **CBAR).set_label(lab)
+        _save(fig3, outdir, f"fig3_mass_change_{tag}.pdf", dpi=200)
+        figs3.append(fig3)
 
     # third panel, drawn exactly like the first two: the ERROR map, recovered
     # minus true.  Its range is set by its own percentile rather than the maps'
     # shared one — the residual is far smaller than either field, and reusing
     # their scale would render it uniformly white.
-    ax3C = fig3.add_subplot(gs3[2])
+    fig3C, ax3C = plt.subplots(figsize=FS_MAP)
     # Error as a PERCENTAGE OF THE PEAK truth, not pointwise (recovered-true)/true.
     # The truth is a signed field that crosses zero all over this map — 24% of
     # it lies below 5% of the peak and 39% below 10% — so a pointwise ratio is
@@ -1996,28 +2017,19 @@ def plot_results(res, outdir=None):
         vmin=-verr,
         vmax=verr,
     )
-    fig3.colorbar(ce, ax=ax3C, **CBAR).set_label(
+    fig3C.colorbar(ce, ax=ax3C, **CBAR).set_label(
         r"$(\widehat{\Delta\sigma}-\Delta\sigma)\,/\,\max|\Delta\sigma|$  "
         + (r"[\%]" if USE_TEX else "[%]")
     )
-    ax3C.plot(R * np.cos(tc), R * np.sin(tc), "k--", lw=1.2, alpha=0.65)
-    ax3C.set_aspect("equal")
-    ax3C.set_xlabel(rf"$x-x_0$  [{_UL['len']}]")
-    ax3C.set_ylabel(rf"$y-y_0$  [{_UL['len']}]")
+    _decor3(ax3C)
 
-    # (the old Summary text panel lived at gs3[1, 2]; every number in it
-    #  is now in the terminal's LaTeX tables — figures carry no numbers)
-
-    if outdir:
-        fig3.savefig(
-            os.path.join(outdir, PREFIX + "fig3_mass_change.pdf"),
-            dpi=200,
-            bbox_inches="tight",
-        )
+    # (the old Summary text panel was a fourth cell of this figure; every number
+    #  in it is now in the terminal's LaTeX tables — figures carry no numbers)
+    _save(fig3C, outdir, "fig3_mass_change_error.pdf", dpi=200)
 
     # NO plt.show() here: it blocks, so anything created after this call would
     # be built and never displayed.  The caller shows every figure at the end.
-    return fig1, fig2, fig3
+    return [fig1, fig2a, fig2b, fig2c] + figs3 + [fig3C]
 
 
 if __name__ == "__main__":
@@ -2053,11 +2065,11 @@ if __name__ == "__main__":
 
     latex_tables(result, result.get("cov"))
 
-    fig1, fig2, fig3 = plot_results(result, outdir="Images")
-    fig4, fig5, _ = plot_covariance_mc(
+    figs = plot_results(result, outdir="Images")
+    figs += plot_covariance_mc(
         result, result["cov"], outdir="Images", mc=result["cov"]["mc"]
-    )
+    )[0]
 
-    plt.show()  # once, with all five figures built, so all five appear
+    plt.show()  # once, with every panel built, so all of them appear
 
     print("\nDone.")

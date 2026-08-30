@@ -61,6 +61,10 @@ import cylinder_mass_estimation_GLOBAL as G  # reuse pt1 machinery
 
 COLOR = G.COLOR
 ACCENT = G.ACCENT
+# Every panel is its own file here too (see pt1): same canvases, same saver.
+FS, _save = G.FS, G._save
+FS_BAR = (9.0, 5.4)  # bars: 7 groups x 4 models plus wrapped tick labels
+FS_COR = (6.8, 5.8)  # correlation matrix + its own colour bar
 mpl.rcParams.update({"axes.prop_cycle": mpl.cycler(color=COLOR), "figure.dpi": 110})
 SEP = "=" * 72
 
@@ -905,17 +909,13 @@ def make_plots(res, outdir="Images"):
     G.set_axes_true_shape(ax, np.vstack([V] + [G.cylinder_hull(c["cyl"]) for c in net]))
     ax.legend(fontsize=9, loc="upper left")
 
-    fig.tight_layout()
-    fig.savefig(
-        os.path.join(outdir, "global_pt2_fig1_geometry.pdf"),
-        dpi=180,
-        bbox_inches="tight",
-    )
+    _save(fig, outdir, "global_pt2_fig1_geometry.pdf")
 
     # ---- FIG 2 / FIG 3: the two experiments, drawn identically -------------
     # Specular by construction: same four observation models, same bar chart,
     # same pooled histogram with a log-normal fit.  Read them side by side and
-    # the only difference is what is being recovered — mass or position.
+    # the only difference is what is being recovered — mass or position.  Bars
+    # and histogram go to separate files, so each experiment is two figures.
     def _cases_panel(ax, vals, pred, ylabel, title):
         """Bars per anomaly across the four models; ticks = analytic 1σ if given."""
         n = len(vals[cases[0]])
@@ -1001,61 +1001,53 @@ def make_plots(res, outdir="Images"):
             rms(tmm["dev"][k].reshape(-1, len(P))), rms(tmm["dev_bulk"][k].ravel())
         )
         pred[k] = np.append(rms(tmm["sig"][k]), rms(tmm["bulk_sig"][k]))
-    fig, axes = plt.subplots(
-        1, 2, figsize=(16.5, 5.8), gridspec_kw={"width_ratios": [1.35, 1]}
-    )
+    fig, ax = plt.subplots(figsize=FS_BAR)
     _cases_panel(
-        axes[0],
+        ax,
         real,
         pred,
         r"Mass-fraction Error  [-]  (MC)",
         "Each added patch constrains the anomalies it covers",
     )
+    _save(fig, outdir, "global_pt2_fig2_massratio_bars.pdf")
+
     # one value per (interior, anomaly) — the RMS over that interior's noise
     # draws — so this pools the same kind of quantity the position panel does.
     # Pooling the raw signed errors instead would be a half-normal: |e| reaches
     # arbitrarily close to zero, and the histogram grows a tail down to 1e-10
     # that is an artefact of the absolute value, not of the estimator.
     per_truth = {k: np.sqrt((tmm["dev"][k] ** 2).mean(axis=1)) for k in cases}
+    fig, ax = plt.subplots(figsize=FS)
     _hist_panel(
-        axes[1],
+        ax,
         per_truth[cases[0]],
         per_truth[cases[-1]],
         r"Mass-fraction RMS Error over MC noise draws  [-]",
         "Distribution over truth interiors and anomalies",
     )
-    fig.tight_layout(w_pad=2.0)
-    fig.savefig(
-        os.path.join(outdir, "global_pt2_fig2_massratio.pdf"),
-        dpi=180,
-        bbox_inches="tight",
-    )
+    _save(fig, outdir, "global_pt2_fig2_massratio_hist.pdf")
 
-    # FIG 3 — POSITIONS  (same two panels, same order)
+    # FIG 3 — POSITIONS  (same two panels, same order, same two files)
     pe = res["pos_err"]
-    fig, axes = plt.subplots(
-        1, 2, figsize=(16.5, 5.8), gridspec_kw={"width_ratios": [1.35, 1]}
-    )
+    fig, ax = plt.subplots(figsize=FS_BAR)
     _cases_panel(
-        axes[0],
+        ax,
         {k: rms(pe[k]) for k in cases},
         None,
         "Position RMS Error  [LU]  (MC)",
         "The same patches, recovering position instead of mass",
     )
+    _save(fig, outdir, "global_pt2_fig3_position_bars.pdf")
+
+    fig, ax = plt.subplots(figsize=FS)
     _hist_panel(
-        axes[1],
+        ax,
         pe[cases[0]],
         pe[cases[-1]],
         "Position Error, One Fit per Truth Interior  [LU]",
         "Distribution over truth interiors and anomalies",
     )
-    fig.tight_layout(w_pad=2.0)
-    fig.savefig(
-        os.path.join(outdir, "global_pt2_fig3_position.pdf"),
-        dpi=180,
-        bbox_inches="tight",
-    )
+    _save(fig, outdir, "global_pt2_fig3_position_hist.pdf")
 
     # ---- FIG 4: separability -----------------------------------------------
     # sigma says how WELL each anomaly is known; this says whether it can be
@@ -1069,8 +1061,10 @@ def make_plots(res, outdir="Images"):
     # -0.96, against a median of -0.28).
     cor = tmm["corr"]
     short = [n.replace(" ", "\n", 1) for n in names]
-    fig, axes = plt.subplots(1, 2, figsize=(13.5, 6.0))
-    for ax, k in zip(axes, (cases[0], net_k)):
+    # one file per observation model; with no shared layout to place them, the
+    # x-label names the model that a left/right position used to imply
+    for tag, k in zip(("sh", "net"), (cases[0], net_k)):
+        fig, ax = plt.subplots(figsize=FS_COR)
         M = cor[k]
         im = ax.imshow(M, cmap="RdBu_r", vmin=-1, vmax=1)
         for a in range(len(names)):
@@ -1094,14 +1088,15 @@ def make_plots(res, outdir="Images"):
         ax.set_yticks(np.arange(len(names) + 1) - 0.5, minor=True)
         ax.grid(which="minor", color="w", lw=1.2)
         ax.tick_params(which="minor", length=0)
-    fig.colorbar(
-        im, ax=axes, fraction=0.035, pad=0.03, label="posterior correlation  [-]"
-    )
-    fig.savefig(
-        os.path.join(outdir, "global_pt2_fig4_separability.pdf"),
-        dpi=180,
-        bbox_inches="tight",
-    )
+        ax.set_xlabel(k, fontsize=10)
+        fig.colorbar(
+            im, ax=ax, fraction=0.046, pad=0.04, label="posterior correlation  [-]"
+        )
+        fig.savefig(
+            os.path.join(outdir, f"global_pt2_fig4_separability_{tag}.pdf"),
+            dpi=180,
+            bbox_inches="tight",
+        )
 
     # ---- FIG 5: coefficient residuals, before and after the fit ------------
     # Same construction as pt1's coefficient figure.  Per-degree (SH) and
@@ -1138,12 +1133,11 @@ def make_plots(res, outdir="Images"):
         xs = np.arange(n_m)
         return xs, [np.where(azi == m)[0] for m in xs]
 
-    fig, axes = plt.subplots(1, 2, figsize=(15, 5.4))
-    handles = None
-    for ax, (key, xlab) in zip(
-        axes,
-        [("sh", r"SH degree $n$  [-]"), ("ch", r"CH azimuthal order $m$  [-]")],
-    ):
+    for key, xlab in [
+        ("sh", r"SH degree $n$  [-]"),
+        ("ch", r"CH azimuthal order $m$  [-]"),
+    ]:
+        fig, ax = plt.subplots(figsize=FS)
         d = sp[key]
         pre, post = d["data"], d["data"] - d["model"]
         xs, gr = _groups(key)
@@ -1184,23 +1178,25 @@ def make_plots(res, outdir="Images"):
         ax.set_axisbelow(True)
         for sd_ in ("top", "right"):
             ax.spines[sd_].set_visible(False)
-        if handles is None:
-            handles, labels = ax.get_legend_handles_labels()
-    fig.tight_layout(rect=[0, 0.09, 1, 1])
-    fig.legend(
-        handles,
-        labels,
-        loc="lower center",
-        ncol=3,
-        fontsize=9.5,
-        frameon=False,
-        bbox_to_anchor=(0.5, 0.012),
-    )
-    fig.savefig(
-        os.path.join(outdir, "global_pt2_fig5_coefficients.pdf"),
-        dpi=180,
-        bbox_inches="tight",
-    )
+
+        # legend in a reserved strip below the axes, one column: a single-panel
+        # canvas cannot fit these three labels side by side (as in pt1)
+        handles, labels = ax.get_legend_handles_labels()
+        fig.tight_layout(rect=[0, 0.13, 1, 1])
+        fig.legend(
+            handles,
+            labels,
+            loc="lower center",
+            ncol=1,
+            fontsize=9.5,
+            frameon=False,
+            bbox_to_anchor=(0.5, 0.012),
+        )
+        fig.savefig(
+            os.path.join(outdir, f"global_pt2_fig5_coefficients_{key}.pdf"),
+            dpi=180,
+            bbox_inches="tight",
+        )
     plt.show()
 
 
@@ -1217,10 +1213,17 @@ if __name__ == "__main__":
         outdir="Images",
         verbose=True,
     )
-    print(
-        "\nSaved: Images/global_pt2_fig1_geometry.pdf, "
-        "global_pt2_fig2_massratio.pdf, global_pt2_fig3_position.pdf, "
-        "global_pt2_fig4_separability.pdf, "
-        "global_pt2_fig5_coefficients.pdf"
-    )
+    print("\nSaved to Images/ (one file per panel):")
+    for _f in (
+        "global_pt2_fig1_geometry.pdf",
+        "global_pt2_fig2_massratio_bars.pdf",
+        "global_pt2_fig2_massratio_hist.pdf",
+        "global_pt2_fig3_position_bars.pdf",
+        "global_pt2_fig3_position_hist.pdf",
+        "global_pt2_fig4_separability_sh.pdf",
+        "global_pt2_fig4_separability_net.pdf",
+        "global_pt2_fig5_coefficients_sh.pdf",
+        "global_pt2_fig5_coefficients_ch.pdf",
+    ):
+        print("  " + _f)
     print("Done.")
