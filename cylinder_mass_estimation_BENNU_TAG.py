@@ -171,8 +171,8 @@ else:
 # scripts, in the same role order.  The previous set opened with #d7191c and
 # carried #1a9641 at index 3 — red against green, the pair deuteranopes and
 # protanopes cannot separate.
-COLOR_PALETTE = ["#D55E00", "#E69F00", "#0072B2", "#009E73", "#CC79A7", "#56B4E9"]
-ACCENT = "#882255"  # structural elements, kept clear of the data colours
+COLOR = ["#D55E00", "#E69F00", "#0072B2", "#009E73", "#CC79A7", "#56B4E9"]
+ACCENT = "#882255"  # structural elements (the analysis cylinder), as in GLOBAL
 
 # Truncated-SVD cutoff of the weighted least squares, the same value the
 # GLOBAL scripts use as CH_RCOND.  It was previously a bare 1e-4 at the
@@ -185,7 +185,7 @@ USE_TEX = False  # os.environ.get("GLOBAL_NO_TEX", "") == ""
 
 mpl.rcParams.update(
     {
-        "axes.prop_cycle": mpl.cycler(color=COLOR_PALETTE),
+        "axes.prop_cycle": mpl.cycler(color=COLOR),
         # Same switch as the GLOBAL scripts.  Every label here is written to be
         # valid in BOTH modes — maths in $...$, no bare unicode, no % — so
         # flipping it changes only the typeface and the speed.
@@ -193,10 +193,9 @@ mpl.rcParams.update(
         "font.family": "serif" if USE_TEX else "STIXGeneral",
         "mathtext.fontset": "stix",
         "text.latex.preamble": r"\usepackage{amsmath}\usepackage{amssymb}",
-        "font.size": 11,
-        "axes.labelsize": 12,
-        "axes.titlesize": 11,
-        "legend.fontsize": 9,
+        "font.size": 12,
+        "axes.labelsize": 13,
+        "axes.titlesize": 13,
         # ── journal styling ────────────────────────────────────────────
         # Ticks inward on all four sides with minors, hairline spines, frameless
         # legends, faint grids and 300 dpi output: the conventions AAS/Icarus
@@ -239,18 +238,20 @@ DASH = "─" * 65
 
 # Every panel is written to its OWN file: the paper places the figures
 # individually, so nothing is composed into a multi-panel sheet here.
-FS = (7.0, 5.0)  # default standalone panel
+FS = (7.2, 5.4)  # default standalone panel (same as the GLOBAL scripts)
 FS_MAP = (6.4, 5.4)  # equal-aspect map with its own colour bar
-FS_HIST = (7.4, 5.0)  # the Delta M histogram
 
 
-def _save(fig, outdir, name, dpi=None):
-    """Tight-crop one standalone panel to `outdir/PREFIX+name`; no-op if outdir is None."""
+def _save(fig, outdir, name):
+    """Tight-crop one standalone panel to `outdir/PREFIX+name`; no-op if outdir is None.
+
+    No dpi here: `savefig.dpi` (300) is set in the rcParams block above, and only
+    rasterized content (the 3-D surfaces, the rasterized scatters) is affected.
+    """
     if not outdir:
         return
     os.makedirs(outdir, exist_ok=True)
-    kw = {"dpi": dpi} if dpi else {}
-    fig.savefig(os.path.join(outdir, PREFIX + name), bbox_inches="tight", **kw)
+    fig.savefig(os.path.join(outdir, PREFIX + name), bbox_inches="tight")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1246,9 +1247,9 @@ def plot_covariance_mc(res, cov, outdir="Images", n_mc=40000, n_map=4000,
     # ── the mass, on its own: a scalar, so one histogram against its predicted
     # Gaussian.  Kept in kg rather than normalized — the kilograms make the size
     # of the uncertainty readable straight off the axis.
-    fig_m, ax = plt.subplots(figsize=FS_HIST)
+    fig_m, ax = plt.subplots(figsize=FS)
     e, sd = mc["dM_err"], mc["an_sigma_dM"]
-    ax.hist(e, bins=60, density=True, color=COLOR_PALETTE[0], alpha=0.78,
+    ax.hist(e, bins=60, density=True, color=COLOR[0], alpha=0.78,
             edgecolor="k", lw=0.3, label="Monte-Carlo realizations")
     xg = np.linspace(e.min(), e.max(), 400)
     ax.plot(xg, np.exp(-0.5 * (xg / sd) ** 2) / (sd * np.sqrt(2 * np.pi)),
@@ -1260,7 +1261,7 @@ def plot_covariance_mc(res, cov, outdir="Images", n_mc=40000, n_map=4000,
                    else None)
     ax.set_xlabel(rf"$\widehat{{\Delta M}}-\Delta M$  [{_UL['mass']}]")
     ax.set_ylabel(f"PDF  [1/{_U['mass']}]")
-    ax.grid(True, alpha=0.22)
+    ax.grid(True, alpha=0.3)
     ax.set_axisbelow(True)
     ax.legend(fontsize=9)
     _save(fig_m, outdir, "fig5_covariance_mass.pdf")
@@ -1741,13 +1742,13 @@ def plot_results(res, outdir=None):
         for axis in [ax.xaxis, ax.yaxis, ax.zaxis]:
             axis.pane.fill = False
             axis.pane.set_edgecolor("white")
-        ax.tick_params(labelsize=8)
-        ax.set_xlabel(f"$x$ [{_UL['len']}]", fontsize=8)
-        ax.set_ylabel(f"$y$ [{_UL['len']}]", fontsize=8)
-        ax.set_zlabel(f"$z$ [{_UL['len']}]", fontsize=8)
+        ax.tick_params(labelsize=9)
+        ax.set_xlabel(f"$x$ [{_UL['len']}]")
+        ax.set_ylabel(f"$y$ [{_UL['len']}]")
+        ax.set_zlabel(f"$z$ [{_UL['len']}]")
         ax.view_init(elev=28, azim=-60)
 
-    def _draw_cylinder(ax, color="tab:cyan"):
+    def _draw_cylinder(ax, color=ACCENT):
         th = np.linspace(0, 2 * np.pi, 120)
         for z, lw in ((z0, 2.4), (z0 + H, 1.6)):  # base heavier: it marks the site
             ax.plot(
@@ -1823,13 +1824,13 @@ def plot_results(res, outdir=None):
     ax.legend(
         handles=[
             plt.Line2D(
-                [], [], color="tab:cyan", lw=1.8, label=r"Analysis cylinder $R^*,\,H$"
+                [], [], color=ACCENT, lw=1.8, label=r"Analysis cylinder $R^*,\,H$"
             )
         ],
         loc="upper right",
         fontsize=9,
     )
-    _save(fig1, outdir, "fig1_geometry.pdf", dpi=200)
+    _save(fig1, outdir, "fig1_geometry.pdf")
 
     # ── FIGURE 2 — what TAG changed ────────────────────────────────────
     # Everything static cancels in the difference, so the differences ARE the
@@ -1872,7 +1873,7 @@ def plot_results(res, outdir=None):
         ax.set_xticks([0, 2, 4, 6, 8])
         ax.set_xlabel(rf"$\rho$  [{_UL['len']}]  (equal-area scale)")
         ax.set_ylabel(rf"$z-z_0$  [{_UL['len']}]")
-        ax.grid(True, alpha=0.2, lw=0.6)
+        ax.grid(True, alpha=0.3)
         ax.set_axisbelow(True)
         for sd_ in ("top", "right"):
             ax.spines[sd_].set_visible(False)
@@ -1913,7 +1914,7 @@ def plot_results(res, outdir=None):
         ms,
         rms_m / gsd,
         rms_m * gsd,
-        color=COLOR_PALETTE[0],
+        color=COLOR[0],
         alpha=0.20,
         lw=0,
         zorder=2,
@@ -1923,7 +1924,7 @@ def plot_results(res, outdir=None):
         ms,
         rms_m,
         "-o",
-        color=COLOR_PALETTE[0],
+        color=COLOR[0],
         lw=2.2,
         ms=8,
         mec="k",
@@ -1936,7 +1937,7 @@ def plot_results(res, outdir=None):
     ax.set_xticks(ms)
     ax.set_xlabel(r"Azimuthal order $m$  [-]")
     ax.set_ylabel(rf"$|\Delta\mathbf{{CS}}_{{mn}}|$  [{_UL['pot']}]")
-    ax.grid(True, which="both", alpha=0.2, lw=0.6)
+    ax.grid(True, axis="y", which="both", ls=":", alpha=0.45)
     ax.set_axisbelow(True)
     ax.legend(fontsize=8.5, loc="upper right", framealpha=0.92)
     for sd_ in ("top", "right"):
@@ -1991,7 +1992,7 @@ def plot_results(res, outdir=None):
         )
         _decor3(ax)
         fig3.colorbar(c, ax=ax, **CBAR).set_label(lab)
-        _save(fig3, outdir, f"fig3_mass_change_{tag}.pdf", dpi=200)
+        _save(fig3, outdir, f"fig3_mass_change_{tag}.pdf")
         figs3.append(fig3)
 
     # third panel, drawn exactly like the first two: the ERROR map, recovered
@@ -2025,7 +2026,7 @@ def plot_results(res, outdir=None):
 
     # (the old Summary text panel was a fourth cell of this figure; every number
     #  in it is now in the terminal's LaTeX tables — figures carry no numbers)
-    _save(fig3C, outdir, "fig3_mass_change_error.pdf", dpi=200)
+    _save(fig3C, outdir, "fig3_mass_change_error.pdf")
 
     # NO plt.show() here: it blocks, so anything created after this call would
     # be built and never displayed.  The caller shows every figure at the end.

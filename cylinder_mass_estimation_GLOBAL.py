@@ -1920,9 +1920,13 @@ FS_WIDE = (8.4, 5.0)  # equal-aspect panel with a wide footprint (silhouette)
 
 
 def _save(fig, outdir, name):
-    """Tight-layout and tight-crop one standalone panel to `outdir/name`."""
+    """Tight-layout and tight-crop one standalone panel to `outdir/name`.
+
+    No dpi here: `savefig.dpi` (300) is set in the rcParams block above, and only
+    rasterized content is affected by it.
+    """
     fig.tight_layout()
-    fig.savefig(os.path.join(outdir, name), dpi=180, bbox_inches="tight")
+    fig.savefig(os.path.join(outdir, name), bbox_inches="tight")
 
 
 def make_plots(res, outdir="Images"):
@@ -2558,7 +2562,6 @@ def make_plots(res, outdir="Images"):
         )
         fig.savefig(
             os.path.join(outdir, f"global_fig4_coefficients_{key}.pdf"),
-            dpi=180,
             bbox_inches="tight",
         )
 

@@ -1094,7 +1094,6 @@ def make_plots(res, outdir="Images"):
         )
         fig.savefig(
             os.path.join(outdir, f"global_pt2_fig4_separability_{tag}.pdf"),
-            dpi=180,
             bbox_inches="tight",
         )
 
@@ -1194,7 +1193,6 @@ def make_plots(res, outdir="Images"):
         )
         fig.savefig(
             os.path.join(outdir, f"global_pt2_fig5_coefficients_{key}.pdf"),
-            dpi=180,
             bbox_inches="tight",
         )
     plt.show()
