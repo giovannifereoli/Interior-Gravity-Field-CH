@@ -1834,6 +1834,15 @@ def set_axes_true_shape(ax, pts, pad=0.04):
     ax.set_ylim(lo[1], hi[1])
     ax.set_zlim(lo[2], hi[2])
     ax.set_box_aspect(hi - lo)
+    # Thin the ticks.  The default locator fills each axis with as many labels as
+    # its DATA range warrants, but a 3-D axis is drawn foreshortened — the short
+    # axis of an elongated body ends up with ~8 labels crammed into a couple of
+    # projected centimetres, running into each other and into the axis label.
+    # Scale the count with the axis's share of the largest extent, so the long
+    # axis keeps a useful number and the short ones are not overcrowded.
+    frac = (hi - lo) / (hi - lo).max()
+    for axis, f in zip((ax.xaxis, ax.yaxis, ax.zaxis), frac):
+        axis.set_major_locator(mpl.ticker.MaxNLocator(nbins=max(3, round(5 * f))))
 
 
 def draw_cylinder(ax, cyl, color=ACCENT, alpha=0.20, n_th=48, lw=0.9, label=None):
@@ -1953,14 +1962,64 @@ FS_SQ = (6.6, 6.2)  # equal-aspect scatter (the position clouds)
 FS_WIDE = (8.4, 5.0)  # equal-aspect panel with a wide footprint (silhouette)
 
 
-def _save(fig, outdir, name):
+# 3-D axis labels sit BEYOND their tick labels, and mplot3d's default labelpad
+# of 4 pt was already marginal — at FONT_SCALE > 1 the label lands on top of the
+# numbers.  Scale the pad with the text so the gap stays proportional.
+LPAD3D = 10 * FONT_SCALE
+
+
+def _save3d(fig, outdir, name, right=0.92, left=0.02, bottom=0.04, top=0.97):
+    """
+    Save a 3-D panel WITHOUT the tight crop.
+
+    mplot3d places the axis labels outside the axes' reported bounding box, so
+    `bbox_inches="tight"` computes a crop that does not contain them and slices
+    the z label off the right edge.  pad_inches only buys margin until the label
+    grows again — measured, it overhangs the tight bbox by ~0.42 in at
+    FONT_SCALE 1.35, and the fix would have to be re-tuned on every font change.
+    Reserving the margin inside the figure and saving the whole canvas is exact
+    and costs no extra white border.  (A 3-D panel carrying a colour bar does not
+    need this: the bar sits outboard of the z label and pulls the tight bbox out
+    past it on its own.)
+    """
+    fig.subplots_adjust(left=left, bottom=bottom, right=right, top=top)
+    with mpl.rc_context({"savefig.bbox": None}):
+        fig.savefig(os.path.join(outdir, name))
+
+
+def _save(fig, outdir, name, pad=None):
     """Tight-layout and tight-crop one standalone panel to `outdir/name`.
 
     No dpi here: `savefig.dpi` (300) is set in the rcParams block above, and only
-    rasterized content is affected by it.
+    rasterized content is affected by it.  `pad` sets `pad_inches` — 3-D panels
+    need PAD3D, see above.
     """
     fig.tight_layout()
-    fig.savefig(os.path.join(outdir, name), bbox_inches="tight")
+    kw = {"pad_inches": pad} if pad is not None else {}
+    fig.savefig(os.path.join(outdir, name), bbox_inches="tight", **kw)
+
+
+def hist_legend(ax):
+    """
+    Legend ABOVE a log-normal histogram panel, never inside it.
+
+    These panels carry two histograms PLUS their two fitted curves, and the fit
+    labels quote mu and sigma, so the box is both tall and wide — placed in any
+    corner it sits on the bars, because the two histograms are separated along x
+    and between them they occupy most of the width.  Two columns, filled
+    column-wise, so each histogram lands directly above its own fit.
+    """
+    ax.legend(
+        fontsize=8 * FONT_SCALE,
+        ncol=2,
+        frameon=False,
+        loc="lower left",
+        bbox_to_anchor=(0.0, 1.01, 1.0, 0.2),
+        mode="expand",
+        borderaxespad=0.0,
+        handletextpad=0.5,
+        columnspacing=1.2,
+    )
 
 
 def make_plots(res, outdir="Images"):
@@ -1998,9 +2057,9 @@ def make_plots(res, outdir="Images"):
         # and the target sits lower so its label clears the cylinder above it
         dz = -0.05 if i_a == tgt else 0.0
         ax.text(p_a[0], p_a[1], p_a[2] + dz, f"    {nm.split()[0]}", fontsize=9.5 * FONT_SCALE)
-    ax.set_xlabel("x [LU]")
-    ax.set_ylabel("y [LU]")
-    ax.set_zlabel("z [LU]")
+    ax.set_xlabel("x [LU]", labelpad=LPAD3D)
+    ax.set_ylabel("y [LU]", labelpad=LPAD3D)
+    ax.set_zlabel("z [LU]", labelpad=LPAD3D)
     set_axes_true_shape(ax, np.vstack([V, cylinder_hull(cyl)]))
     ax.scatter([], [], color=COLOR[0], label=r"Anomaly $\beta_j>0$")
     ax.scatter([], [], color=COLOR[2], label=r"Anomaly $\beta_j<0$")
@@ -2017,7 +2076,7 @@ def make_plots(res, outdir="Images"):
     )
     ax.legend(loc="upper left", fontsize=8 * FONT_SCALE)
 
-    _save(fig, outdir, "global_fig1_geometry.pdf")
+    _save3d(fig, outdir, "global_fig1_geometry.pdf")
 
     # ---- FIG 2a: EXPERIMENT 1 — mass recovery over TRUTH MASS FRACTIONS ----
     # Same three questions fig 3 asks of position, one file each: (a) how the
@@ -2055,7 +2114,7 @@ def make_plots(res, outdir="Images"):
     ax.set_xlabel(r"Mass-fraction RMS Error over MC noise draws,  $\beta_0$  [-]")
     ax.set_ylabel(f"Truth Interiors  (of {len(mA)})  [-]")
     ax.grid(True, which="both", alpha=0.3)
-    ax.legend(fontsize=8 * FONT_SCALE, loc="upper left")
+    hist_legend(ax)
     _save(fig, outdir, "global_fig2a_massfraction_hist.pdf")
 
     # (b) which interiors were drawn: |beta| uniform, sign random, per component
@@ -2369,7 +2428,7 @@ def make_plots(res, outdir="Images"):
     ax.set_xlabel("Position RMS Error over MC noise draws [LU]")
     ax.set_ylabel(f"Truth Interiors  (of {len(eA)})  [-]")
     ax.grid(True, which="both", alpha=0.3)
-    ax.legend(fontsize=8 * FONT_SCALE, loc="upper left")
+    hist_legend(ax)
     _save(fig, outdir, "global_fig3_position_hist.pdf")
 
     # (b) where the truth anomalies were drawn

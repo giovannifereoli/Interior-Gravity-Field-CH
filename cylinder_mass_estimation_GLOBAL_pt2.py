@@ -907,13 +907,13 @@ def make_plots(res, outdir="Images"):
     ax.plot([], [], color=ACCENT, lw=2, label="CH cylinders")
     ax.scatter([], [], color=COLOR[0], label=r"Anomaly $\beta_j>0$")
     ax.scatter([], [], color=COLOR[2], label=r"Anomaly $\beta_j<0$")
-    ax.set_xlabel("x [LU]")
-    ax.set_ylabel("y [LU]")
-    ax.set_zlabel("z [LU]")
+    ax.set_xlabel("x [LU]", labelpad=G.LPAD3D)
+    ax.set_ylabel("y [LU]", labelpad=G.LPAD3D)
+    ax.set_zlabel("z [LU]", labelpad=G.LPAD3D)
     G.set_axes_true_shape(ax, np.vstack([V] + [G.cylinder_hull(c["cyl"]) for c in net]))
     ax.legend(fontsize=9 * FONT_SCALE, loc="upper left")
 
-    _save(fig, outdir, "global_pt2_fig1_geometry.pdf")
+    G._save3d(fig, outdir, "global_pt2_fig1_geometry.pdf")
 
     # ---- FIG 2 / FIG 3: the two experiments, drawn identically -------------
     # Specular by construction: same four observation models, same bar chart,
@@ -1001,7 +1001,7 @@ def make_plots(res, outdir="Images"):
         ax.set_xlabel(xlabel)
         ax.set_ylabel(f"Fits  (of {a.size})  [-]")
         ax.grid(True, which="both", alpha=0.3)
-        ax.legend(fontsize=8 * FONT_SCALE, loc="upper left")
+        G.hist_legend(ax)
 
     # FIG 2 — MASS FRACTIONS
     real, pred = {}, {}

@@ -255,7 +255,11 @@ FS = (7.2, 5.4)  # default standalone panel (same as the GLOBAL scripts)
 FS_MAP = (6.4, 5.4)  # equal-aspect map with its own colour bar
 
 
-def _save(fig, outdir, name):
+# see the GLOBAL scripts: 3-D axis labels need a pad that tracks the font scale
+LPAD3D = 10 * FONT_SCALE
+
+
+def _save(fig, outdir, name, pad=None):
     """Tight-crop one standalone panel to `outdir/PREFIX+name`; no-op if outdir is None.
 
     No dpi here: `savefig.dpi` (300) is set in the rcParams block above, and only
@@ -264,7 +268,8 @@ def _save(fig, outdir, name):
     if not outdir:
         return
     os.makedirs(outdir, exist_ok=True)
-    fig.savefig(os.path.join(outdir, PREFIX + name), bbox_inches="tight")
+    kw = {"pad_inches": pad} if pad is not None else {}
+    fig.savefig(os.path.join(outdir, PREFIX + name), bbox_inches="tight", **kw)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1756,9 +1761,11 @@ def plot_results(res, outdir=None):
             axis.pane.fill = False
             axis.pane.set_edgecolor("white")
         ax.tick_params(labelsize=9 * FONT_SCALE)
-        ax.set_xlabel(f"$x$ [{_UL['len']}]")
-        ax.set_ylabel(f"$y$ [{_UL['len']}]")
-        ax.set_zlabel(f"$z$ [{_UL['len']}]")
+        # 3-D labels sit beyond their tick labels; mplot3d's default 4 pt pad
+        # puts them on the numbers once the text is scaled up for print
+        ax.set_xlabel(f"$x$ [{_UL['len']}]", labelpad=LPAD3D)
+        ax.set_ylabel(f"$y$ [{_UL['len']}]", labelpad=LPAD3D)
+        ax.set_zlabel(f"$z$ [{_UL['len']}]", labelpad=LPAD3D)
         ax.view_init(elev=28, azim=-60)
 
     def _draw_cylinder(ax, color=ACCENT):
