@@ -195,7 +195,7 @@ mpl.rcParams.update(
         "lines.markeredgewidth": 0.7,
         "savefig.dpi": 300,
         "savefig.bbox": "tight",
-        "pdf.fonttype": 42,          # editable text in the PDF, not outlines
+        "pdf.fonttype": 42,  # editable text in the PDF, not outlines
         "figure.dpi": 110,
     }
 )
@@ -1447,8 +1447,8 @@ def results_report(res, tex=True):
 def run_experiment(
     Lmax_sh=6,
     eps=0.02,
-    ch_modes=(8, 8),
-    n_cyl_pts=200,  # field samples in the cylinder -- geometry, NOT an MC size
+    ch_modes=(4, 4),
+    n_cyl_pts=1000,  # field samples in the cylinder -- geometry, NOT an MC size
     detail=False,  # verbose narrative; the tables at the end carry the numbers
     # Every Monte-Carlo size below reads n_<role>_<experiment>:
     #   n_truth_*  OUTER loop, how many truth interiors are drawn
@@ -1458,15 +1458,15 @@ def run_experiment(
     # ── experiment 1 — MASS FRACTIONS  (400 linear fits) ──────────────────
     # ONE noisy fit per interior: the MC is over BODIES, not over noise.  The
     # covariance is checked separately by the n_cloud_m draws at one interior.
-    n_truth_m=400,
-    n_cloud_m=2000,  # the cloud behind fig 2a's covariance ellipses
+    n_truth_m=500,
+    n_cloud_m=1000,  # the cloud behind fig 2a's covariance ellipses
     truth_mag=(0.01, 0.06),  # |beta_j| drawn uniformly in this band, sign random
     seed_mass=101,  # which set of truth interiors gets drawn
     # ── experiment 2 — POSITIONS  (300 nonlinear fits + the cloud) ────────
     # Same design, and these are TRF fits with a numerical Jacobian: they
     # dominate the runtime, so raise n_truth_p last and the mass sizes first.
-    n_truth_p=300,
-    n_cloud_p=750,  # the cloud behind fig 3's covariance ellipse
+    n_truth_p=500,
+    n_cloud_p=1000,  # the cloud behind fig 3's covariance ellipse
     pos_spread=0.20,  # truth positions jitter within this radius of the site
     seed_pos=202,
     pos_start_offset=0.03,  # how far the nonlinear fit starts from the truth
@@ -1767,9 +1767,7 @@ def run_experiment(
     # smallest detectable anomaly (part of Experiment 1: positions fixed)
     f_base = f_true.copy()
     mu_grid = np.logspace(*det_range, det_n)  # true anomaly mass-fraction sweep
-    det = detection_sweep(
-        A_sh, sig_sh, A_ch, sig_ch, f_base, mu_grid, n_mc=n_sweep
-    )
+    det = detection_sweep(A_sh, sig_sh, A_ch, sig_ch, f_base, mu_grid, n_mc=n_sweep)
     det["acc"] = det_acc
     if verbose and detail:
         print(f"\n  smallest detectable anomaly (3σ fit scatter):")
@@ -2086,19 +2084,36 @@ def bouguer_map(
     v = float(np.percentile(np.abs(dgr), 99)) or 1.0
     # gouraud, not flat: the disturbance is a smooth potential field and the
     # cell edges of a flat mesh read as structure that is not there
-    c = ax.pcolormesh(lon, lat, dgr, cmap="RdBu_r", vmin=-v, vmax=v,
-                      shading="gouraud", rasterized=True)
+    c = ax.pcolormesh(
+        lon,
+        lat,
+        dgr,
+        cmap="RdBu_r",
+        vmin=-v,
+        vmax=v,
+        shading="gouraud",
+        rasterized=True,
+    )
     # contours over the colour: a filled map alone is hard to read a VALUE off,
     # and the zero line is where the truth crosses the constant-density model
     lv = np.linspace(-v, v, 11)
-    ax.contour(lon, lat, dgr, levels=lv[lv != 0], colors="k", linewidths=0.45,
-               alpha=0.35, zorder=2)
-    ax.contour(lon, lat, dgr, levels=[0.0], colors="k", linewidths=1.3,
-               alpha=0.8, zorder=3)
+    ax.contour(
+        lon,
+        lat,
+        dgr,
+        levels=lv[lv != 0],
+        colors="k",
+        linewidths=0.45,
+        alpha=0.35,
+        zorder=2,
+    )
+    ax.contour(
+        lon, lat, dgr, levels=[0.0], colors="k", linewidths=1.3, alpha=0.8, zorder=3
+    )
     # let the locator pick round ticks: the contour levels are a linspace and
     # reusing them put values like 0.2631 on the bar
     cb = fig.colorbar(c, ax=ax, pad=0.02, fraction=0.030)
-    cb.set_label(r"$\Delta g_r$  (truth $-$ constant density)  [LU$^{-2}$]")
+    cb.set_label(r"$\Delta g_r$ [LU$^{-2}$]")
 
     # ONE MARKER SHAPE PER ANOMALY, named in the legend rather than written on
     # the map: six labels on a 360x180 field collide with each other and with
@@ -2110,12 +2125,20 @@ def bouguer_map(
     a_lon = np.degrees(np.arctan2(Pa[:, 1], Pa[:, 0]))
     a_lat = np.degrees(np.arcsin(Pa[:, 2] / np.linalg.norm(Pa, axis=1)))
     for j, (lo_, la_) in enumerate(zip(a_lon, a_lat)):
-        lab = None if names is None else (
-            f"{names[j]}  ({'+' if beta[j] > 0 else '−'})"
+        lab = (
+            None if names is None else (f"{names[j]}  ({'+' if beta[j] > 0 else '−'})")
         )
         ax.plot(
-            lo_, la_, MK[j % len(MK)], ms=10, mec="k", mew=0.9, ls="none",
-            zorder=6, color=COLOR[0] if beta[j] > 0 else COLOR[2], label=lab,
+            lo_,
+            la_,
+            MK[j % len(MK)],
+            ms=10,
+            mec="k",
+            mew=0.9,
+            ls="none",
+            zorder=6,
+            color=COLOR[0] if beta[j] > 0 else COLOR[2],
+            label=lab,
         )
     # cylinders as a wide hollow RING, so where one sits over an anomaly it
     # encircles that anomaly's marker instead of hiding it
@@ -2124,12 +2147,26 @@ def bouguer_map(
         ax.plot(
             np.degrees(np.arctan2(m[1], m[0])),
             np.degrees(np.arcsin(m[2] / np.linalg.norm(m))),
-            marker="o", mfc="none", mec=ACCENT, mew=2.0, ms=19, ls="none",
+            marker="o",
+            mfc="none",
+            mec=ACCENT,
+            mew=2.0,
+            ms=19,
+            ls="none",
             zorder=5,
         )
     if marks:
-        ax.plot([], [], marker="o", mfc="none", mec=ACCENT, mew=2.0, ms=13,
-                ls="none", label="CH cylinder")
+        ax.plot(
+            [],
+            [],
+            marker="o",
+            mfc="none",
+            mec=ACCENT,
+            mew=2.0,
+            ms=13,
+            ls="none",
+            label="CH cylinder",
+        )
     # plate carree: one degree of longitude the same length as one of latitude,
     # so the anomaly footprints keep their true relative shape
     ax.set_aspect("equal")
@@ -2143,9 +2180,15 @@ def bouguer_map(
     ax.set_axisbelow(False)
     n_e = len(Pa) + (1 if marks else 0)
     ax.legend(
-        fontsize=8.5 * FONT_SCALE, ncol=min(4, n_e), frameon=False,
-        loc="lower left", bbox_to_anchor=(0.0, 1.01, 1.0, 0.2), mode="expand",
-        borderaxespad=0.0, handletextpad=0.4, columnspacing=1.1,
+        fontsize=8.5 * FONT_SCALE,
+        ncol=min(4, n_e),
+        frameon=False,
+        loc="lower left",
+        bbox_to_anchor=(0.0, 1.01, 1.0, 0.2),
+        mode="expand",
+        borderaxespad=0.0,
+        handletextpad=0.4,
+        columnspacing=1.1,
     )
     _save(fig, outdir, fname)
     return fig
@@ -2185,7 +2228,13 @@ def make_plots(res, outdir="Images"):
         # short name (first word); leading spaces nudge it right of the marker,
         # and the target sits lower so its label clears the cylinder above it
         dz = -0.05 if i_a == tgt else 0.0
-        ax.text(p_a[0], p_a[1], p_a[2] + dz, f"    {nm.split()[0]}", fontsize=9.5 * FONT_SCALE)
+        ax.text(
+            p_a[0],
+            p_a[1],
+            p_a[2] + dz,
+            f"    {nm.split()[0]}",
+            fontsize=9.5 * FONT_SCALE,
+        )
     ax.set_xlabel("x [LU]", labelpad=LPAD3D)
     ax.set_ylabel("y [LU]", labelpad=LPAD3D)
     ax.set_zlabel("z [LU]", labelpad=LPAD3D)
@@ -2209,8 +2258,14 @@ def make_plots(res, outdir="Images"):
 
     # ---- FIG 1b: Bouguer map of the truth interior -------------------------
     bouguer_map(
-        res["bulk"], P, ft, V, outdir, PREFIX + "fig1b_bouguer.pdf",
-        names=[n.split()[0] for n in names], marks=[cyl.center],
+        res["bulk"],
+        P,
+        ft,
+        V,
+        outdir,
+        PREFIX + "fig1b_bouguer.pdf",
+        names=[n.split()[0] for n in names],
+        marks=[cyl.center],
     )
 
     # ---- FIG 2a: EXPERIMENT 1 — mass recovery over TRUTH MASS FRACTIONS ----
@@ -2372,7 +2427,9 @@ def make_plots(res, outdir="Images"):
         ry = 3.4 * max(np.sqrt(covA[1, 1]), abs(muA[1] - tru[1]))
         axc.set_xlim(muA[0] - rx, muA[0] + rx)
         axc.set_ylim(muA[1] - ry, muA[1] + ry)
-        axc.set_ylabel(rf"$\beta$  {names[ko].split()[0]}  [-]", fontsize=10 * FONT_SCALE)
+        axc.set_ylabel(
+            rf"$\beta$  {names[ko].split()[0]}  [-]", fontsize=10 * FONT_SCALE
+        )
         axc.ticklabel_format(style="sci", scilimits=(-2, 2), useMathText=True)
         axc.yaxis.get_offset_text().set_fontsize(8)
         axc.grid(True, alpha=0.3)
@@ -2448,7 +2505,9 @@ def make_plots(res, outdir="Images"):
             handletextpad=0.4,
             columnspacing=1.0,
         )
-        axc.set_xlabel(rf"$\beta$  {names[jt].split()[0]}  [-]", fontsize=10 * FONT_SCALE)
+        axc.set_xlabel(
+            rf"$\beta$  {names[jt].split()[0]}  [-]", fontsize=10 * FONT_SCALE
+        )
         _save(fig, outdir, f"{PREFIX}fig2a_massfraction_cov{row + 1}.pdf")
 
     # ---- FIG 2b: estimator performance vs anomaly size ---------------------
