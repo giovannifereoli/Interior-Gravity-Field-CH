@@ -1143,7 +1143,7 @@ def latex_tables(res, cov=None):
         )
 
 
-def covariance_mc(res, cov, n_mc=40000, n_map=4000, seed=3):
+def covariance_mc(res, cov, n_mc=200000, n_map=20000, seed=3):
     """
     Monte-Carlo check of the analytic covariance chain.
 
@@ -1186,7 +1186,7 @@ def covariance_mc(res, cov, n_mc=40000, n_map=4000, seed=3):
     )
 
 
-def plot_covariance_mc(res, cov, outdir="Images", n_mc=40000, n_map=4000,
+def plot_covariance_mc(res, cov, outdir="Images", n_mc=200000, n_map=20000,
                        mc=None):
     """
     The predicted 1-sigma map of Delta sigma against the one the Monte-Carlo

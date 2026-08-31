@@ -244,7 +244,7 @@ def position_mc_net(
     use_net,
     bulk,
     bounds=None,
-    n_mc=60,
+    n_mc=240,
     seed=13,
     start_jitter=0.02,
     pinv_list=None,
@@ -354,10 +354,10 @@ def truth_mc_masses_net(
     n_cyl,
     c0,
     c1,
-    n_truth=60,
+    n_truth=240,
     seed=101,
     mag=(0.015, 0.05),
-    n_rea=24,
+    n_rea=48,
 ):
     """
     Redraw the truth MASS FRACTIONS; for each interior rebuild every sigma from
@@ -446,7 +446,7 @@ def truth_mc_position_net(
     tm,
     n_cyl,
     keys,
-    n_truth=25,
+    n_truth=80,
     seed=202,
     spread=0.06,
     pos_bounds=None,
@@ -506,12 +506,12 @@ def run(
     ch_modes=(6, 6),
     n_cyl=6,
     # ── truth-mass draws (experiment A) ────────────────────────────────────
-    n_truth_m=60,
+    n_truth_m=240,
     truth_mag=(0.015, 0.05),
     seed_mass=101,
-    n_rea=24,
+    n_rea=48,
     # ── truth-position draws (experiment B) ────────────────────────────────
-    n_truth_p=20,
+    n_truth_p=80,
     pos_spread=0.06,
     seed_pos=202,
     outdir="Images",
@@ -1213,9 +1213,9 @@ if __name__ == "__main__":
         eps=0.02,
         ch_modes=(6, 6),
         n_cyl=6,
-        n_truth_m=60,  # truth interiors for the mass experiment
-        n_rea=24,  # noise draws per interior
-        n_truth_p=20,  # truth interiors for the position experiment
+        n_truth_m=240,  # truth interiors for the mass experiment
+        n_rea=48,  # noise draws per interior
+        n_truth_p=80,  # truth interiors for the position experiment
         pos_spread=0.06,
         outdir="Images",
         verbose=True,

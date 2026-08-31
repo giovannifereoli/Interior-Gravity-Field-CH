@@ -863,13 +863,13 @@ def ls_fit_once(blocks, m_true, rng):
     return m_hat
 
 
-def monte_carlo_fit(blocks, m_true, n_mc=400, seed=7):
+def monte_carlo_fit(blocks, m_true, n_mc=2000, seed=7):
     """Monte-Carlo over noise: returns recovered masses (n_mc, n_mascon)."""
     rng = np.random.default_rng(seed)
     return np.array([ls_fit_once(blocks, m_true, rng) for _ in range(n_mc)])
 
 
-def detection_sweep(A_sh, sig_sh, A_ch, sig_ch, f_base, mu_grid, n_mc=250, seed=11):
+def detection_sweep(A_sh, sig_sh, A_ch, sig_ch, f_base, mu_grid, n_mc=1000, seed=11):
     """
     Smallest detectable anomaly with vs without the cylinder.
 
@@ -1035,12 +1035,12 @@ def truth_mc_masses(
     Lmax,
     Rref,
     eps,
-    n_truth=40,
+    n_truth=400,
     seed=101,
     f_ref=None,
     tgt=0,
-    n_rea=24,
-    n_rep=400,
+    n_rea=48,
+    n_rep=2000,
     mag=(0.01, 0.06),
 ):
     """
@@ -1161,12 +1161,12 @@ def truth_mc_position(
     V,
     F,
     tm,
-    n_truth=25,
-    n_noise=12,
+    n_truth=300,
+    n_noise=24,
     seed=202,
     start_offset=0.03,
     spread=0.12,
-    n_noise_rep=250,
+    n_noise_rep=750,
     pair_noise=True,
 ):
     """
@@ -1448,10 +1448,10 @@ def run_experiment(
     eps=0.02,
     ch_modes=(8, 8),
     n_cyl_pts=200,
-    n_mc=400,
-    n_truth_m=100,  # truth-mass draws for the mass experiment
-    n_truth_p=100,  # truth-position draws for the position experiment
-    n_noise_p=12,  # noise draws per truth position
+    n_mc=2000,
+    n_truth_m=400,  # truth-mass draws for the mass experiment
+    n_truth_p=300,  # truth-position draws for the position experiment
+    n_noise_p=24,  # noise draws per truth position
     detail=False,  # verbose narrative; the tables at the end carry the numbers
     # ── truth-mass draws (experiment 1) ────────────────────────────────────
     truth_mag=(0.01, 0.06),  # |beta_j| drawn uniformly in this band, sign random
@@ -1460,9 +1460,9 @@ def run_experiment(
     pos_spread=0.20,  # truth positions jitter within this radius of the site
     seed_pos=202,
     pos_start_offset=0.03,  # how far the nonlinear fit starts from the truth
-    n_rea=24,  # noise draws per truth interior (paired between SH and SH+CH)
-    n_cloud=400,  # noise draws for the ONE interior whose covariance is checked
-    n_cloud_p=250,  # same, for the representative truth position
+    n_rea=48,  # noise draws per truth interior (paired between SH and SH+CH)
+    n_cloud=2000,  # noise draws for the ONE interior whose covariance is checked
+    n_cloud_p=750,  # same, for the representative truth position
     # ── the CH cylinder ────────────────────────────────────────────────────
     cyl_radius=0.12,
     cyl_height=0.40,
@@ -2635,7 +2635,7 @@ if __name__ == "__main__":
         eps=0.02,  # relative measurement precision (same on SH & field)
         ch_modes=(8, 8),  # (n_m, n_n) cylindrical-harmonic truncation
         n_cyl_pts=200,
-        n_mc=400,  # noise draws for the linear mass fit
+        n_mc=2000,  # noise draws for the linear mass fit
         outdir="Images",
         verbose=True,
     )
