@@ -183,6 +183,19 @@ CH_COND = 1e-4
 
 USE_TEX = False  # os.environ.get("GLOBAL_NO_TEX", "") == ""
 
+
+# ── font scale ──────────────────────────────────────────────────────────────
+# ONE knob for every text size in this file: the rcParams below and every
+# explicit `fontsize=` / `labelsize=` are written as (base * FONT_SCALE).
+# Why it is needed: a 7.2 in wide figure dropped into a two-column paper at
+# \linewidth (~3.4 in) is scaled by ~0.47, so 12 pt is drawn on the page at
+# ~6 pt.  Raising this raises everything together and keeps the relative
+# hierarchy (axis labels > ticks > legends > inset labels) intact.
+#   1.00  on-screen sizes, correct if the figure is placed at its natural size
+#   1.35  legible at ~0.7 x reduction (single-column, 6.5 in text width)
+#   1.60  legible at ~0.5 x reduction (two-column journal)
+FONT_SCALE = 1.35
+
 mpl.rcParams.update(
     {
         "axes.prop_cycle": mpl.cycler(color=COLOR),
@@ -193,9 +206,9 @@ mpl.rcParams.update(
         "font.family": "serif" if USE_TEX else "STIXGeneral",
         "mathtext.fontset": "stix",
         "text.latex.preamble": r"\usepackage{amsmath}\usepackage{amssymb}",
-        "font.size": 12,
-        "axes.labelsize": 13,
-        "axes.titlesize": 13,
+        "font.size": 12 * FONT_SCALE,
+        "axes.labelsize": 13 * FONT_SCALE,
+        "axes.titlesize": 13 * FONT_SCALE,
         # ── journal styling ────────────────────────────────────────────
         # Ticks inward on all four sides with minors, hairline spines, frameless
         # legends, faint grids and 300 dpi output: the conventions AAS/Icarus
@@ -1263,7 +1276,7 @@ def plot_covariance_mc(res, cov, outdir="Images", n_mc=40000, n_map=4000,
     ax.set_ylabel(f"PDF  [1/{_U['mass']}]")
     ax.grid(True, alpha=0.3)
     ax.set_axisbelow(True)
-    ax.legend(fontsize=9)
+    ax.legend(fontsize=9 * FONT_SCALE)
     _save(fig_m, outdir, "fig5_covariance_mass.pdf")
     return figs + [fig_m], mc
 
@@ -1742,7 +1755,7 @@ def plot_results(res, outdir=None):
         for axis in [ax.xaxis, ax.yaxis, ax.zaxis]:
             axis.pane.fill = False
             axis.pane.set_edgecolor("white")
-        ax.tick_params(labelsize=9)
+        ax.tick_params(labelsize=9 * FONT_SCALE)
         ax.set_xlabel(f"$x$ [{_UL['len']}]")
         ax.set_ylabel(f"$y$ [{_UL['len']}]")
         ax.set_zlabel(f"$z$ [{_UL['len']}]")
@@ -1828,7 +1841,7 @@ def plot_results(res, outdir=None):
             )
         ],
         loc="upper right",
-        fontsize=9,
+        fontsize=9 * FONT_SCALE,
     )
     _save(fig1, outdir, "fig1_geometry.pdf")
 
@@ -1855,8 +1868,8 @@ def plot_results(res, outdir=None):
             **kw,
         )
         cb = ax.get_figure().colorbar(sc, ax=ax, pad=0.035, fraction=0.046)
-        cb.set_label(label, fontsize=10)
-        cb.ax.tick_params(labelsize=8)
+        cb.set_label(label, fontsize=10 * FONT_SCALE)
+        cb.ax.tick_params(labelsize=8 * FONT_SCALE)
         ax.axhline(0.0, color="0.35", ls="--", lw=1.1, zorder=1)  # the sheet plane
         # Equal-AREA radial axis.  The points are uniform in VOLUME, so their
         # number per unit rho grows as rho, and on a linear axis they look
@@ -1939,7 +1952,7 @@ def plot_results(res, outdir=None):
     ax.set_ylabel(rf"$|\Delta\mathbf{{CS}}_{{mn}}|$  [{_UL['pot']}]")
     ax.grid(True, axis="y", which="both", ls=":", alpha=0.45)
     ax.set_axisbelow(True)
-    ax.legend(fontsize=8.5, loc="upper right", framealpha=0.92)
+    ax.legend(fontsize=8.5 * FONT_SCALE, loc="upper right", framealpha=0.92)
     for sd_ in ("top", "right"):
         ax.spines[sd_].set_visible(False)
     _save(fig2c, outdir, "fig2_gravity_change_spectrum.pdf")

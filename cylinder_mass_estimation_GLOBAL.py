@@ -133,6 +133,19 @@ ACCENT = "#882255"
 # Override from the shell without editing:  GLOBAL_NO_TEX=1 python ...
 USE_TEX = False  # os.environ.get("GLOBAL_NO_TEX", "") == ""
 
+
+# ── font scale ──────────────────────────────────────────────────────────────
+# ONE knob for every text size in this file: the rcParams below and every
+# explicit `fontsize=` / `labelsize=` are written as (base * FONT_SCALE).
+# Why it is needed: a 7.2 in wide figure dropped into a two-column paper at
+# \linewidth (~3.4 in) is scaled by ~0.47, so 12 pt is drawn on the page at
+# ~6 pt.  Raising this raises everything together and keeps the relative
+# hierarchy (axis labels > ticks > legends > inset labels) intact.
+#   1.00  on-screen sizes, correct if the figure is placed at its natural size
+#   1.35  legible at ~0.7 x reduction (single-column, 6.5 in text width)
+#   1.60  legible at ~0.5 x reduction (two-column journal)
+FONT_SCALE = 1.35
+
 mpl.rcParams.update(
     {
         "axes.prop_cycle": mpl.cycler(color=COLOR),
@@ -143,9 +156,9 @@ mpl.rcParams.update(
         "font.family": "serif" if USE_TEX else "STIXGeneral",
         "mathtext.fontset": "stix",
         "text.latex.preamble": r"\usepackage{amsmath}\usepackage{amssymb}",
-        "font.size": 12,
-        "axes.labelsize": 13,
-        "axes.titlesize": 13,
+        "font.size": 12 * FONT_SCALE,
+        "axes.labelsize": 13 * FONT_SCALE,
+        "axes.titlesize": 13 * FONT_SCALE,
         # ── journal styling ────────────────────────────────────────────
         # Ticks inward on all four sides with minors, hairline spines, frameless
         # legends, faint grids and 300 dpi output: the conventions AAS/Icarus
@@ -1984,7 +1997,7 @@ def make_plots(res, outdir="Images"):
         # short name (first word); leading spaces nudge it right of the marker,
         # and the target sits lower so its label clears the cylinder above it
         dz = -0.05 if i_a == tgt else 0.0
-        ax.text(p_a[0], p_a[1], p_a[2] + dz, f"    {nm.split()[0]}", fontsize=9.5)
+        ax.text(p_a[0], p_a[1], p_a[2] + dz, f"    {nm.split()[0]}", fontsize=9.5 * FONT_SCALE)
     ax.set_xlabel("x [LU]")
     ax.set_ylabel("y [LU]")
     ax.set_zlabel("z [LU]")
@@ -2002,7 +2015,7 @@ def make_plots(res, outdir="Images"):
         edgecolor="k",
         label=f"{names[tgt].split()[0]} (CH target)",
     )
-    ax.legend(loc="upper left", fontsize=8)
+    ax.legend(loc="upper left", fontsize=8 * FONT_SCALE)
 
     _save(fig, outdir, "global_fig1_geometry.pdf")
 
@@ -2042,7 +2055,7 @@ def make_plots(res, outdir="Images"):
     ax.set_xlabel(r"Mass-fraction RMS Error over MC noise draws,  $\beta_0$  [-]")
     ax.set_ylabel(f"Truth Interiors  (of {len(mA)})  [-]")
     ax.grid(True, which="both", alpha=0.3)
-    ax.legend(fontsize=8, loc="upper left")
+    ax.legend(fontsize=8 * FONT_SCALE, loc="upper left")
     _save(fig, outdir, "global_fig2a_massfraction_hist.pdf")
 
     # (b) which interiors were drawn: |beta| uniform, sign random, per component
@@ -2073,14 +2086,14 @@ def make_plots(res, outdir="Images"):
     )
     ax.axhline(0.0, color="k", lw=0.8)
     ax.set_xticks(range(len(names)))
-    ax.set_xticklabels([n.split()[0] for n in names], fontsize=10)
+    ax.set_xticklabels([n.split()[0] for n in names], fontsize=10 * FONT_SCALE)
     ax.set_xlim(-0.55, len(names) - 0.45)
     ax.set_ylabel(r"Truth Mass Fraction  $\beta_j$  [-]")
     ax.grid(True, axis="y", alpha=0.3)
     # above the axes: the draws fill the panel top to bottom, so any in-axes
     # legend lands on data
     ax.legend(
-        fontsize=9,
+        fontsize=9 * FONT_SCALE,
         ncol=3,
         frameon=False,
         loc="lower left",
@@ -2165,7 +2178,7 @@ def make_plots(res, outdir="Images"):
         ry = 3.4 * max(np.sqrt(covA[1, 1]), abs(muA[1] - tru[1]))
         axc.set_xlim(muA[0] - rx, muA[0] + rx)
         axc.set_ylim(muA[1] - ry, muA[1] + ry)
-        axc.set_ylabel(rf"$\beta$  {names[ko].split()[0]}  [-]", fontsize=10)
+        axc.set_ylabel(rf"$\beta$  {names[ko].split()[0]}  [-]", fontsize=10 * FONT_SCALE)
         axc.ticklabel_format(style="sci", scilimits=(-2, 2), useMathText=True)
         axc.yaxis.get_offset_text().set_fontsize(8)
         axc.grid(True, alpha=0.3)
@@ -2197,12 +2210,12 @@ def make_plots(res, outdir="Images"):
         # points showing through the letters make it hard to read at print size.
         axin.set_title(
             "SH + CH zoom",
-            fontsize=7,
+            fontsize=7 * FONT_SCALE,
             color=COLOR[0],
             pad=4,  # clears the inset's own top spine
             bbox=dict(fc="white", ec="none", pad=1.5),
         )
-        axin.tick_params(labelsize=5.5, pad=1)
+        axin.tick_params(labelsize=5.5 * FONT_SCALE, pad=1)
         # 3 ticks collide at this width, so 2 -- and the TOP y label is pruned:
         # it sits at the frame's top-left corner, exactly where the title is, and
         # once the component is negative the minus sign makes it wide enough to
@@ -2231,7 +2244,7 @@ def make_plots(res, outdir="Images"):
         # above the axes, not inside: an opaque box here would sit on the
         # SH cloud, which is the widest thing in the panel
         axc.legend(
-            fontsize=7.5,
+            fontsize=7.5 * FONT_SCALE,
             ncol=3,
             frameon=False,
             loc="lower left",
@@ -2241,7 +2254,7 @@ def make_plots(res, outdir="Images"):
             handletextpad=0.4,
             columnspacing=1.0,
         )
-        axc.set_xlabel(rf"$\beta$  {names[jt].split()[0]}  [-]", fontsize=10)
+        axc.set_xlabel(rf"$\beta$  {names[jt].split()[0]}  [-]", fontsize=10 * FONT_SCALE)
         _save(fig, outdir, f"global_fig2a_massfraction_cov{row + 1}.pdf")
 
     # ---- FIG 2b: estimator performance vs anomaly size ---------------------
@@ -2265,7 +2278,7 @@ def make_plots(res, outdir="Images"):
         mug.min() * 0.85,
         acc * 1.06,
         rf"Identifiability Threshold: {acc:.0f}" + (r"$\%$" if USE_TEX else "%"),
-        fontsize=9,
+        fontsize=9 * FONT_SCALE,
         ha="left",
         va="bottom",
         color="0.15",
@@ -2315,7 +2328,7 @@ def make_plots(res, outdir="Images"):
     )
     ax.grid(True, which="both", alpha=0.3)
     ax.set_axisbelow(True)
-    ax.legend(fontsize=8.5, loc="lower left", framealpha=0.93, ncol=2)
+    ax.legend(fontsize=8.5 * FONT_SCALE, loc="lower left", framealpha=0.93, ncol=2)
     _save(fig, outdir, "global_fig2b_detection.pdf")
 
     # ---- FIG 3: EXPERIMENT 2 — position recovery over TRUTH POSITIONS -------
@@ -2356,7 +2369,7 @@ def make_plots(res, outdir="Images"):
     ax.set_xlabel("Position RMS Error over MC noise draws [LU]")
     ax.set_ylabel(f"Truth Interiors  (of {len(eA)})  [-]")
     ax.grid(True, which="both", alpha=0.3)
-    ax.legend(fontsize=8, loc="upper left")
+    ax.legend(fontsize=8 * FONT_SCALE, loc="upper left")
     _save(fig, outdir, "global_fig3_position_hist.pdf")
 
     # (b) where the truth anomalies were drawn
@@ -2386,7 +2399,7 @@ def make_plots(res, outdir="Images"):
     ax.set_xlabel("x [LU]")
     ax.set_ylabel("z [LU]")
     ax.set_aspect("equal")
-    ax.legend(fontsize=9, loc="lower right")
+    ax.legend(fontsize=9 * FONT_SCALE, loc="lower right")
     _save(fig, outdir, "global_fig3_position_truths.pdf")
 
     # (c) ONE truth: BOTH estimates with their analytic covariances.  The main
@@ -2451,7 +2464,7 @@ def make_plots(res, outdir="Images"):
     ax.set_ylabel("z [LU]")
     ax.ticklabel_format(style="sci", scilimits=(-2, 2), useMathText=True)
     ax.grid(True, alpha=0.3)
-    ax.legend(fontsize=7.5, loc="upper left", framealpha=0.92)
+    ax.legend(fontsize=7.5 * FONT_SCALE, loc="upper left", framealpha=0.92)
 
     # inset at the SH+CH scale
     # opaque, or the SH cloud shows through and the zoom is unreadable
@@ -2472,12 +2485,12 @@ def make_plots(res, outdir="Images"):
     axin.set_aspect("equal")
     axin.set_title(
         "SH + CH zoom",
-        fontsize=8,
+        fontsize=8 * FONT_SCALE,
         color=COLOR[0],
         pad=4,
         bbox=dict(fc="white", ec="none", pad=1.5),  # see the note in fig 2a
     )
-    axin.tick_params(labelsize=5.5)
+    axin.tick_params(labelsize=5.5 * FONT_SCALE)
     axin.xaxis.set_major_locator(mpl.ticker.MaxNLocator(nbins=3))
     # top y label pruned for the same reason as fig 2a's insets: it lands at the
     # frame's top-left corner, under the title
@@ -2600,7 +2613,7 @@ def make_plots(res, outdir="Images"):
             labels,
             loc="lower center",
             ncol=1,
-            fontsize=9.5,
+            fontsize=9.5 * FONT_SCALE,
             frameon=False,
             bbox_to_anchor=(0.5, 0.012),
         )

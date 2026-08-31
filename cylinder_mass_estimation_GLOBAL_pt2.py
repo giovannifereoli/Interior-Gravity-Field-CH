@@ -63,6 +63,7 @@ COLOR = G.COLOR
 ACCENT = G.ACCENT
 # Every panel is its own file here too (see pt1): same canvases, same saver.
 FS, _save = G.FS, G._save
+FONT_SCALE = G.FONT_SCALE  # one knob for all text sizes; see GLOBAL
 FS_BAR = (9.0, 5.4)  # bars: 7 groups x 4 models plus wrapped tick labels
 FS_COR = (6.8, 5.8)  # correlation matrix + its own colour bar
 mpl.rcParams.update({"axes.prop_cycle": mpl.cycler(color=COLOR), "figure.dpi": 110})
@@ -887,7 +888,7 @@ def make_plots(res, outdir="Images"):
             t[1],
             t[2],
             f"C{i_c} ({_axis_label(c['dir'])})",
-            fontsize=8,
+            fontsize=8 * FONT_SCALE,
             color=ACCENT,
                         ha="center",
             bbox=dict(fc="white", ec="0.7", alpha=0.8, pad=1.2, lw=0.4),
@@ -902,7 +903,7 @@ def make_plots(res, outdir="Images"):
             edgecolor="k",
             color=COLOR[0] if b > 0 else COLOR[2],
         )
-        ax.text(q[0], q[1], q[2], f"  {nm}", fontsize=8)
+        ax.text(q[0], q[1], q[2], f"  {nm}", fontsize=8 * FONT_SCALE)
     ax.plot([], [], color=ACCENT, lw=2, label="CH cylinders")
     ax.scatter([], [], color=COLOR[0], label=r"Anomaly $\beta_j>0$")
     ax.scatter([], [], color=COLOR[2], label=r"Anomaly $\beta_j<0$")
@@ -910,7 +911,7 @@ def make_plots(res, outdir="Images"):
     ax.set_ylabel("y [LU]")
     ax.set_zlabel("z [LU]")
     G.set_axes_true_shape(ax, np.vstack([V] + [G.cylinder_hull(c["cyl"]) for c in net]))
-    ax.legend(fontsize=9, loc="upper left")
+    ax.legend(fontsize=9 * FONT_SCALE, loc="upper left")
 
     _save(fig, outdir, "global_pt2_fig1_geometry.pdf")
 
@@ -950,18 +951,23 @@ def make_plots(res, outdir="Images"):
                 rf"${g[q]:.0f}\times$",
                 ha="center",
                 va="bottom",
-                fontsize=8,
-                                color=COLOR[0],
+                fontsize=8 * FONT_SCALE,
+                color=COLOR[0],
+                zorder=7,
+                # opaque backing: the label is centred over the SHORTEST bar of
+                # its group, so at paper font sizes it grows wide enough to run
+                # over the taller neighbour beside it ("10x" read as "0x")
+                bbox=dict(fc="white", ec="none", pad=1.0),
             )
         ax.set_yscale("log")
         ax.set_xticks(x)
         ax.set_xticklabels(
-            lab + ([r"BODY $\tilde\beta$"] if n > len(lab) else []), fontsize=9
+            lab + ([r"BODY $\tilde\beta$"] if n > len(lab) else []), fontsize=9 * FONT_SCALE
         )
         ax.set_ylabel(ylabel)
         ax.grid(True, axis="y", which="both", alpha=0.3)
         ax.set_axisbelow(True)
-        ax.legend(fontsize=8, ncol=2)
+        ax.legend(fontsize=8 * FONT_SCALE, ncol=2)
 
     def _hist_panel(ax, a, b, xlabel, title):
         """Pooled error distribution, SH only vs the full network."""
@@ -995,7 +1001,7 @@ def make_plots(res, outdir="Images"):
         ax.set_xlabel(xlabel)
         ax.set_ylabel(f"Fits  (of {a.size})  [-]")
         ax.grid(True, which="both", alpha=0.3)
-        ax.legend(fontsize=8, loc="upper left")
+        ax.legend(fontsize=8 * FONT_SCALE, loc="upper left")
 
     # FIG 2 — MASS FRACTIONS
     real, pred = {}, {}
@@ -1080,18 +1086,18 @@ def make_plots(res, outdir="Images"):
                     f"{M[a, b]:+.2f}",
                     ha="center",
                     va="center",
-                    fontsize=7.5,
+                    fontsize=7.5 * FONT_SCALE,
                     color="w" if abs(M[a, b]) > 0.55 else "0.15",
                 )
         ax.set_xticks(range(len(names)))
         ax.set_yticks(range(len(names)))
-        ax.set_xticklabels(short, fontsize=7, rotation=45, ha="right")
-        ax.set_yticklabels(short, fontsize=7)
+        ax.set_xticklabels(short, fontsize=7 * FONT_SCALE, rotation=45, ha="right")
+        ax.set_yticklabels(short, fontsize=7 * FONT_SCALE)
         ax.set_xticks(np.arange(len(names) + 1) - 0.5, minor=True)
         ax.set_yticks(np.arange(len(names) + 1) - 0.5, minor=True)
         ax.grid(which="minor", color="w", lw=1.2)
         ax.tick_params(which="minor", length=0)
-        ax.set_xlabel(k, fontsize=10)
+        ax.set_xlabel(k, fontsize=10 * FONT_SCALE)
         fig.colorbar(
             im, ax=ax, fraction=0.046, pad=0.04, label="posterior correlation  [-]"
         )
@@ -1190,7 +1196,7 @@ def make_plots(res, outdir="Images"):
             labels,
             loc="lower center",
             ncol=1,
-            fontsize=9.5,
+            fontsize=9.5 * FONT_SCALE,
             frameon=False,
             bbox_to_anchor=(0.5, 0.012),
         )
