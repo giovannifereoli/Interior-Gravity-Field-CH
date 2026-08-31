@@ -935,7 +935,7 @@ def make_plots(res, outdir="Images"):
 
     V, F, P, net, names = res["V"], res["F"], res["P"], res["net"], res["names"]
     n_cyl, cases, tmm = res["n_cyl"], res["cases"], res["truth_mc"]
-    ft = res["f_true"]
+    ft, bulk = res["f_true"], res["bulk"]
     net_k = cases[-1]
     rms = lambda M: np.sqrt(np.mean(np.asarray(M) ** 2, axis=0))
     lab = [n.replace(" ", "\n", 1) for n in names]  # full name, wrapped once
@@ -989,6 +989,15 @@ def make_plots(res, outdir="Images"):
     ax.legend(fontsize=9 * FONT_SCALE, loc="upper left")
 
     G._save3d(fig, outdir, "global_pt2_fig1_geometry.pdf")
+
+    # ---- FIG 1b: Bouguer map of the truth interior -------------------------
+    # Same construction as pt1's, six anomalies instead of three and every
+    # cylinder of the network marked: it shows at a glance which parts of the
+    # surface the network covers and which heterogeneity sits under them.
+    G.bouguer_map(
+        bulk, P, ft, V, outdir, "global_pt2_fig1b_bouguer.pdf",
+        names=names, marks=[c["cyl"].center for c in net],
+    )
 
     # ---- FIG 2 / FIG 3: the two experiments, drawn identically -------------
     # Specular by construction: same four observation models, same bar chart,
@@ -1339,6 +1348,7 @@ if __name__ == "__main__":
     print("\nSaved to Images/ (one file per panel):")
     for _f in (
         "global_pt2_fig1_geometry.pdf",
+        "global_pt2_fig1b_bouguer.pdf",
         "global_pt2_fig2_massratio_bars.pdf",
         "global_pt2_fig2_massratio_hist.pdf",
         "global_pt2_fig3_position_bars.pdf",

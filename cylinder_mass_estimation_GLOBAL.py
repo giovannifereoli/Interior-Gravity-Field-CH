@@ -2028,6 +2028,129 @@ def hist_legend(ax):
     )
 
 
+def bouguer_map(
+    bulk,
+    P,
+    beta,
+    V,
+    outdir,
+    fname,
+    names=None,
+    marks=None,
+    R_map=None,
+    n_lon=181,
+    n_lat=91,
+):
+    """
+    BOUGUER MAP: the heterogeneous truth MINUS the constant-density shape model,
+    on a sphere, in latitude and longitude.
+
+    What is differenced.  The truth is beta~ U_CD + sum_j beta_j U_pt and the
+    reference is the SAME shape at constant density carrying the SAME total mass,
+    so the difference is exactly the contrast the estimator fits,
+
+        Delta(r) = sum_j beta_j [ pt_j(r) - U_CD(r) ]  =  A_field_contrast @ beta
+
+    — one call, no separate forward model.  Because both terms carry unit total
+    mass, the monopole cancels identically and what remains is the shape of the
+    heterogeneity, not the body's mass.
+
+    Plotted quantity is the RADIAL gravity disturbance, Delta g_r = -Delta a . rhat,
+    the sign flipped so that a mass EXCESS reads positive, as a gravity anomaly
+    conventionally does (this file stores accelerations as a = +grad U, so
+    a . rhat is negative outside a positive mass).
+
+    The sphere sits just outside the Brillouin sphere by default, the smallest
+    radius on which an exterior spherical-harmonic series is guaranteed to
+    converge — the natural surface on which to compare a global field.  This map
+    is EXACT, not truncated: it is what a perfect instrument would see, and the
+    point of the experiments is how little of it survives degree <= L_SH.
+    """
+    V = np.asarray(V, float)
+    R = float(np.linalg.norm(V, axis=1).max()) * 1.02 if R_map is None else R_map
+    lon = np.linspace(-180.0, 180.0, n_lon)
+    lat = np.linspace(-90.0, 90.0, n_lat)
+    LON, LAT = np.meshgrid(lon, lat)
+    cl, sl = np.cos(np.radians(LAT)), np.sin(np.radians(LAT))
+    ux = (cl * np.cos(np.radians(LON))).ravel()
+    uy = (cl * np.sin(np.radians(LON))).ravel()
+    uz = sl.ravel()
+    obs = R * np.column_stack([ux, uy, uz])
+
+    d = A_field_contrast(np.asarray(P, float), obs, bulk) @ np.asarray(beta, float)
+    n = len(obs)
+    dgr = -(d[n : 2 * n] * ux + d[2 * n : 3 * n] * uy + d[3 * n :] * uz)
+    dgr = dgr.reshape(LAT.shape)
+
+    fig, ax = plt.subplots(figsize=(10.2, 5.2))
+    v = float(np.percentile(np.abs(dgr), 99)) or 1.0
+    # gouraud, not flat: the disturbance is a smooth potential field and the
+    # cell edges of a flat mesh read as structure that is not there
+    c = ax.pcolormesh(lon, lat, dgr, cmap="RdBu_r", vmin=-v, vmax=v,
+                      shading="gouraud", rasterized=True)
+    # contours over the colour: a filled map alone is hard to read a VALUE off,
+    # and the zero line is where the truth crosses the constant-density model
+    lv = np.linspace(-v, v, 11)
+    ax.contour(lon, lat, dgr, levels=lv[lv != 0], colors="k", linewidths=0.45,
+               alpha=0.35, zorder=2)
+    ax.contour(lon, lat, dgr, levels=[0.0], colors="k", linewidths=1.3,
+               alpha=0.8, zorder=3)
+    # let the locator pick round ticks: the contour levels are a linspace and
+    # reusing them put values like 0.2631 on the bar
+    cb = fig.colorbar(c, ax=ax, pad=0.02, fraction=0.030)
+    cb.set_label(r"$\Delta g_r$  (truth $-$ constant density)  [LU$^{-2}$]")
+
+    # ONE MARKER SHAPE PER ANOMALY, named in the legend rather than written on
+    # the map: six labels on a 360x180 field collide with each other and with
+    # the poles, and boxing them to stay legible hides the field underneath.
+    # Shape says WHICH anomaly, fill says its SIGN, so the two read independently
+    # and the sign survives in greyscale through the (+)/(-) in the label.
+    MK = ["o", "s", "^", "D", "P", "X", "<", ">"]
+    Pa = np.asarray(P, float)
+    a_lon = np.degrees(np.arctan2(Pa[:, 1], Pa[:, 0]))
+    a_lat = np.degrees(np.arcsin(Pa[:, 2] / np.linalg.norm(Pa, axis=1)))
+    for j, (lo_, la_) in enumerate(zip(a_lon, a_lat)):
+        lab = None if names is None else (
+            f"{names[j]}  ({'+' if beta[j] > 0 else '−'})"
+        )
+        ax.plot(
+            lo_, la_, MK[j % len(MK)], ms=10, mec="k", mew=0.9, ls="none",
+            zorder=6, color=COLOR[0] if beta[j] > 0 else COLOR[2], label=lab,
+        )
+    # cylinders as a wide hollow RING, so where one sits over an anomaly it
+    # encircles that anomaly's marker instead of hiding it
+    for m in marks or []:
+        m = np.asarray(m, float)
+        ax.plot(
+            np.degrees(np.arctan2(m[1], m[0])),
+            np.degrees(np.arcsin(m[2] / np.linalg.norm(m))),
+            marker="o", mfc="none", mec=ACCENT, mew=2.0, ms=19, ls="none",
+            zorder=5,
+        )
+    if marks:
+        ax.plot([], [], marker="o", mfc="none", mec=ACCENT, mew=2.0, ms=13,
+                ls="none", label="CH cylinder")
+    # plate carree: one degree of longitude the same length as one of latitude,
+    # so the anomaly footprints keep their true relative shape
+    ax.set_aspect("equal")
+    ax.set_xlim(-180, 180)
+    ax.set_ylim(-90, 90)
+    ax.set_xticks(np.arange(-180, 181, 60))
+    ax.set_yticks(np.arange(-90, 91, 30))
+    ax.set_xlabel(r"Longitude  [$^\circ$]")
+    ax.set_ylabel(r"Latitude  [$^\circ$]")
+    ax.grid(True, alpha=0.22, lw=0.5, color="0.3")
+    ax.set_axisbelow(False)
+    n_e = len(Pa) + (1 if marks else 0)
+    ax.legend(
+        fontsize=8.5 * FONT_SCALE, ncol=min(4, n_e), frameon=False,
+        loc="lower left", bbox_to_anchor=(0.0, 1.01, 1.0, 0.2), mode="expand",
+        borderaxespad=0.0, handletextpad=0.4, columnspacing=1.1,
+    )
+    _save(fig, outdir, fname)
+    return fig
+
+
 def make_plots(res, outdir="Images"):
     os.makedirs(outdir, exist_ok=True)
     from mpl_toolkits.mplot3d.art3d import Poly3DCollection
@@ -2083,6 +2206,12 @@ def make_plots(res, outdir="Images"):
     ax.legend(loc="upper left", fontsize=8 * FONT_SCALE)
 
     _save3d(fig, outdir, PREFIX + "fig1_geometry.pdf")
+
+    # ---- FIG 1b: Bouguer map of the truth interior -------------------------
+    bouguer_map(
+        res["bulk"], P, ft, V, outdir, PREFIX + "fig1b_bouguer.pdf",
+        names=[n.split()[0] for n in names], marks=[cyl.center],
+    )
 
     # ---- FIG 2a: EXPERIMENT 1 — mass recovery over TRUTH MASS FRACTIONS ----
     # Same three questions fig 3 asks of position, one file each: (a) how the
@@ -2707,6 +2836,7 @@ if __name__ == "__main__":
     print("\nSaved to Images/ (one file per panel):")
     for _f in (
         PREFIX + "fig1_geometry.pdf",
+        PREFIX + "fig1b_bouguer.pdf",
         PREFIX + "fig2a_massfraction_hist.pdf",
         PREFIX + "fig2a_massfraction_truths.pdf",
         PREFIX + "fig2a_massfraction_cov1.pdf",
