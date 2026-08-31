@@ -127,6 +127,10 @@ COLOR = ["#D55E00", "#E69F00", "#0072B2", "#009E73", "#CC79A7", "#56B4E9"]
 # structural elements (cylinder outlines and their labels), kept clear of the
 # data colours above
 ACCENT = "#882255"
+# Filename stem for every figure this module writes.  A variant script (see
+# `cylinder_mass_estimation_GLOBAL_noinner`) reassigns it so its figures land
+# beside these instead of overwriting them.
+PREFIX = "global_"
 # Render figure text with a real LaTeX engine (exact document fonts) or with
 # matplotlib's own mathtext (much faster).  A full run is several times slower
 # with USE_TEX on, because every label is a separate LaTeX compile.
@@ -1039,7 +1043,6 @@ def truth_mc_masses(
     seed=101,
     f_ref=None,
     tgt=0,
-    n_rea=48,
     n_rep=2000,
     mag=(0.01, 0.06),
 ):
@@ -1050,17 +1053,19 @@ def truth_mc_masses(
 
     Per truth, both halves of the consistency test:
       PREDICTED  sigA/sigB/bulkA/bulkB — analytic (A^T W A)^-1, no sampling;
-      REALIZED   devA/devB/devBulk*    — errors from fitting noisy data,
-                 `n_rea` draws per interior.
+      REALIZED   devA/devB/devBulk*    — the error made fitting ONE noisy
+                 realization of that interior.
 
-    m_errA/m_errB are the per-interior RMS of that error on the CH target, which
-    figure 2a histograms.  Two details sharpen the comparison:
+    m_errA/m_errB are that error on the CH target, which figure 2a histograms.
 
-    `n_rea` draws, not one.  A single draw is half-normal about sigma_i (76%
-    relative scatter), so its histogram comes out ~13x wide even when every
-    interior shares the SAME sigma, badly blurring the ~30x SH/SH+CH separation.
-    The RMS of n draws has scatter 1/sqrt(2n) — 15% at n = 24.  That is the
-    whole reason this loop exists.
+    ONE draw per interior, deliberately.  There is no inner loop averaging the
+    noise: an observer flies one spacecraft around one body and gets exactly one
+    realization, so a single draw is what the experiment is about.  The price is
+    that |e| is half-normal about sigma_i and contributes a geometric spread of
+    exp(pi/sqrt(8)) = x3.04 on its own, which is wider than the x1.12 the
+    interiors themselves span — so this histogram is dominated by the noise draw,
+    and it is the CLOUD at `i_rep` (n_rep draws, one interior) that isolates the
+    covariance.  The two answer different questions and both are plotted.
 
     Both cases get fresh generators on the same seed, so they see the same SH
     noise realization.  Measured, that pairing buys NOTHING: corr(e_A, e_B) =
@@ -1078,9 +1083,9 @@ def truth_mc_masses(
     sigB = np.empty_like(sigA)
     bulkA, bulkB = np.empty(n_truth), np.empty(n_truth)
     m_errA, m_errB = np.empty(n_truth), np.empty(n_truth)
-    devA = np.empty((n_truth, n_rea, len(P)))
+    devA = np.empty((n_truth, len(P)))
     devB = np.empty_like(devA)
-    dbA, dbB = np.empty((n_truth, n_rea)), np.empty((n_truth, n_rea))
+    dbA, dbB = np.empty(n_truth), np.empty(n_truth)
     one = np.ones(len(P))
     # the interior closest to the nominal one gets the dense cloud, so the
     # covariance check in the figure is made on a representative body
@@ -1106,19 +1111,14 @@ def truth_mc_masses(
         # identical noise realization in both cases.
         rngA = np.random.default_rng(7 + i)
         rngB = np.random.default_rng(7 + i)
-        eA = np.array([ls_fit_once([(A_sh, s_sh)], b, rngA) - b for _ in range(n_rea)])
-        eB = np.array(
-            [
-                ls_fit_once([(A_sh, s_sh), (A_ch, s_ch)], b, rngB) - b
-                for _ in range(n_rea)
-            ]
-        )
+        eA = ls_fit_once([(A_sh, s_sh)], b, rngA) - b
+        eB = ls_fit_once([(A_sh, s_sh), (A_ch, s_ch)], b, rngB) - b
         devA[i], devB[i] = eA, eB
         # beta_tilde = 1 - sum(beta), so its error is minus the sum of theirs
-        dbA[i], dbB[i] = -eA.sum(axis=1), -eB.sum(axis=1)
-        # what fig 2a histograms: this interior's RMS error on the CH target
-        m_errA[i] = np.sqrt(np.mean(eA[:, tgt] ** 2))
-        m_errB[i] = np.sqrt(np.mean(eB[:, tgt] ** 2))
+        dbA[i], dbB[i] = -eA.sum(), -eB.sum()
+        # what fig 2a histograms: this interior's error on the CH target
+        m_errA[i] = abs(eA[tgt])
+        m_errB[i] = abs(eB[tgt])
         if i == i_rep:
             # the ONE place a noise cloud is still needed: panel (c) checks the
             # predicted ellipse against the scatter it claims to describe
@@ -1137,10 +1137,10 @@ def truth_mc_masses(
         bulkA=bulkA,
         bulkB=bulkB,
         betas=betas,
-        devA=devA.reshape(-1, len(P)),
-        devB=devB.reshape(-1, len(P)),
-        devBulkA=dbA.ravel(),
-        devBulkB=dbB.ravel(),
+        devA=devA,
+        devB=devB,
+        devBulkA=dbA,
+        devBulkB=dbB,
         m_errA=m_errA,
         m_errB=m_errB,
         m_tgt=tgt,
@@ -1162,7 +1162,6 @@ def truth_mc_position(
     F,
     tm,
     n_truth=300,
-    n_noise=24,
     seed=202,
     start_offset=0.03,
     spread=0.12,
@@ -1196,7 +1195,9 @@ def truth_mc_position(
         v = p0 - cyl.center
         d_ax[i] = np.linalg.norm(v - np.dot(v, axis) * axis)
         dep[i] = zmax - p0[2]
-        n_draw = n_noise_rep if i == i_rep else n_noise
+        # one draw everywhere except the representative interior, which gets
+        # the dense cloud the covariance-ellipse panel is drawn from
+        n_draw = n_noise_rep if i == i_rep else 1
         for use_ch, out in ((False, errA), (True, errB)):
             blocks = _pos_forward(
                 p0, f_true, lobe_pos, Lmax, Rref, obs, pinvPhi, use_ch, bulk
@@ -1447,28 +1448,35 @@ def run_experiment(
     Lmax_sh=6,
     eps=0.02,
     ch_modes=(8, 8),
-    n_cyl_pts=200,
-    n_mc=2000,
-    n_truth_m=400,  # truth-mass draws for the mass experiment
-    n_truth_p=300,  # truth-position draws for the position experiment
-    n_noise_p=24,  # noise draws per truth position
+    n_cyl_pts=200,  # field samples in the cylinder -- geometry, NOT an MC size
     detail=False,  # verbose narrative; the tables at the end carry the numbers
-    # ── truth-mass draws (experiment 1) ────────────────────────────────────
+    # Every Monte-Carlo size below reads n_<role>_<experiment>:
+    #   n_truth_*  OUTER loop, how many truth interiors are drawn
+    #   n_noise_*  INNER loop, noise draws per interior
+    #   n_cloud_*  extra draws for the ONE interior the ellipse panel shows
+    # with _m = mass fractions (experiment 1), _p = positions (experiment 2).
+    # ── experiment 1 — MASS FRACTIONS  (400 linear fits) ──────────────────
+    # ONE noisy fit per interior: the MC is over BODIES, not over noise.  The
+    # covariance is checked separately by the n_cloud_m draws at one interior.
+    n_truth_m=400,
+    n_cloud_m=2000,  # the cloud behind fig 2a's covariance ellipses
     truth_mag=(0.01, 0.06),  # |beta_j| drawn uniformly in this band, sign random
     seed_mass=101,  # which set of truth interiors gets drawn
-    # ── truth-position draws (experiment 2) ────────────────────────────────
+    # ── experiment 2 — POSITIONS  (300 nonlinear fits + the cloud) ────────
+    # Same design, and these are TRF fits with a numerical Jacobian: they
+    # dominate the runtime, so raise n_truth_p last and the mass sizes first.
+    n_truth_p=300,
+    n_cloud_p=750,  # the cloud behind fig 3's covariance ellipse
     pos_spread=0.20,  # truth positions jitter within this radius of the site
     seed_pos=202,
     pos_start_offset=0.03,  # how far the nonlinear fit starts from the truth
-    n_rea=48,  # noise draws per truth interior (paired between SH and SH+CH)
-    n_cloud=2000,  # noise draws for the ONE interior whose covariance is checked
-    n_cloud_p=750,  # same, for the representative truth position
     # ── the CH cylinder ────────────────────────────────────────────────────
     cyl_radius=0.12,
     cyl_height=0.40,
     cyl_gap=0.005,  # lift of the cylinder base above the +z pole
     target=0,  # which anomaly the cylinder is placed over / the CH target
     # ── detection sweep (figure 2b) ────────────────────────────────────────
+    n_sweep=1000,  # noise draws at each grid point, per case
     det_range=(-4.5, -0.7),  # log10 span of the true-anomaly sweep
     det_n=16,
     det_acc=25.0,  # RMS error, as a % of the anomaly, that counts as "measured"
@@ -1617,8 +1625,7 @@ def run_experiment(
         seed=seed_mass,
         f_ref=f_true,
         tgt=target,
-        n_rep=n_cloud,
-        n_rea=n_rea,
+        n_rep=n_cloud_m,
         mag=truth_mag,
     )
     tp = truth_mc_position(
@@ -1635,7 +1642,6 @@ def run_experiment(
         F,
         tm,
         n_truth=n_truth_p,
-        n_noise=n_noise_p,
         seed=seed_pos,
         start_offset=pos_start_offset,
         spread=pos_spread,
@@ -1676,7 +1682,7 @@ def run_experiment(
         )
         print(
             f"  the shallow anomaly is jittered within {pos_spread} LU of its "
-            f"site ({n_noise_p} noise draws each)"
+            f"site (one noise draw each)"
         )
         print(f"  {'':22s} {'RMS err 10/50/90%  [LU]':>28} {'median gain':>12}")
         print(f"  {'SH only':22s} " + " ".join(f"{x:9.2e}" for x in q(tp_eA)))
@@ -1762,7 +1768,7 @@ def run_experiment(
     f_base = f_true.copy()
     mu_grid = np.logspace(*det_range, det_n)  # true anomaly mass-fraction sweep
     det = detection_sweep(
-        A_sh, sig_sh, A_ch, sig_ch, f_base, mu_grid, n_mc=max(150, n_mc // 2)
+        A_sh, sig_sh, A_ch, sig_ch, f_base, mu_grid, n_mc=n_sweep
     )
     det["acc"] = det_acc
     if verbose and detail:
@@ -2076,7 +2082,7 @@ def make_plots(res, outdir="Images"):
     )
     ax.legend(loc="upper left", fontsize=8 * FONT_SCALE)
 
-    _save3d(fig, outdir, "global_fig1_geometry.pdf")
+    _save3d(fig, outdir, PREFIX + "fig1_geometry.pdf")
 
     # ---- FIG 2a: EXPERIMENT 1 — mass recovery over TRUTH MASS FRACTIONS ----
     # Same three questions fig 3 asks of position, one file each: (a) how the
@@ -2111,11 +2117,11 @@ def make_plots(res, outdir="Images"):
     lognormal_overlay(ax, mA, bins, "k", ls="-", name="SH")
     lognormal_overlay(ax, mB, bins, "k", ls="--", name="SH + CH")
     ax.set_xscale("log")
-    ax.set_xlabel(r"Mass-fraction RMS Error over MC noise draws,  $\beta_0$  [-]")
+    ax.set_xlabel(r"Mass-fraction Error, One Fit per Truth Interior,  $\beta_0$  [-]")
     ax.set_ylabel(f"Truth Interiors  (of {len(mA)})  [-]")
     ax.grid(True, which="both", alpha=0.3)
     hist_legend(ax)
-    _save(fig, outdir, "global_fig2a_massfraction_hist.pdf")
+    _save(fig, outdir, PREFIX + "fig2a_massfraction_hist.pdf")
 
     # (b) which interiors were drawn: |beta| uniform, sign random, per component
     fig, ax = plt.subplots(figsize=FS)
@@ -2160,7 +2166,7 @@ def make_plots(res, outdir="Images"):
         mode="expand",
         borderaxespad=0.0,
     )
-    _save(fig, outdir, "global_fig2a_massfraction_truths.pdf")
+    _save(fig, outdir, PREFIX + "fig2a_massfraction_truths.pdf")
 
     # (c) ONE interior: the estimate clouds against the PREDICTED covariance,
     # for both of the other anomalies in turn, ONE FIGURE EACH.  CH collapses
@@ -2314,7 +2320,7 @@ def make_plots(res, outdir="Images"):
             columnspacing=1.0,
         )
         axc.set_xlabel(rf"$\beta$  {names[jt].split()[0]}  [-]", fontsize=10 * FONT_SCALE)
-        _save(fig, outdir, f"global_fig2a_massfraction_cov{row + 1}.pdf")
+        _save(fig, outdir, f"{PREFIX}fig2a_massfraction_cov{row + 1}.pdf")
 
     # ---- FIG 2b: estimator performance vs anomaly size ---------------------
     # MAIN AXES — performance: the MC RMS error as a PERCENT OF THE ANOMALY
@@ -2388,7 +2394,7 @@ def make_plots(res, outdir="Images"):
     ax.grid(True, which="both", alpha=0.3)
     ax.set_axisbelow(True)
     ax.legend(fontsize=8.5 * FONT_SCALE, loc="lower left", framealpha=0.93, ncol=2)
-    _save(fig, outdir, "global_fig2b_detection.pdf")
+    _save(fig, outdir, PREFIX + "fig2b_detection.pdf")
 
     # ---- FIG 3: EXPERIMENT 2 — position recovery over TRUTH POSITIONS -------
     # One file each: (a) how the per-truth error is distributed, (b) where the
@@ -2425,11 +2431,11 @@ def make_plots(res, outdir="Images"):
     lognormal_overlay(ax, eA, bins, "k", ls="-", name="SH")
     lognormal_overlay(ax, eB, bins, "k", ls="--", name="SH + CH")
     ax.set_xscale("log")
-    ax.set_xlabel("Position RMS Error over MC noise draws [LU]")
+    ax.set_xlabel("Position Error, One Fit per Truth Interior [LU]")
     ax.set_ylabel(f"Truth Interiors  (of {len(eA)})  [-]")
     ax.grid(True, which="both", alpha=0.3)
     hist_legend(ax)
-    _save(fig, outdir, "global_fig3_position_hist.pdf")
+    _save(fig, outdir, PREFIX + "fig3_position_hist.pdf")
 
     # (b) where the truth anomalies were drawn
     fig, ax = plt.subplots(figsize=FS_WIDE)
@@ -2459,7 +2465,7 @@ def make_plots(res, outdir="Images"):
     ax.set_ylabel("z [LU]")
     ax.set_aspect("equal")
     ax.legend(fontsize=9 * FONT_SCALE, loc="lower right")
-    _save(fig, outdir, "global_fig3_position_truths.pdf")
+    _save(fig, outdir, PREFIX + "fig3_position_truths.pdf")
 
     # (c) ONE truth: BOTH estimates with their analytic covariances.  The main
     # axes are scaled to the SH cloud; SH+CH is ~20x tighter and collapses to a
@@ -2577,7 +2583,7 @@ def make_plots(res, outdir="Images"):
             zorder=9,
         )
     )
-    _save(fig, outdir, "global_fig3_position_cov.pdf")
+    _save(fig, outdir, PREFIX + "fig3_position_cov.pdf")
 
     # ---- FIG 4: residual power spectrum, before and after the fit ----------
     # Per-degree (SH) / per-radial-mode (CH) RMS of the WHITENED residual,
@@ -2677,7 +2683,7 @@ def make_plots(res, outdir="Images"):
             bbox_to_anchor=(0.5, 0.012),
         )
         fig.savefig(
-            os.path.join(outdir, f"global_fig4_coefficients_{key}.pdf"),
+            os.path.join(outdir, f"{PREFIX}fig4_coefficients_{key}.pdf"),
             bbox_inches="tight",
         )
 
@@ -2694,23 +2700,23 @@ if __name__ == "__main__":
         eps=0.02,  # relative measurement precision (same on SH & field)
         ch_modes=(8, 8),  # (n_m, n_n) cylindrical-harmonic truncation
         n_cyl_pts=200,
-        n_mc=2000,  # noise draws for the linear mass fit
+        n_sweep=1000,  # detection-sweep noise draws per grid point
         outdir="Images",
         verbose=True,
     )
     print("\nSaved to Images/ (one file per panel):")
     for _f in (
-        "global_fig1_geometry.pdf",
-        "global_fig2a_massfraction_hist.pdf",
-        "global_fig2a_massfraction_truths.pdf",
-        "global_fig2a_massfraction_cov1.pdf",
-        "global_fig2a_massfraction_cov2.pdf",
-        "global_fig2b_detection.pdf",
-        "global_fig3_position_hist.pdf",
-        "global_fig3_position_truths.pdf",
-        "global_fig3_position_cov.pdf",
-        "global_fig4_coefficients_sh.pdf",
-        "global_fig4_coefficients_ch.pdf",
+        PREFIX + "fig1_geometry.pdf",
+        PREFIX + "fig2a_massfraction_hist.pdf",
+        PREFIX + "fig2a_massfraction_truths.pdf",
+        PREFIX + "fig2a_massfraction_cov1.pdf",
+        PREFIX + "fig2a_massfraction_cov2.pdf",
+        PREFIX + "fig2b_detection.pdf",
+        PREFIX + "fig3_position_hist.pdf",
+        PREFIX + "fig3_position_truths.pdf",
+        PREFIX + "fig3_position_cov.pdf",
+        PREFIX + "fig4_coefficients_sh.pdf",
+        PREFIX + "fig4_coefficients_ch.pdf",
     ):
         print("  " + _f)
     print("Done.")

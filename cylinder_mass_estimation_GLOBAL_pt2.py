@@ -56,6 +56,7 @@ import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 from scipy.optimize import least_squares
+from scipy import stats
 
 import cylinder_mass_estimation_GLOBAL as G  # reuse pt1 machinery
 
@@ -354,10 +355,9 @@ def truth_mc_masses_net(
     n_cyl,
     c0,
     c1,
-    n_truth=240,
+    n_truth=400,
     seed=101,
     mag=(0.015, 0.05),
-    n_rea=48,
 ):
     """
     Redraw the truth MASS FRACTIONS; for each interior rebuild every sigma from
@@ -366,12 +366,15 @@ def truth_mc_masses_net(
     Identical in construction to `G.truth_mc_masses`, so pt1 and pt2 report the
     same kind of number:
       PREDICTED  sig[case]  — analytic (A^T W A)^-1, no sampling;
-      REALIZED   dev[case]  — errors from fitting noisy data, `n_rea` draws per
-                              interior (a single draw is half-normal about sigma
-                              with 76% scatter, swamping the interior-to-interior
-                              spread the figure shows).
+      REALIZED   dev[case]  — the error made fitting ONE noisy realization of
+                              that interior.
     Computed independently, so comparing them is a real consistency test.  All
     four cases get fresh generators on the same seed, seeing the same SH noise.
+
+    ONE draw per interior, as in pt1: the Monte-Carlo is over BODIES, and an
+    observer gets one realization per body.  The covariance check here is
+    TABLE 1b, realized RMS against predicted 1-sigma over the interiors; the
+    dense single-interior cloud that isolates it lives in pt1.
 
     beta_tilde = 1 - sum(beta) is DERIVED: its variance is 1^T C 1 and its error
     is minus the sum of the anomaly errors — never a free parameter.
@@ -388,9 +391,8 @@ def truth_mc_masses_net(
     sig = {k: np.empty((n_truth, len(P))) for k in keys}
     cor = {k: np.empty((n_truth, len(P), len(P))) for k in keys}
     bulk_sig = {k: np.empty(n_truth) for k in keys}
-    dev = {k: np.empty((n_truth, n_rea, len(P))) for k in keys}
-    dev_bulk = {k: np.empty((n_truth, n_rea)) for k in keys}
-
+    dev = {k: np.empty((n_truth, len(P))) for k in keys}
+    dev_bulk = {k: np.empty(n_truth) for k in keys}
     for i, b in enumerate(betas):
         sig_sh = G.od_sigma(G.stokes_total(b, P, bulk, 2, Lmax, Rref), eps)
         sig_ch = [
@@ -407,9 +409,9 @@ def truth_mc_masses_net(
             cor[k][i] = C / np.outer(d, d)
             bulk_sig[k][i] = np.sqrt(one @ C @ one)
             r = np.random.default_rng(7 + i)
-            e = np.array([G.ls_fit_once(blocks, b, r) - b for _ in range(n_rea)])
+            e = G.ls_fit_once(blocks, b, r) - b
             dev[k][i] = e
-            dev_bulk[k][i] = -e.sum(axis=1)
+            dev_bulk[k][i] = -e.sum()
     return dict(
         betas=betas,
         sig=sig,
@@ -417,7 +419,6 @@ def truth_mc_masses_net(
         dev=dev,
         dev_bulk=dev_bulk,
         cases=keys,
-        n_rea=n_rea,
         corr={k: np.median(cor[k], axis=0) for k in keys},
     )
 
@@ -446,7 +447,7 @@ def truth_mc_position_net(
     tm,
     n_cyl,
     keys,
-    n_truth=80,
+    n_truth=400,
     seed=202,
     spread=0.06,
     pos_bounds=None,
@@ -506,12 +507,11 @@ def run(
     ch_modes=(6, 6),
     n_cyl=6,
     # ── truth-mass draws (experiment A) ────────────────────────────────────
-    n_truth_m=240,
+    n_truth_m=400,
     truth_mag=(0.015, 0.05),
     seed_mass=101,
-    n_rea=48,
     # ── truth-position draws (experiment B) ────────────────────────────────
-    n_truth_p=80,
+    n_truth_p=400,
     pos_spread=0.06,
     seed_pos=202,
     outdir="Images",
@@ -568,7 +568,6 @@ def run(
         n_truth=n_truth_m,
         seed=seed_mass,
         mag=truth_mag,
-        n_rea=n_rea,
     )
 
     # ── EXPERIMENT B — POSITIONS over TRUTH INTERIORS ───────────────────────
@@ -666,6 +665,51 @@ def _tex_num(v, nd=2):
     return rf"{v / 10 ** e:.{nd}f}\times10^{{{e}}}"
 
 
+def _lognorm_fit(v):
+    """
+    (median, multiplicative sigma, KS p-value) of a log-normal fitted to `v` > 0.
+
+    The SAME estimator `G.lognormal_overlay` draws, so the table and the curve on
+    the figure describe one fit: mu = mean of log v, sigma = sd of log v, reported
+    as the median exp(mu) and the MULTIPLICATIVE exp(sigma) — the 1-sigma band is
+    [median/sigma, median*sigma], not median +/- sigma.
+
+    The p-value is a Kolmogorov-Smirnov test of log v against the fitted normal,
+    and it is worth reading before quoting a row.  At n = 600 per panel the
+    log-normal is REJECTED in 11 of the 12 mass panels and 6 of the 12 position
+    ones, so these fits are a summary of location and width — NOT a claim that
+    the errors are log-normal.  Quote median and sigma; do not quote the shape.
+
+    Two things drive it, both measured rather than assumed:
+
+    SHAPE.  Both quantities are magnitudes and so are left-skewed in log, but by
+    different amounts — skew(log|e|) = -1.53 against skew(log|Delta p|) = -0.92,
+    where a log-normal needs 0.  The mass quantity is a SINGLE scalar |e| (one
+    draw per interior), hence half-normal, with a shoulder at zero no log-normal
+    follows; the position quantity is |Delta p|, a norm over THREE components,
+    which self-averages and lands much closer.  With sigma held fixed, synthetic
+    draws are rejected 95% of the time for |e| at n = 240 against 30% for
+    |Delta p| — the shape difference is real, and it is why position still fares
+    better here (6 of 12 rejected against 11 of 12).
+
+    SAMPLE SIZE.  KS power grows with n, so this verdict is not portable.  The
+    same synthetic |e| is rejected 26% of the time at n = 80 and 95% at n = 240.
+    An earlier run at n = 240 (mass) against n = 80 (position) made position look
+    uniformly log-normal; equalising both at 600 showed that was the smaller
+    sample, not a better model.  That is why `run` now draws the same n for the
+    two experiments.
+
+    A third effect rescues individual panels: the observed value is sigma_i |z|,
+    so a sigma that VARIES across interiors adds a normal term in log and drags
+    the sum back toward normal.  Synthetically, |e| at n = 240 goes from 95%
+    rejected at a sigma spread of x1.0 to 26% at x2.0 and 4% at x3.0.
+    """
+    v = np.asarray(v, float).ravel()
+    lv = np.log(v[v > 0])
+    ks = stats.kstest(lv, "norm", args=(lv.mean(), lv.std(ddof=1)))
+    return float(np.exp(lv.mean())), float(np.exp(lv.std(ddof=1))), float(ks.pvalue)
+
+
 def results_report(res):
     names, tmm, cases = res["names"], res["truth_mc"], res["cases"]
     ft, sig, bsig = res["f_true"], tmm["sig"], tmm["bulk_sig"]
@@ -732,7 +776,7 @@ def results_report(res):
     # ── TABLE 1b — does the analytic covariance predict the error made? ─────
     print(
         f"\n  TABLE 1b — covariance consistency, "
-        f"{len(tmm['betas']) * tmm['n_rea']} noisy fits per case: "
+        f"{len(tmm['betas'])} noisy fits per case (one per interior): "
         "realized RMS(estimate − truth) vs predicted 1σ"
     )
     print(
@@ -744,7 +788,7 @@ def results_report(res):
     for i, nm in enumerate(names):
         cells = []
         for k in (cases[0], net_k):
-            r = rms(tmm["dev"][k].reshape(-1, len(names))[:, i])
+            r = rms(tmm["dev"][k][:, i])
             pr = rms(sig[k][:, i])
             cells.append(f"{r:9.2e} /{pr:9.2e} {r / pr:5.2f}")
         print(f"  {nm:16s} " + " ".join(f"{c:>22s}" for c in cells))
@@ -772,6 +816,37 @@ def results_report(res):
             + " ".join(f"{v:18.2e}" for v in row)
             + f" {row[0] / row[-1]:8.1f}×"
         )
+
+    # ── TABLE 2b — the small-multiple panels, as numbers ───────────────────
+    # Each cell of the two histogram figures gets a log-normal; these are those
+    # fits.  `median ratio` is SH median / network median -- a THIRD gain
+    # definition beside TABLE 1's ratio of analytic sigmas and the RMS ratio the
+    # figures annotate.  They differ because |e| is skewed: expect the median
+    # ratio to sit a little above the RMS one.
+    print(
+        "\n  TABLE 2b — log-normal fit to each panel of the histogram figures"
+        f" ({len(tmm['betas'])} / {len(pe[cases[0]])} interiors)"
+    )
+    print(
+        f"  {'quantity':14s} {'anomaly':16s} {'SH median':>11} {'σx':>6} {'p':>6}"
+        f" {'net median':>12} {'σx':>6} {'p':>6} {'med ratio':>10}"
+    )
+    for title, data in (("mass fraction", {k: np.abs(tmm["dev"][k]) for k in cases}),
+                        ("position", pe)):
+        for i, nm in enumerate(names):
+            ma, fa, pa = _lognorm_fit(data[cases[0]][:, i])
+            mb, fb, pb = _lognorm_fit(data[net_k][:, i])
+            print(
+                f"  {title:14s} {nm:16s} {ma:11.2e} {fa:6.2f} {pa:6.3f}"
+                f" {mb:12.2e} {fb:6.2f} {pb:6.3f} {ma / mb:9.1f}×"
+            )
+    print(
+        "  p is a KS test of the fit; p < 0.05 rejects the log-normal.  At this n"
+        " most rows\n  are rejected — |e| from one draw is half-normal and"
+        " |Δp| is a 3-D norm, neither\n  log-normal.  Quote the median and σ as"
+        " location and width, not the shape (see\n  `_lognorm_fit` for the"
+        " measured skew, and why n must match between the two)."
+    )
 
     # ── TABLE 3 — separability ─────────────────────────────────────────────
     # A component can be precisely determined and still be inseparable from its
@@ -969,45 +1044,93 @@ def make_plots(res, outdir="Images"):
         ax.set_axisbelow(True)
         ax.legend(fontsize=8 * FONT_SCALE, ncol=2)
 
-    def _hist_panel(ax, a, b, xlabel, title):
-        """Pooled error distribution, SH only vs the full network."""
-        a, b = np.ravel(a), np.ravel(b)
-        bins = np.logspace(
-            np.log10(min(a.min(), b.min()) * 0.8),
-            np.log10(max(a.max(), b.max()) * 1.2),
-            26,
-        )
-        ax.hist(
-            a,
-            bins=bins,
-            color=COLOR[2],
-            alpha=0.75,
-            edgecolor="k",
-            lw=0.5,
-            label="SH only",
-        )
-        ax.hist(
-            b,
-            bins=bins,
-            color=COLOR[0],
-            alpha=0.75,
-            edgecolor="k",
-            lw=0.5,
-            label=f"SH + {n_cyl}-CH network",
-        )
-        G.lognormal_overlay(ax, a, bins, "k", ls="-", name="SH")
-        G.lognormal_overlay(ax, b, bins, "k", ls="--", name="SH + CH")
-        ax.set_xscale("log")
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel(f"Fits  (of {a.size})  [-]")
-        ax.grid(True, which="both", alpha=0.3)
-        G.hist_legend(ax)
+    def _hist_panel(a, b, xlabel, fname):
+        """
+        Error distribution per anomaly, SH only vs the full network.
+
+        SMALL MULTIPLES, not one pooled histogram.  Pooling the six anomalies
+        into a single pair of curves is correct but unreadable: their sigmas span
+        ~15x under SH against ~3.6x under the network, so the pooled SH curve is a
+        six-component mixture ~x3.0 wide from the mixing alone.  With the
+        single-draw term (x3.04) on top, each pooled curve spans ~x4.8 while the
+        two are only ~7x apart, and the separation the bar panel reports reads as
+        overlap.
+        One cell per anomaly removes the mixing term: inside a cell both cases
+        refer to the SAME sigma, so the shift between them IS that anomaly's
+        gain, printed in the corner.  The shared x-axis keeps the anomaly-to-
+        anomaly offsets visible as the pairs sliding left and right.
+        """
+        a, b = np.asarray(a), np.asarray(b)
+        # LEFT LIMIT from a percentile, not from the minimum.  With one draw per
+        # interior the plotted quantity is |e|, and |e| reaches arbitrarily close
+        # to zero whenever a draw happens to land on the truth — an artefact of
+        # the absolute value, not of the estimator.  Taking the minimum let a
+        # single such draw stretch the axis to 1e-9 and squash every distribution
+        # into the right-hand third.  Values below the limit are CLIPPED into the
+        # first bin rather than dropped, so they stay visible as a small pile.
+        lo = min(np.percentile(a, 2), np.percentile(b, 2))
+        hi = max(a.max(), b.max()) * 1.2
+        bins = np.logspace(np.log10(lo), np.log10(hi), 26)
+        fig, axs = plt.subplots(2, 3, figsize=(11.4, 6.2), sharex=True, sharey=True)
+        cmax = 0.0
+        for i, (ax, nm) in enumerate(zip(axs.ravel(), names)):
+            for v, col, lab_ in ((a[:, i], COLOR[2], "SH only"),
+                                 (b[:, i], COLOR[0], f"SH + {n_cyl}-CH network")):
+                c, _, _ = ax.hist(np.clip(v, lo, None), bins=bins, color=col,
+                                  alpha=0.75, edgecolor="k", lw=0.4, label=lab_)
+                cmax = max(cmax, c.max())
+            # RMS ratio, the SAME statistic the bar panel annotates, so a cell
+            # here and its bar group there print the same number.  A ratio of
+            # medians would not: |e| is skewed, and the two differ by ~40%.
+            g = np.sqrt(np.mean(a[:, i] ** 2)) / np.sqrt(np.mean(b[:, i] ** 2))
+            # log-normal fitted to each cell separately, drawn AND quoted here in
+            # the same style pt1's histograms use.  `lognormal_overlay` writes a
+            # label carrying mu and sigma, which would put six different legends
+            # on one shared key, so only the first cell contributes a generic
+            # pair and the per-cell values go in the corner box instead.
+            txt = [f"{nm}   {g:.1f}" + r"$\times$"]
+            for v, ls_, nm_ in ((a[:, i], "-", "SH"), (b[:, i], "--", "net")):
+                med, fac = G.lognormal_overlay(ax, v, bins, "k", ls=ls_)
+                ax.get_lines()[-1].set_label(
+                    ("Log-normal fit, " + ("SH" if ls_ == "-" else "network"))
+                    if i == 0
+                    else "_nolegend_"
+                )
+                ex = int(np.floor(np.log10(abs(med))))
+                txt.append(
+                    rf"{nm_}: $\mu={med / 10 ** ex:.2f}\times10^{{{ex}}}$,"
+                    rf" $\sigma=\times{fac:.2f}$"
+                )
+            # name, gain and both fits as in-axes text, not a title (a small
+            # multiple is unreadable without its label; the tables carry the rest)
+            ax.text(
+                0.03, 0.96, "\n".join(txt),
+                transform=ax.transAxes, ha="left", va="top",
+                fontsize=7.5 * FONT_SCALE, linespacing=1.35,
+                bbox=dict(fc="white", ec="0.8", lw=0.5, alpha=0.92, pad=2.5),
+            )
+            ax.set_xscale("log")
+            ax.grid(True, which="both", alpha=0.3)
+            ax.set_axisbelow(True)
+        # headroom for the corner box: the tallest bars sit mid-panel and would
+        # otherwise run into it (the axes share y, so one call sets all six)
+        axs[0, 0].set_ylim(0, cmax * 1.85)
+        for ax in axs[-1]:
+            ax.set_xlabel(xlabel, fontsize=10 * FONT_SCALE)
+        for ax in axs[:, 0]:
+            ax.set_ylabel(f"Truth Interiors  (of {len(a)})  [-]",
+                          fontsize=10 * FONT_SCALE)
+        h, lab_ = axs[0, 0].get_legend_handles_labels()
+        fig.legend(h, lab_, loc="lower center", ncol=4, frameon=False,
+                   fontsize=9 * FONT_SCALE, bbox_to_anchor=(0.5, 0.005))
+        fig.tight_layout(rect=[0, 0.08, 1, 1])
+        fig.savefig(os.path.join(outdir, fname), bbox_inches="tight")
 
     # FIG 2 — MASS FRACTIONS
     real, pred = {}, {}
     for k in cases:
         real[k] = np.append(
-            rms(tmm["dev"][k].reshape(-1, len(P))), rms(tmm["dev_bulk"][k].ravel())
+            rms(tmm["dev"][k]), rms(tmm["dev_bulk"][k])
         )
         pred[k] = np.append(rms(tmm["sig"][k]), rms(tmm["bulk_sig"][k]))
     fig, ax = plt.subplots(figsize=FS_BAR)
@@ -1020,21 +1143,16 @@ def make_plots(res, outdir="Images"):
     )
     _save(fig, outdir, "global_pt2_fig2_massratio_bars.pdf")
 
-    # one value per (interior, anomaly) — the RMS over that interior's noise
-    # draws — so this pools the same kind of quantity the position panel does.
-    # Pooling the raw signed errors instead would be a half-normal: |e| reaches
-    # arbitrarily close to zero, and the histogram grows a tail down to 1e-10
-    # that is an artefact of the absolute value, not of the estimator.
-    per_truth = {k: np.sqrt((tmm["dev"][k] ** 2).mean(axis=1)) for k in cases}
-    fig, ax = plt.subplots(figsize=FS)
+    # one value per (interior, anomaly): with a single draw per interior that is
+    # just |e|, and `dev[k]` is already (n_truth, n_anom).  NOT a mean over
+    # axis 1 -- that axis is the ANOMALIES now, not the noise draws.
+    per_truth = {k: np.abs(tmm["dev"][k]) for k in cases}
     _hist_panel(
-        ax,
         per_truth[cases[0]],
         per_truth[cases[-1]],
-        r"Mass-fraction RMS Error over MC noise draws  [-]",
-        "Distribution over truth interiors and anomalies",
+        r"Mass-fraction Error  [-]",
+        "global_pt2_fig2_massratio_hist.pdf",
     )
-    _save(fig, outdir, "global_pt2_fig2_massratio_hist.pdf")
 
     # FIG 3 — POSITIONS  (same two panels, same order, same two files)
     pe = res["pos_err"]
@@ -1048,15 +1166,12 @@ def make_plots(res, outdir="Images"):
     )
     _save(fig, outdir, "global_pt2_fig3_position_bars.pdf")
 
-    fig, ax = plt.subplots(figsize=FS)
     _hist_panel(
-        ax,
         pe[cases[0]],
         pe[cases[-1]],
-        "Position Error, One Fit per Truth Interior  [LU]",
-        "Distribution over truth interiors and anomalies",
+        "Position Error  [LU]",
+        "global_pt2_fig3_position_hist.pdf",
     )
-    _save(fig, outdir, "global_pt2_fig3_position_hist.pdf")
 
     # ---- FIG 4: separability -----------------------------------------------
     # sigma says how WELL each anomaly is known; this says whether it can be
@@ -1213,9 +1328,10 @@ if __name__ == "__main__":
         eps=0.02,
         ch_modes=(6, 6),
         n_cyl=6,
-        n_truth_m=240,  # truth interiors for the mass experiment
-        n_rea=48,  # noise draws per interior
-        n_truth_p=80,  # truth interiors for the position experiment
+        # equal counts on purpose: the log-normal KS test in TABLE 2b gains
+        # power with n, so mass and position must be judged on the same n
+        n_truth_m=400,  # truth interiors for the mass experiment
+        n_truth_p=400,  # truth interiors for the position experiment
         pos_spread=0.06,
         outdir="Images",
         verbose=True,
