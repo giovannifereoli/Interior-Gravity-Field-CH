@@ -541,6 +541,7 @@ class Bulk:
         return self._fd[key]
 
     # ── Stokes coefficients ────────────────────────────────────────────────
+    # TODO: do I like this?
     def stokes(self, Lmin, Lmax, Rref, chunk=200_000):
         """
         Fully-normalized Stokes coefficients of the unit-mass constant-density
@@ -652,6 +653,7 @@ def field_samples_total(beta, positions, bulk, obs):
 # NOTE: Use the OD uncertainty of the absolute coefficients for
 # the residual coefficients because subtracting the noise-free
 # constant-density model does not change their covariance.
+# TODO: how to make realistic od sigmas?
 def od_sigma(cs, eps, floor_frac=0.1):
     """
     OD-like 1σ for a measured coefficient vector `cs`:
@@ -1789,6 +1791,7 @@ def run_experiment(
     # ── COEFFICIENT SPECTRA: homogeneous vs heterogeneous, pre/post fit ────
     # One noisy realization, fitted jointly, so fig 3 can show the residual
     # collapsing from the pre-fit discrepancy onto the noise floor.
+    # TODO: is it okay postfits spectra slightly off 1std? is the seed?
     rng_sp = np.random.default_rng(99)
     d_sh, d_ch = A_sh @ beta_true, A_ch @ beta_true  # = CS_hetero − CS_homog
     dat_sh = d_sh + rng_sp.normal(0.0, sig_sh)
@@ -2100,6 +2103,7 @@ def hist_legend(ax):
     )
 
 
+# TODO: maybe put option to map it to surface?
 def bouguer_map(
     beta,
     positions,
@@ -2651,7 +2655,7 @@ def make_plots(res, outdir="Images"):
     ax.set_yscale("log")
     ax.set_xlim(mug.min() * 0.7, mug.max() * 1.5)
     ax.set_ylim(min(relA.min(), relB.min()) * 0.45, 2.0e4)
-    ax.set_xlabel(r"True Anomaly $\beta_0$  [-]")
+    ax.set_xlabel(r"True Anomaly $\beta_0$  [-]")  # TODO: true anomaly is a bad name!
     ax.set_ylabel(
         r"MC RMS Error / True Anomaly $\beta_0$  " + (r"[$\%$]" if USE_TEX else "[%]")
     )

@@ -158,14 +158,30 @@ ACC_SCALE = UGAL if MODE == "SI" else 1.0
 # mathtext, for figure labels.  Both collapse to "-" in NORM, where nothing in
 # the computation carries a unit.
 if MODE == "SI":
-    _U = dict(len="m", mass="kg", sd="kg/m²", dens="kg/m³", pot="m²/s²",
-              accraw="m/s²", acc="µGal", k="1/m")
-    _UL = dict(len="m", mass="kg", sd=r"kg/m$^2$", dens=r"kg/m$^3$",
-               pot=r"m$^2$/s$^2$", accraw=r"m/s$^2$", acc=r"$\mu$Gal",
-               k="1/m")
+    _U = dict(
+        len="m",
+        mass="kg",
+        sd="kg/m²",
+        dens="kg/m³",
+        pot="m²/s²",
+        accraw="m/s²",
+        acc="µGal",
+        k="1/m",
+    )
+    _UL = dict(
+        len="m",
+        mass="kg",
+        sd=r"kg/m$^2$",
+        dens=r"kg/m$^3$",
+        pot=r"m$^2$/s$^2$",
+        accraw=r"m/s$^2$",
+        acc=r"$\mu$Gal",
+        k="1/m",
+    )
 else:
-    _U = _UL = dict(len="-", mass="-", sd="-", dens="-", pot="-",
-                    accraw="-", acc="-", k="-")
+    _U = _UL = dict(
+        len="-", mass="-", sd="-", dens="-", pot="-", accraw="-", acc="-", k="-"
+    )
 
 # Okabe-Ito, the colour-vision-deficiency-safe palette used by the GLOBAL
 # scripts, in the same role order.  The previous set opened with #d7191c and
@@ -1123,7 +1139,7 @@ def latex_tables(res, cov=None):
         print("\n  % Table — Monte-Carlo verification of the analytic covariance")
         r_dM = mc["mc_sigma_dM"] / mc["an_sigma_dM"]
         rat = mc["mc_sigma_map"] / np.maximum(mc["an_sigma_map"], 1e-300)
-        tol = 100.0 / np.sqrt(2.0 * mc["n_map"])   # the map is the shallower one
+        tol = 100.0 / np.sqrt(2.0 * mc["n_map"])  # the map is the shallower one
         for lab, v, u in [
             ("Noise realizations, $\\Delta M$", mc["n_mc"], "--"),
             ("Noise realizations, map", mc["n_map"], "--"),
@@ -1191,8 +1207,7 @@ def covariance_mc(res, cov, n_mc=200000, n_map=20000, seed=3):
     )
 
 
-def plot_covariance_mc(res, cov, outdir="Images", n_mc=200000, n_map=20000,
-                       mc=None):
+def plot_covariance_mc(res, cov, outdir="Images", n_mc=200000, n_map=20000, mc=None):
     """
     The predicted 1-sigma map of Delta sigma against the one the Monte-Carlo
     actually produces, their ratio, and the Delta M histogram — one file each.
@@ -1241,22 +1256,42 @@ def plot_covariance_mc(res, cov, outdir="Images", n_mc=200000, n_map=20000,
 
     figs = []
     for tag, mp, lab in (
-        ("analytic", an,
-         rf"Analytic $\sqrt{{\Sigma_{{\Delta\sigma}}}}$  [{_UL['sd']}]"),
-        ("numerical", nu,
-         rf"Monte-Carlo $\sqrt{{\Sigma_{{\Delta\sigma}}}}$  [{_UL['sd']}]"),
+        (
+            "analytic",
+            an,
+            rf"Analytic $\sqrt{{\Sigma_{{\Delta\sigma}}}}$  [{_UL['sd']}]",
+        ),
+        (
+            "numerical",
+            nu,
+            rf"Monte-Carlo $\sqrt{{\Sigma_{{\Delta\sigma}}}}$  [{_UL['sd']}]",
+        ),
     ):
         fig, ax = plt.subplots(figsize=FS_MAP)
-        c = ax.pcolormesh(Xw, Yw, _wrap(mp)[:-1, :-1], cmap="viridis",
-                          shading="flat", vmin=0.0, vmax=vmax)
+        c = ax.pcolormesh(
+            Xw,
+            Yw,
+            _wrap(mp)[:-1, :-1],
+            cmap="viridis",
+            shading="flat",
+            vmin=0.0,
+            vmax=vmax,
+        )
         fig.colorbar(c, ax=ax, **CBAR).set_label(lab)
         _decor(ax)
         _save(fig, outdir, f"fig4_covariance_map_{tag}.pdf")
         figs.append(fig)
 
     fig, ax = plt.subplots(figsize=FS_MAP)
-    cr = ax.pcolormesh(Xw, Yw, _wrap(ratio)[:-1, :-1], cmap="RdBu_r",
-                       shading="flat", vmin=1 - 4 * tol, vmax=1 + 4 * tol)
+    cr = ax.pcolormesh(
+        Xw,
+        Yw,
+        _wrap(ratio)[:-1, :-1],
+        cmap="RdBu_r",
+        shading="flat",
+        vmin=1 - 4 * tol,
+        vmax=1 + 4 * tol,
+    )
     fig.colorbar(cr, ax=ax, **CBAR).set_label("Monte-Carlo / analytic  [-]")
     _decor(ax)
     _save(fig, outdir, "fig4_covariance_map_ratio.pdf")
@@ -1267,16 +1302,34 @@ def plot_covariance_mc(res, cov, outdir="Images", n_mc=200000, n_map=20000,
     # of the uncertainty readable straight off the axis.
     fig_m, ax = plt.subplots(figsize=FS)
     e, sd = mc["dM_err"], mc["an_sigma_dM"]
-    ax.hist(e, bins=60, density=True, color=COLOR[0], alpha=0.78,
-            edgecolor="k", lw=0.3, label="Monte-Carlo realizations")
+    ax.hist(
+        e,
+        bins=60,
+        density=True,
+        color=COLOR[0],
+        alpha=0.78,
+        edgecolor="k",
+        lw=0.3,
+        label="Monte-Carlo realizations",
+    )
     xg = np.linspace(e.min(), e.max(), 400)
-    ax.plot(xg, np.exp(-0.5 * (xg / sd) ** 2) / (sd * np.sqrt(2 * np.pi)),
-            color="k", lw=2.2, zorder=4,
-            label=r"Analytic $N(0,\Sigma_{\Delta M})$")
+    ax.plot(
+        xg,
+        np.exp(-0.5 * (xg / sd) ** 2) / (sd * np.sqrt(2 * np.pi)),
+        color="k",
+        lw=2.2,
+        zorder=4,
+        label=r"Analytic $N(0,\Sigma_{\Delta M})$",
+    )
     for k in (-1, 1):
-        ax.axvline(k * sd, color="0.30", ls="--", lw=1.5, zorder=3,
-                   label=r"Analytic $\pm\sqrt{\Sigma_{\Delta M}}$" if k == 1
-                   else None)
+        ax.axvline(
+            k * sd,
+            color="0.30",
+            ls="--",
+            lw=1.5,
+            zorder=3,
+            label=r"Analytic $\pm\sqrt{\Sigma_{\Delta M}}$" if k == 1 else None,
+        )
     ax.set_xlabel(rf"$\widehat{{\Delta M}}-\Delta M$  [{_UL['mass']}]")
     ax.set_ylabel(f"PDF  [1/{_U['mass']}]")
     ax.grid(True, alpha=0.3)
@@ -1393,7 +1446,9 @@ def run_bennu_tag(
         print(
             f"    post: {len(mesh_post.faces):6d} faces, V = {mesh_post.volume:9.2f} {_U['len']}³"
         )
-        print(f"    total ΔV (patch)  = {mesh_post.volume - mesh_pre.volume:+8.2f} {_U['len']}³")
+        print(
+            f"    total ΔV (patch)  = {mesh_post.volume - mesh_pre.volume:+8.2f} {_U['len']}³"
+        )
 
     # ── 2. TAG SITE & CYLINDER GEOMETRY ────────────────────────────────
     if site_center is None:
@@ -1441,7 +1496,9 @@ def run_bennu_tag(
         print(f"    cylinder R* = {R_star} m, H = {H} m, α = {alpha}, n_max = {n_max}")
         print(f"    sheet plane z0 = {z_sheet:.2f} m")
         print(f"    GROUND TRUTH  ΔV(ρ<R*) = {dV_foot:+.2f} {_U['len']}³")
-        print(f"                  ΔM(ρ<R*) = {dM_true:+.4e} {_U['mass']}  (ρ={density} {_U['dens']})")
+        print(
+            f"                  ΔM(ρ<R*) = {dM_true:+.4e} {_U['mass']}  (ρ={density} {_U['dens']})"
+        )
         print(f"                  ΔV(patch) = {dV_total:+.2f} {_U['len']}³")
 
     # ── 3./4./5. FIELD POINTS, GRAVITY, LS FIT — repeated per ensemble ─
@@ -1629,7 +1686,9 @@ def run_bennu_tag(
             )
         else:
             print(f"  ΔM  gravimetric       = {dM_est:+.4e} {_U['mass']}")
-        print(f"  ΔM  geometric truth   = {dM_true:+.4e} {_U['mass']}   (ρ·∫Δh dA, ρ<R*)")
+        print(
+            f"  ΔM  geometric truth   = {dM_true:+.4e} {_U['mass']}   (ρ·∫Δh dA, ρ<R*)"
+        )
         print(f"  recovery ratio        = {dM_est / dM_true:8.3f}")
         print(f"  ΔV  equivalent        = {dM_est/density:+.2f} {_U['len']}³")
         print(f"  mean Δh over footprint= {dh_equiv:+.4f} m")
@@ -1830,6 +1889,7 @@ def plot_results(res, outdir=None):
     )
     _draw_cylinder(ax)
     # NOT `sm`: that name is the recovered sigma map further down this function
+    # TODO: this plot z-label off as well as i dont like pre-post
     cbar_src = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
     cbar_src.set_array([])
     fig1.colorbar(cbar_src, ax=ax, pad=0.10, shrink=0.65).set_label(
@@ -1887,8 +1947,10 @@ def plot_results(res, outdir=None):
         # a KS test against uniform at D = 0.017.
         ax.set_xscale(
             "function",
-            functions=(lambda r: np.maximum(r, 0.0) ** 2,
-                       lambda a: np.sqrt(np.maximum(a, 0.0))),
+            functions=(
+                lambda r: np.maximum(r, 0.0) ** 2,
+                lambda a: np.sqrt(np.maximum(a, 0.0)),
+            ),
         )
         ax.set_xticks([0, 2, 4, 6, 8])
         ax.set_xlabel(rf"$\rho$  [{_UL['len']}]  (equal-area scale)")
@@ -2038,6 +2100,7 @@ def plot_results(res, outdir=None):
         vmin=-verr,
         vmax=verr,
     )
+    # TODO: 40 percent of error cause maybe you use
     fig3C.colorbar(ce, ax=ax3C, **CBAR).set_label(
         r"$(\widehat{\Delta\sigma}-\Delta\sigma)\,/\,\max|\Delta\sigma|$  "
         + (r"[\%]" if USE_TEX else "[%]")
