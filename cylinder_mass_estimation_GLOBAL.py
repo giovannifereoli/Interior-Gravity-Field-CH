@@ -65,8 +65,8 @@ Weights (see `od_sigma`)
 ------------------------
 Estimation is in COEFFICIENT space, weighted per coefficient by
 σ_i = eps·max(|coeff_i|, floor) — OD-like, "each coefficient known to a fixed
-fraction of itself above a noise floor".  The inner fit manufacturing the CH
-coefficients from field samples is deliberately unweighted.  The analytic
+fraction of itself above a noise floor".  The Phi-to-field fit that manufactures
+the CH coefficients from field samples is deliberately unweighted.  The analytic
 covariance and the Monte-Carlo fits are fed the SAME (A, σ) blocks, so they
 describe one estimator.
 
@@ -127,9 +127,8 @@ COLOR = ["#D55E00", "#E69F00", "#0072B2", "#009E73", "#CC79A7", "#56B4E9"]
 # structural elements (cylinder outlines and their labels), kept clear of the
 # data colours above
 ACCENT = "#882255"
-# Filename stem for every figure this module writes.  A variant script (see
-# `cylinder_mass_estimation_GLOBAL_noinner`) reassigns it so its figures land
-# beside these instead of overwriting them.
+# Filename stem for every figure this module writes.  A variant script can
+# reassign it so its figures land beside these instead of overwriting them.
 PREFIX = "global_"
 # Render figure text with a real LaTeX engine (exact document fonts) or with
 # matplotlib's own mathtext (much faster).  A full run is several times slower
@@ -430,6 +429,19 @@ def ch_pinv(Phi, rcond=None):
     return np.linalg.pinv(Phi, rcond=CH_RCOND if rcond is None else rcond)
 
 
+def ch_pinv_for(cyl, obs, ch_modes, rcond=None):
+    """
+    The truncated-SVD inverse of the CH basis for this cylinder and sampling.
+
+    Callers want Phi only to invert it, so building it is an implementation
+    detail and lives here.  It is returned rather than cached inside each
+    consumer because Phi does not depend on the truth: `run_experiment` hands
+    the SAME inverse to the coefficients, the position covariance and the
+    spectra, and the SVD of a (4*n_obs x n_modes) matrix is not free.
+    """
+    return ch_pinv(cyl_basis(cyl, obs, *ch_modes), rcond)
+
+
 def ch_projector(Phi, rcond=None):
     """
     P_CH : projection onto the span the CH model can actually represent, built
@@ -590,22 +602,32 @@ def A_stokes_contrast(positions, bulk, Lmin, Lmax, Rref):
     )
 
 
-def A_field_contrast(positions, obs, bulk):
+def A_field_contrast(positions, bulk, obs):
     """Same contrast, in the near-surface field [U; ax; ay; az]:  Δfield = A β."""
     return A_field(positions, obs) - bulk.field(obs)[:, None]
 
 
-def stokes_total(beta, positions, bulk, Lmin, Lmax, Rref):
-    """Full Stokes vector of the truth model  β̃·CD + Σ β_j pt_j."""
+def sh_coefficients_total(beta, positions, bulk, Lmin, Lmax, Rref):
+    """
+    Stokes coefficients of the FULL truth  β̃·CD + Σ β_j pt_j.
+
+    "Full" is the point: this is the MEASURED quantity, bulk included, and it is
+    what `od_sigma` turns into a per-coefficient sigma — an instrument's
+    precision follows the size of what it measures.  Its counterpart
+    `A_sh_contrast` carries only the discrepancy, which is what gets FITTED.
+    """
     return (
         bulk.stokes(Lmin, Lmax, Rref)
         + A_stokes_contrast(positions, bulk, Lmin, Lmax, Rref) @ beta
     )
 
 
-def field_total(beta, positions, obs, bulk):
-    """Full near-surface field of the truth model  β̃·CD + Σ β_j pt_j."""
-    return bulk.field(obs) + A_field_contrast(positions, obs, bulk) @ beta
+def field_samples_total(beta, positions, bulk, obs):
+    """
+    Near-surface field samples [U; ax; ay; az] of the FULL truth
+    β̃·CD + Σ β_j pt_j — samples, not coefficients; see `ch_coefficients_total`.
+    """
+    return bulk.field(obs) + A_field_contrast(positions, bulk, obs) @ beta
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -659,7 +681,7 @@ def _col(sig):
     return s if s.ndim == 0 else s[:, None]
 
 
-def fisher_masses(blocks, prior_sigma=1.0):
+def fisher_mass_fractions(blocks, prior_sigma=1.0):
     """
     Fisher information for the anomaly mass-fraction vector β, built from the
     SAME (A, σ) coefficient blocks the Monte-Carlo fit uses:
@@ -668,7 +690,7 @@ def fisher_masses(blocks, prior_sigma=1.0):
 
     so the analytic covariance and the actual fits describe one and the same
     estimator.  Every design matrix must be a contrast one
-    (`A_stokes_contrast`, `ch_coeff_design`).  There is no total-mass block: the
+    (`A_stokes_contrast`, `A_ch_contrast`).  There is no total-mass block: the
     budget β̃ = 1 − Σβ is structural, not a pseudo-observation.  A weak Gaussian
     prior keeps everything finite.
     """
@@ -680,8 +702,21 @@ def fisher_masses(blocks, prior_sigma=1.0):
     return Fi
 
 
-def posterior_sigma(Fi):
-    return np.sqrt(np.diag(np.linalg.inv(Fi)))
+def posterior_sigma(C):
+    """Per-parameter 1σ from a covariance: sqrt of its diagonal."""
+    return np.sqrt(np.diag(C))
+
+
+def posterior_rms(C):
+    """
+    One isotropic 1σ from a covariance: sqrt(trace(C)/n).
+
+    The scalar summary for a VECTOR parameter — the position, where three
+    components share one physical meaning and a single number is what gets
+    quoted.  `posterior_sigma` is the counterpart for the mass fractions, which
+    are separate physical quantities and are reported one by one.
+    """
+    return float(np.sqrt(np.trace(C) / len(C)))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -700,12 +735,26 @@ MASCONS = [
 ]
 
 
+# ── vocabulary ──────────────────────────────────────────────────────────────
+# Three tiers of mass, and every name below says which one it means:
+#   MASCONS  the localized anomalies.  `beta_true` / `betas` / `beta` are their
+#            fractions beta_j = m_j/M*, `P` their positions.  Signed: + is an
+#            excess, - a deficit.
+#   BULK     the constant-density polyhedron.  The object is `bulk`; the share
+#            of the mass left in it is `beta_bulk` = 1 - sum(beta).
+#   TOTAL    bulk + mascons, i.e. what an instrument actually measures.  The
+#            `*_total` functions return it; `A_*_contrast` return the mascon
+#            part alone (the discrepancy against the bulk), which is what is
+#            FITTED.  sigma is built from the TOTAL, because precision follows
+#            the size of what is measured, not of what is being solved for.
+
+
 def mascon_arrays():
     """names, positions, truth mass FRACTIONS β (not ratios summing to one)."""
     names = [m[0] for m in MASCONS]
     P = np.array([m[1] for m in MASCONS])
-    f = np.array([m[2] for m in MASCONS])
-    return names, P, f
+    beta = np.array([m[2] for m in MASCONS])
+    return names, P, beta
 
 
 # Largest density contrast an EXCESS can plausibly carry, as a fraction of the
@@ -785,6 +834,20 @@ def admissibility(P, betas, bulk_frac, volume, obs, tm):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def mass_fraction_covariance(blocks, prior_sigma=1.0):
+    """
+    Posterior covariance of the MASS FRACTIONS beta, C = (A^T W A)^-1.
+
+    The twin of `position_covariance`, and the reason both exist as named
+    functions: the mass problem is LINEAR, so this C is exact — no expansion
+    point, no derivatives — while the position problem is nonlinear and its
+    covariance is only a linearization about the truth.  Same (A, sigma) blocks
+    the fits consume, so the predicted sigma and the realized scatter describe
+    one estimator.
+    """
+    return np.linalg.inv(fisher_mass_fractions(blocks, prior_sigma))
+
+
 def position_covariance(
     idx, P, obs, cyl, ch_modes, sig_sh, sig_ch, Lmax, Rref, pinvPhi
 ):
@@ -793,7 +856,7 @@ def position_covariance(
     fraction, from SH-only and SH+CH.  Position partials by central differences,
     in the same COEFFICIENT space and with the same per-coefficient weights as
     the fits: the CH partial is Φ⁺ ∂(field)/∂p, the position sensitivity of the
-    coefficients the unweighted inner fit would return.  (Other masses/positions
+    coefficients the unweighted Phi-to-field fit would return.  (Other masses/positions
     fixed — the near-surface anomaly is the target.)  The bulk term β̃·U_CD does
     not move with p and drops out of ∂y/∂p entirely; only the σ's carry its
     (large) presence, through the relative-precision rule.
@@ -820,11 +883,9 @@ def position_covariance(
     Jch_w = Jch / _col(sig_ch)
     Fi_B = Fi_A + Jch_w.T @ Jch_w
 
-    def summ(Fi):
-        C = np.linalg.inv(Fi)
-        return dict(cov=C, rms=float(np.sqrt(np.trace(C) / 3.0)))
-
-    return summ(Fi_A), summ(Fi_B)
+    # covariances, not summaries: the caller reduces them with `posterior_rms`,
+    # exactly as it reduces `mass_fraction_covariance` with `posterior_sigma`
+    return np.linalg.inv(Fi_A), np.linalg.inv(Fi_B)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -832,9 +893,24 @@ def position_covariance(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def ch_coeff_design(P, obs, cyl, ch_modes, bulk):
+def ch_coefficients_total(beta, positions, bulk, obs, pinv):
     """
-    β → CYLINDRICAL-HARMONIC coefficient design matrix.
+    CH coefficients of the FULL truth: `field_samples_total` projected onto Φ.
+
+    `pinv` is passed in rather than rebuilt because Phi and its truncated-SVD
+    inverse do not depend on the truth, and a caller looping over interiors
+    would otherwise redo an (n_pts x n_modes) SVD every iteration.
+    """
+    return pinv @ field_samples_total(beta, positions, bulk, obs)
+
+
+def A_ch_contrast(positions, bulk, obs, cyl, ch_modes):
+    """
+    Same contrast, in CYLINDRICAL-HARMONIC coefficients:  Δc = A β.
+
+    Third member of the A_*_contrast family, and the one that is FITTED rather
+    than written down: `A_stokes_contrast` and `A_field_contrast` evaluate their
+    bases in closed form, while this one has to project a sampled field onto Φ.
     Per anomaly, evaluate the near-surface field of the CONTRAST (unit mass at
     p_j minus the same mass spread through the body) and fit the Bessel–Fourier
     basis Φ by ORDINARY (unweighted) least squares, as the reference script fits
@@ -844,8 +920,8 @@ def ch_coeff_design(P, obs, cyl, ch_modes, bulk):
     form of ΔU — the constant-density field is known from the shape and
     subtracted before the anomalies are estimated.
     """
-    Phi = cyl_basis(cyl, obs, *ch_modes)
-    return ch_pinv(Phi) @ A_field_contrast(P, obs, bulk)  # (n_ch, n_anom)
+    # (n_ch, n_anom)
+    return ch_pinv_for(cyl, obs, ch_modes) @ A_field_contrast(positions, bulk, obs)
 
 
 def ls_fit_once(blocks, m_true, rng):
@@ -898,8 +974,8 @@ def detection_sweep(A_sh, sig_sh, A_ch, sig_ch, f_base, mu_grid, n_mc=1000, seed
 
     Returns rmsA/rmsB (MC) beside sdA/sdB (analytic), measurement vs theory.
     """
-    cA = np.linalg.inv(fisher_masses([(A_sh, sig_sh)]))
-    cB = np.linalg.inv(fisher_masses([(A_sh, sig_sh), (A_ch, sig_ch)]))
+    cA = mass_fraction_covariance([(A_sh, sig_sh)])
+    cB = mass_fraction_covariance([(A_sh, sig_sh), (A_ch, sig_ch)])
     sA, sB = math.sqrt(cA[0, 0]), math.sqrt(cB[0, 0])
     out = {"rmsA": [], "rmsB": [], "muA": [], "muB": []}
     for k, mu in enumerate(mu_grid):
@@ -933,7 +1009,7 @@ def detection_sweep(A_sh, sig_sh, A_ch, sig_ch, f_base, mu_grid, n_mc=1000, seed
 # (Experiment 1 — masses free, positions fixed — is the linear fit above.)
 
 
-def _pos_forward(pos0, masses, lobe_pos, Lmax, Rref, obs, pinvPhi, use_ch, bulk):
+def _pos_forward(pos0, masses, bulk, lobe_pos, Lmax, Rref, obs, pinvPhi, use_ch):
     """
     Forward observables when ONLY the shallow anomaly's position pos0=(x,y,z) is
     unknown; all three mass fractions and the two deep positions are known.  The
@@ -968,15 +1044,15 @@ def _pos_residual(
     data_blocks,
     sig_blocks,
     masses,
+    bulk,
     lobe_pos,
     Lmax,
     Rref,
     obs,
     pinvPhi,
     use_ch,
-    bulk,
 ):
-    model = _pos_forward(pos0, masses, lobe_pos, Lmax, Rref, obs, pinvPhi, use_ch, bulk)
+    model = _pos_forward(pos0, masses, bulk, lobe_pos, Lmax, Rref, obs, pinvPhi, use_ch)
     return np.concatenate(
         [(mo - da) / s for mo, da, s in zip(model, data_blocks, sig_blocks)]
     )
@@ -1041,14 +1117,14 @@ def truth_mc_masses(
     eps,
     n_truth=400,
     seed=101,
-    f_ref=None,
+    beta_ref=None,
     tgt=0,
-    n_rep=2000,
+    n_cloud=2000,
     mag=(0.01, 0.06),
 ):
     """
     Redraw the truth MASSES; for each, rebuild σ from that truth's own field and
-    refit.  The outer loop is over INTERIORS, so this asks "would this survive a
+    refit.  The loop is over INTERIORS, so this asks "would this survive a
     different body?", not "how precise is this one fit?".
 
     Per truth, both halves of the consistency test:
@@ -1058,13 +1134,13 @@ def truth_mc_masses(
 
     m_errA/m_errB are that error on the CH target, which figure 2a histograms.
 
-    ONE draw per interior, deliberately.  There is no inner loop averaging the
-    noise: an observer flies one spacecraft around one body and gets exactly one
-    realization, so a single draw is what the experiment is about.  The price is
+    ONE draw per interior, deliberately: the noise is not averaged away, because
+    an observer flies one spacecraft around one body and gets exactly one
+    realization, and that is what the experiment is about.  The price is
     that |e| is half-normal about sigma_i and contributes a geometric spread of
     exp(pi/sqrt(8)) = x3.04 on its own, which is wider than the x1.12 the
     interiors themselves span — so this histogram is dominated by the noise draw,
-    and it is the CLOUD at `i_rep` (n_rep draws, one interior) that isolates the
+    and it is the CLOUD at `i_rep` (n_cloud draws, one interior) that isolates the
     covariance.  The two answer different questions and both are plotted.
 
     Both cases get fresh generators on the same seed, so they see the same SH
@@ -1075,10 +1151,9 @@ def truth_mc_masses(
     """
     rng = np.random.default_rng(seed)
     betas = draw_truth_masses(n_truth, rng, mag=mag)
-    Phi = cyl_basis(cyl, obs, *ch_modes)
-    pinvPhi = ch_pinv(Phi)
+    pinvPhi = ch_pinv_for(cyl, obs, ch_modes)
     A_sh = A_stokes_contrast(P, bulk, 2, Lmax, Rref)
-    A_ch = ch_coeff_design(P, obs, cyl, ch_modes, bulk)
+    A_ch = A_ch_contrast(P, bulk, obs, cyl, ch_modes)
     sigA = np.empty((n_truth, len(P)))
     sigB = np.empty_like(sigA)
     bulkA, bulkB = np.empty(n_truth), np.empty(n_truth)
@@ -1091,17 +1166,17 @@ def truth_mc_masses(
     # covariance check in the figure is made on a representative body
     i_rep = (
         0
-        if f_ref is None
-        else int(np.argmin(np.linalg.norm(betas - np.asarray(f_ref), axis=1)))
+        if beta_ref is None
+        else int(np.argmin(np.linalg.norm(betas - np.asarray(beta_ref), axis=1)))
     )
     rep = {}
     for i, b in enumerate(betas):
-        s_sh = od_sigma(stokes_total(b, P, bulk, 2, Lmax, Rref), eps)
-        s_ch = od_sigma(pinvPhi @ field_total(b, P, obs, bulk), eps)
+        s_sh = od_sigma(sh_coefficients_total(b, P, bulk, 2, Lmax, Rref), eps)
+        s_ch = od_sigma(ch_coefficients_total(b, P, bulk, obs, pinvPhi), eps)
         # PREDICTED: the mass fit is LINEAR, so its posterior covariance is
         # exactly (A^T W A)^-1 — no sampling needed for the sigma itself.
-        CA = np.linalg.inv(fisher_masses([(A_sh, s_sh)]))
-        CB = np.linalg.inv(fisher_masses([(A_sh, s_sh), (A_ch, s_ch)]))
+        CA = mass_fraction_covariance([(A_sh, s_sh)])
+        CB = mass_fraction_covariance([(A_sh, s_sh), (A_ch, s_ch)])
         sigA[i], sigB[i] = np.sqrt(np.diag(CA)), np.sqrt(np.diag(CB))
         # beta_tilde = 1 - sum(beta), so its variance is 1^T C 1
         bulkA[i] = np.sqrt(one @ CA @ one)
@@ -1123,9 +1198,9 @@ def truth_mc_masses(
             # the ONE place a noise cloud is still needed: panel (c) checks the
             # predicted ellipse against the scatter it claims to describe
             rep = dict(
-                m_cloudA=monte_carlo_fit([(A_sh, s_sh)], b, n_mc=n_rep, seed=7 + i),
+                m_cloudA=monte_carlo_fit([(A_sh, s_sh)], b, n_mc=n_cloud, seed=7 + i),
                 m_cloudB=monte_carlo_fit(
-                    [(A_sh, s_sh), (A_ch, s_ch)], b, n_mc=n_rep, seed=7 + i
+                    [(A_sh, s_sh), (A_ch, s_ch)], b, n_mc=n_cloud, seed=7 + i
                 ),
                 m_covA=CA,
                 m_covB=CB,
@@ -1150,7 +1225,7 @@ def truth_mc_masses(
 
 def truth_mc_position(
     P,
-    f_true,
+    beta_true,
     bulk,
     obs,
     cyl,
@@ -1165,7 +1240,7 @@ def truth_mc_position(
     seed=202,
     start_offset=0.03,
     spread=0.12,
-    n_noise_rep=750,
+    n_cloud=750,
     pair_noise=True,
 ):
     """
@@ -1178,8 +1253,7 @@ def truth_mc_position(
     """
     rng = np.random.default_rng(seed)
     pts = draw_truth_positions(n_truth, V, F, tm, rng, center=P[0], spread=spread)
-    Phi = cyl_basis(cyl, obs, *ch_modes)
-    pinvPhi = ch_pinv(Phi)
+    pinvPhi = ch_pinv_for(cyl, obs, ch_modes)
     axis = cyl.rot() @ np.array([0.0, 0.0, 1.0])
     lobe_pos = [P[1], P[2]]
     errA, errB = np.empty(n_truth), np.empty(n_truth)
@@ -1190,17 +1264,17 @@ def truth_mc_position(
     for i, p0 in enumerate(pts):
         Pi = P.copy()
         Pi[0] = p0
-        s_sh = od_sigma(stokes_total(f_true, Pi, bulk, 2, Lmax, Rref), eps)
-        s_ch = od_sigma(pinvPhi @ field_total(f_true, Pi, obs, bulk), eps)
+        s_sh = od_sigma(sh_coefficients_total(beta_true, Pi, bulk, 2, Lmax, Rref), eps)
+        s_ch = od_sigma(ch_coefficients_total(beta_true, Pi, bulk, obs, pinvPhi), eps)
         v = p0 - cyl.center
         d_ax[i] = np.linalg.norm(v - np.dot(v, axis) * axis)
         dep[i] = zmax - p0[2]
         # one draw everywhere except the representative interior, which gets
         # the dense cloud the covariance-ellipse panel is drawn from
-        n_draw = n_noise_rep if i == i_rep else 1
+        n_draw = n_cloud if i == i_rep else 1
         for use_ch, out in ((False, errA), (True, errB)):
             blocks = _pos_forward(
-                p0, f_true, lobe_pos, Lmax, Rref, obs, pinvPhi, use_ch, bulk
+                p0, beta_true, bulk, lobe_pos, Lmax, Rref, obs, pinvPhi, use_ch
             )
             sig_b = [s_sh, s_ch][: len(blocks)]
             # Same seed for both cases, so the SH block sees an identical
@@ -1225,14 +1299,14 @@ def truth_mc_position(
                     args=(
                         data,
                         sig_b,
-                        f_true,
+                        beta_true,
+                        bulk,
                         lobe_pos,
                         Lmax,
                         Rref,
                         obs,
                         pinvPhi,
                         use_ch,
-                        bulk,
                     ),
                     xtol=1e-10,
                     ftol=1e-10,
@@ -1250,7 +1324,7 @@ def truth_mc_position(
             cA, cB = position_covariance(
                 0, Pi, obs, cyl, ch_modes, s_sh, s_ch, Lmax, Rref, pinvPhi
             )
-            clouds["covA"], clouds["covB"] = cA["cov"], cB["cov"]
+            clouds["covA"], clouds["covB"] = cA, cB
     return dict(
         errA=errA,
         errB=errB,
@@ -1290,7 +1364,7 @@ def results_report(res, tex=True):
     numbers live — copy a block straight into the paper.
     """
     names, tmc, det = res["names"], res["truth_mc"], res["det"]
-    ft, bb = res["f_true"], res["beta_bulk"]
+    ft, bb = res["beta_true"], res["beta_bulk"]
     q = lambda v: np.percentile(v, [10, 50, 90])
     rows_m = []
     for k, nm in enumerate(names):
@@ -1443,7 +1517,6 @@ def results_report(res, tex=True):
     print(rf"  % gain (median of per-interior ratios): ${np.median(eA/eB):.1f}$")
 
 
-# TODO: Start checking from here
 def run_experiment(
     Lmax_sh=6,
     eps=0.02,
@@ -1451,8 +1524,7 @@ def run_experiment(
     n_cyl_pts=1000,  # field samples in the cylinder -- geometry, NOT an MC size
     detail=False,  # verbose narrative; the tables at the end carry the numbers
     # Every Monte-Carlo size below reads n_<role>_<experiment>:
-    #   n_truth_*  OUTER loop, how many truth interiors are drawn
-    #   n_noise_*  INNER loop, noise draws per interior
+    #   n_truth_*  how many truth interiors are drawn, one noisy fit each
     #   n_cloud_*  extra draws for the ONE interior the ellipse panel shows
     # with _m = mass fractions (experiment 1), _p = positions (experiment 2).
     # ── experiment 1 — MASS FRACTIONS  (400 linear fits) ──────────────────
@@ -1491,15 +1563,15 @@ def run_experiment(
     Stokes and the local CH coefficients, so the comparison reflects geometry,
     not the two bases' different natural units.  What is FITTED is the
     discrepancy between that measurement and the known constant-density model.
-    The inner fit producing the CH coefficients from field samples is
+    The Phi-to-field fit producing the CH coefficients from field samples is
     unweighted; the weights live here, on the coefficients.
     """
     V, F, tm, Rb = load_eros()
     Rref = Rb
     zmax = V[:, 2].max()
-    names, P, f_true = mascon_arrays()
+    names, P, beta_true = mascon_arrays()
     bulk = Bulk(V, F)
-    beta_bulk = bulk_fraction(f_true)
+    beta_bulk = bulk_fraction(beta_true)
 
     if verbose:
         print(SEP)
@@ -1514,7 +1586,7 @@ def run_experiment(
             f"of M*  (C̄20 = {bulk.stokes(2, Lmax_sh, Rref)[0]:+.4f})"
         )
         print("  anomalies (truth mass fractions β_j, + = excess, − = deficit):")
-        for nm, p, fr in zip(names, P, f_true):
+        for nm, p, fr in zip(names, P, beta_true):
             print(f"    {nm:22s} p={np.round(p,3)}  β={fr:+.3f}  depth={zmax-p[2]:.3f}")
 
     # cylinder of near-surface data over the anomaly (+z pole)
@@ -1530,23 +1602,20 @@ def run_experiment(
     # Are the truth anomalies physically realizable?  β < 0 is a deficit, not a
     # negative mass; the real constraint is on the density it implies.
     a_min, d_surf, d_obs, b_max = admissibility(
-        P, f_true, beta_bulk, bulk.volume, obs, tm
+        P, beta_true, beta_bulk, bulk.volume, obs, tm
     )
 
     # DISCREPANCY designs: every column is (point mass at p_j) − (same mass
     # spread through the body), so β is estimated against the constant-density
     # model rather than against vacuum.
     A_sh = A_stokes_contrast(P, bulk, 2, Lmax_sh, Rref)
-    A_fd = A_field_contrast(P, obs, bulk)
-    Phi = cyl_basis(cyl, obs, *ch_modes)
-    pinvPhi = ch_pinv(Phi)  # UNWEIGHTED inner CH fit, truncated SVD
-    A_ch = ch_coeff_design(P, obs, cyl, ch_modes, bulk)
+    pinvPhi = ch_pinv_for(cyl, obs, ch_modes)  # UNWEIGHTED Phi-to-field fit, trunc. SVD
+    A_ch = A_ch_contrast(P, bulk, obs, cyl, ch_modes)
 
     # OD-like per-coefficient noise on the FULL measured coefficients (bulk +
     # anomalies), the same relative rule on both observables.
-    y_sh_tot = stokes_total(f_true, P, bulk, 2, Lmax_sh, Rref)
-    y_fd_tot = field_total(f_true, P, obs, bulk)
-    y_ch_tot = pinvPhi @ y_fd_tot
+    y_sh_tot = sh_coefficients_total(beta_true, P, bulk, 2, Lmax_sh, Rref)
+    y_ch_tot = ch_coefficients_total(beta_true, P, bulk, obs, pinvPhi)
     sig_sh = od_sigma(y_sh_tot, eps)
     sig_ch = od_sigma(y_ch_tot, eps)
     blocksA = [(A_sh, sig_sh)]  # SH only
@@ -1556,11 +1625,9 @@ def run_experiment(
             f"  cylinder over anomaly: {len(obs)} vacuum pts, "
             f"|r|∈[{r_obs.min():.2f},{r_obs.max():.2f}] ⊂ Brillouin {Rb:.2f}"
         )
-        d_fd = A_fd @ f_true
-        rep_ch = float(np.linalg.norm(ch_projector(Phi) @ d_fd) / np.linalg.norm(d_fd))
         print(
             f"  observables: SH deg 2..{Lmax_sh} ({A_sh.shape[0]} coeffs)"
-            f" | CH modes {ch_modes} ({Phi.shape[1]} cols)"
+            f" | CH modes {ch_modes} ({2 * ch_modes[0] * ch_modes[1]} cols)"
             f"  [no Σβ=1 row — the mass budget is structural]"
         )
         print(
@@ -1568,42 +1635,40 @@ def run_experiment(
             f"σ_SH ∈ [{sig_sh.min():.2e}, {sig_sh.max():.2e}], "
             f"σ_CH ∈ [{sig_ch.min():.2e}, {sig_ch.max():.2e}]"
         )
-        print(
-            f"  inner CH fit (Φ c = field) is UNWEIGHTED; its span captures "
-            f"{rep_ch:.3f} of the near-surface discrepancy"
-        )
-        print(
-            f"  discrepancy / full field:  SH "
-            f"{np.sqrt(np.mean((A_sh @ f_true)**2)) / np.sqrt(np.mean(y_sh_tot**2)):.3f}"
-            f"   near-surface "
-            f"{np.sqrt(np.mean(d_fd**2)) / np.sqrt(np.mean(y_fd_tot**2)):.3f}"
-        )
 
-    # ── PART 1 — mass fractions ────────────────────────────────────────────────
-    Fi_A = fisher_masses(blocksA)
-    Fi_B = fisher_masses(blocksB)
-    sdA, sdB = posterior_sigma(Fi_A), posterior_sigma(Fi_B)
-    improve = sdA / sdB
+    # ── PART 1 — mass fractions ────────────────────────────────────────────
+    # Covariance per case, then reduced to the number that gets quoted — the
+    # same two steps PART 2 takes.  A vector parameter there, separate scalars
+    # here, so the reducer differs (`posterior_rms` vs `posterior_sigma`) and
+    # nothing else does.
+    C_mass_sh = mass_fraction_covariance(blocksA)
+    C_mass_shch = mass_fraction_covariance(blocksB)
+    sd_mass_sh = posterior_sigma(C_mass_sh)
+    sd_mass_shch = posterior_sigma(C_mass_shch)
+    mass_gain = sd_mass_sh / sd_mass_shch
     if verbose and detail:
         print(f"\n{'-'*70}\n  PART 1 — MASS-FRACTION UNCERTAINTY (1σ on β_j)\n{'-'*70}")
         print(
             f"  {'anomaly':22s} {'depth':>6} {'σ_SH':>10} {'σ_SH+CH':>10} {'gain':>7}"
         )
-        for nm, p, a, b in zip(names, P, sdA, sdB):
+        for nm, p, a, b in zip(names, P, sd_mass_sh, sd_mass_shch):
             print(f"  {nm:22s} {zmax-p[2]:6.3f} {a:10.2e} {b:10.2e} {a/b:6.1f}×")
 
     # ── PART 2 — position of the near-surface anomaly ───────────────────────
-    posA, posB = position_covariance(
+    C_pos_sh, C_pos_shch = position_covariance(
         target, P, obs, cyl, ch_modes, sig_sh, sig_ch, Lmax_sh, Rref, pinvPhi
     )
+    rms_pos_sh = posterior_rms(C_pos_sh)
+    rms_pos_shch = posterior_rms(C_pos_shch)
+    pos_gain = rms_pos_sh / rms_pos_shch
     if verbose and detail:
         print(
             f"\n{'-'*70}\n  PART 2 — POSITION OF NEAR-SURFACE ANOMALY "
-            f"(β={f_true[target]:+.3f})\n{'-'*70}"
+            f"(β={beta_true[target]:+.3f})\n{'-'*70}"
         )
         print(
-            f"  position 1σ RMS:  SH={posA['rms']:.3e} LU   SH+CH={posB['rms']:.3e} LU"
-            f"   → {posA['rms']/posB['rms']:.0f}× tighter"
+            f"  position 1σ RMS:  SH={rms_pos_sh:.3e} LU"
+            f"   SH+CH={rms_pos_shch:.3e} LU   → {pos_gain:.0f}× tighter"
         )
 
     # ══ EXPERIMENTS 1 & 2 — MONTE-CARLO OVER THE TRUTH ═════════════════════
@@ -1623,14 +1688,14 @@ def run_experiment(
         eps,
         n_truth=n_truth_m,
         seed=seed_mass,
-        f_ref=f_true,
+        beta_ref=beta_true,
         tgt=target,
-        n_rep=n_cloud_m,
+        n_cloud=n_cloud_m,
         mag=truth_mag,
     )
     tp = truth_mc_position(
         P,
-        f_true,
+        beta_true,
         bulk,
         obs,
         cyl,
@@ -1645,7 +1710,7 @@ def run_experiment(
         seed=seed_pos,
         start_offset=pos_start_offset,
         spread=pos_spread,
-        n_noise_rep=n_cloud_p,
+        n_cloud=n_cloud_p,
     )
     tp_eA, tp_eB, tp_dax = tp["errA"], tp["errB"], tp["d_axis"]
     if verbose and detail:
@@ -1717,7 +1782,7 @@ def run_experiment(
     # One noisy realization, fitted jointly, so fig 3 can show the residual
     # collapsing from the pre-fit discrepancy onto the noise floor.
     rng_sp = np.random.default_rng(99)
-    d_sh, d_ch = A_sh @ f_true, A_ch @ f_true  # = CS_hetero − CS_homog
+    d_sh, d_ch = A_sh @ beta_true, A_ch @ beta_true  # = CS_hetero − CS_homog
     dat_sh = d_sh + rng_sp.normal(0.0, sig_sh)
     dat_ch = d_ch + rng_sp.normal(0.0, sig_ch)
     Aw = np.vstack([A_sh / sig_sh[:, None], A_ch / sig_ch[:, None]])
@@ -1765,7 +1830,7 @@ def run_experiment(
         )
 
     # smallest detectable anomaly (part of Experiment 1: positions fixed)
-    f_base = f_true.copy()
+    f_base = beta_true.copy()
     mu_grid = np.logspace(*det_range, det_n)  # true anomaly mass-fraction sweep
     det = detection_sweep(A_sh, sig_sh, A_ch, sig_ch, f_base, mu_grid, n_mc=n_sweep)
     det["acc"] = det_acc
@@ -1786,16 +1851,17 @@ def run_experiment(
         obs=obs,
         P=P,
         names=names,
-        f_true=f_true,
+        beta_true=beta_true,
         bulk=bulk,
         beta_bulk=beta_bulk,
         adm=dict(a_min=a_min, d_surf=d_surf, d_obs=d_obs, b_max=b_max),
         target=target,
-        sdA=sdA,
-        sdB=sdB,
-        improve=improve,
-        posA=posA,
-        posB=posB,
+        sd_mass_sh=sd_mass_sh,
+        sd_mass_shch=sd_mass_shch,
+        mass_gain=mass_gain,
+        C_pos_sh=C_pos_sh,
+        C_pos_shch=C_pos_shch,
+        pos_gain=pos_gain,
         det=det,
         snr_sh=snr_sh,
         snr_ch=snr_ch,
@@ -2027,9 +2093,9 @@ def hist_legend(ax):
 
 
 def bouguer_map(
-    bulk,
-    P,
     beta,
+    positions,
+    bulk,
     V,
     outdir,
     fname,
@@ -2075,7 +2141,9 @@ def bouguer_map(
     uz = sl.ravel()
     obs = R * np.column_stack([ux, uy, uz])
 
-    d = A_field_contrast(np.asarray(P, float), obs, bulk) @ np.asarray(beta, float)
+    d = A_field_contrast(np.asarray(positions, float), bulk, obs) @ np.asarray(
+        beta, float
+    )
     n = len(obs)
     dgr = -(d[n : 2 * n] * ux + d[2 * n : 3 * n] * uy + d[3 * n :] * uz)
     dgr = dgr.reshape(LAT.shape)
@@ -2121,7 +2189,7 @@ def bouguer_map(
     # Shape says WHICH anomaly, fill says its SIGN, so the two read independently
     # and the sign survives in greyscale through the (+)/(-) in the label.
     MK = ["o", "s", "^", "D", "P", "X", "<", ">"]
-    Pa = np.asarray(P, float)
+    Pa = np.asarray(positions, float)
     a_lon = np.degrees(np.arctan2(Pa[:, 1], Pa[:, 0]))
     a_lat = np.degrees(np.arcsin(Pa[:, 2] / np.linalg.norm(Pa, axis=1)))
     for j, (lo_, la_) in enumerate(zip(a_lon, a_lat)):
@@ -2204,7 +2272,7 @@ def make_plots(res, outdir="Images"):
 
     # ---- FIG 1: the interior model in 3-D -----------------------------------
     det = res["det"]
-    ft = res["f_true"]
+    ft = res["beta_true"]
     fig = plt.figure(figsize=(8.6, 7.2))
     ax = fig.add_subplot(111, projection="3d")
     step = max(1, len(F) // 8000)
@@ -2258,9 +2326,9 @@ def make_plots(res, outdir="Images"):
 
     # ---- FIG 1b: Bouguer map of the truth interior -------------------------
     bouguer_map(
-        res["bulk"],
-        P,
         ft,
+        P,
+        res["bulk"],
         V,
         outdir,
         PREFIX + "fig1b_bouguer.pdf",

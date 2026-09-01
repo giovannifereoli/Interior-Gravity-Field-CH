@@ -653,7 +653,7 @@ def fit_coefficients(A_des, U, gr, gphi, gz, W, cond=CH_COND):
 
 
 def wahr_invert(
-    delta_coeffs, R_star, alpha, n_max, m_max, zeros_dict, n_rho=80, n_phi=120
+    delta_coeffs, R_star, alpha, m_max, n_max, zeros_dict, n_rho=80, n_phi=120
 ):
     """
     Invert ΔA = A_post − A_pre for the mass change and the surface-density
@@ -943,7 +943,7 @@ def covariance_report(cov, res, verbose=True):
     if not verbose:
         return
     dM, R_star, alpha = res["dM_est"], res["R_star"], res["alpha"]
-    n_max, m_max = res["n_max"], res["m_max"]
+    m_max, n_max = res["m_max"], res["n_max"]
     sd = cov["sigma_dM"]
     print(
         f"\n{DASH}\n  COVARIANCE ANALYSIS  (formal 1σ — dispersion, not accuracy)\n{DASH}"
@@ -1528,7 +1528,7 @@ def run_bennu_tag(
     d_coeffs = np.mean(dcoeffs_draws, axis=0)
     dM_draws = np.array(
         [
-            wahr_invert(dc, R_star, alpha, n_max, m_max, zeros_dict, n_rho=2, n_phi=2)[
+            wahr_invert(dc, R_star, alpha, m_max, n_max, zeros_dict, n_rho=2, n_phi=2)[
                 0
             ]
             for dc in dcoeffs_draws
@@ -1543,7 +1543,7 @@ def run_bennu_tag(
 
     # ── 6. WAHR INVERSION ──────────────────────────────────────────────
     dM_est, sigma_map, RHO, PHI = wahr_invert(
-        d_coeffs, R_star, alpha, n_max, m_max, zeros_dict
+        d_coeffs, R_star, alpha, m_max, n_max, zeros_dict
     )
 
     # ── 6b. COVARIANCE PROPAGATION (Section 4b) ────────────────────────
@@ -1920,7 +1920,7 @@ def plot_results(res, outdir=None):
     # rather than 48 bars.
     fig2c, ax = plt.subplots(figsize=FS)
     dc = res["d_coeffs"]
-    n_max, m_max = res["n_max"], res["m_max"]
+    m_max, n_max = res["m_max"], res["n_max"]
     amp = np.sqrt(dc[0::2] ** 2 + dc[1::2] ** 2).reshape(m_max, n_max)
     ms = np.arange(m_max)
     rms_m = np.sqrt((amp**2).mean(axis=1))

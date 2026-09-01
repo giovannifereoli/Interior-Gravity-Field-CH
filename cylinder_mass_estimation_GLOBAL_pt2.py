@@ -208,7 +208,7 @@ def _axis_label(d):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _pos_forward_net(posj, j, P, masses, Lmax, Rref, ch_data, bulk):
+def _pos_forward_net(posj, j, P, masses, bulk, Lmax, Rref, ch_data):
     """
     Full forward model β̃·CD + Σ β_k pt_k with only anomaly j's position free.
     The bulk term is an additive constant here (β̃ is fixed with the masses), but
@@ -235,7 +235,7 @@ def _pos_forward_net(posj, j, P, masses, Lmax, Rref, ch_data, bulk):
 def position_mc_net(
     j,
     P,
-    f_true,
+    beta_true,
     net,
     ch_modes,
     Lmax,
@@ -276,18 +276,18 @@ def position_mc_net(
         pv = (
             pinv_list
             if pinv_list is not None
-            else [G.ch_pinv(G.cyl_basis(c["cyl"], c["obs"], *ch_modes)) for c in net]
+            else [G.ch_pinv_for(c["cyl"], c["obs"], ch_modes) for c in net]
         )
         for k in idx:
             ch_data.append((pv[k], net[k]["obs"]))
             sig_blocks.append(sig_ch_list[k])
     p_true = P[j].copy()
-    truth = _pos_forward_net(p_true, j, P, f_true, Lmax, Rref, ch_data, bulk)
+    truth = _pos_forward_net(p_true, j, P, beta_true, bulk, Lmax, Rref, ch_data)
     if bounds is None:
         bounds = (-np.inf, np.inf)
 
     def resid(posj, data):
-        model = _pos_forward_net(posj, j, P, f_true, Lmax, Rref, ch_data, bulk)
+        model = _pos_forward_net(posj, j, P, beta_true, bulk, Lmax, Rref, ch_data)
         return np.concatenate([(m - d) / s for m, d, s in zip(model, data, sig_blocks)])
 
     rng = np.random.default_rng(seed + j)
@@ -314,7 +314,7 @@ def position_mc_net(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def precompute_ch(P, net, ch_modes, bulk):
+def precompute_ch(P, bulk, net, ch_modes):
     """
     Per cylinder: the truncated pseudo-inverse of its Bessel-Fourier basis and
     the CH design it induces.  Neither depends on the truth, so both are built
@@ -323,10 +323,10 @@ def precompute_ch(P, net, ch_modes, bulk):
     """
     out = []
     for c in net:
-        pinv = G.ch_pinv(G.cyl_basis(c["cyl"], c["obs"], *ch_modes))
+        pinv = G.ch_pinv_for(c["cyl"], c["obs"], ch_modes)
         out.append(
             dict(
-                pinv=pinv, obs=c["obs"], A=pinv @ G.A_field_contrast(P, c["obs"], bulk)
+                pinv=pinv, obs=c["obs"], A=pinv @ G.A_field_contrast(P, bulk, c["obs"])
             )
         )
     return out
@@ -346,8 +346,8 @@ def case_blocks(pre, A_sh, sig_sh, sig_ch, n_cyl, c0, c1):
 
 def truth_mc_masses_net(
     P,
-    net,
     bulk,
+    net,
     ch_modes,
     Lmax,
     Rref,
@@ -384,7 +384,7 @@ def truth_mc_masses_net(
         [-1.0, 1.0], size=(n_truth, len(P))
     )
     A_sh = G.A_stokes_contrast(P, bulk, 2, Lmax, Rref)
-    pre = precompute_ch(P, net, ch_modes, bulk)
+    pre = precompute_ch(P, bulk, net, ch_modes)
     keys = list(case_blocks(pre, A_sh, None, [None] * n_cyl, n_cyl, c0, c1))
     one = np.ones(len(P))
 
@@ -394,14 +394,14 @@ def truth_mc_masses_net(
     dev = {k: np.empty((n_truth, len(P))) for k in keys}
     dev_bulk = {k: np.empty(n_truth) for k in keys}
     for i, b in enumerate(betas):
-        sig_sh = G.od_sigma(G.stokes_total(b, P, bulk, 2, Lmax, Rref), eps)
+        sig_sh = G.od_sigma(G.sh_coefficients_total(b, P, bulk, 2, Lmax, Rref), eps)
         sig_ch = [
-            G.od_sigma(q["pinv"] @ G.field_total(b, P, q["obs"], bulk), eps)
+            G.od_sigma(G.ch_coefficients_total(b, P, bulk, q["obs"], q["pinv"]), eps)
             for q in pre
         ]
         cases = case_blocks(pre, A_sh, sig_sh, sig_ch, n_cyl, c0, c1)
         for k, blocks in cases.items():
-            C = np.linalg.inv(G.fisher_masses(blocks))
+            C = G.mass_fraction_covariance(blocks)
             sig[k][i] = np.sqrt(np.diag(C))
             # SEPARABILITY, not precision: sigma says how well each anomaly is
             # known, this says whether it can be told apart from the others.
@@ -435,9 +435,9 @@ def _jitter_inside(p, spread, V, F, tm, rng, n_try=200):
 
 def truth_mc_position_net(
     P,
-    f_true,
-    net,
+    beta_true,
     bulk,
+    net,
     ch_modes,
     Lmax,
     Rref,
@@ -461,16 +461,16 @@ def truth_mc_position_net(
     Returns {case: (n_truth, n_anom)} of the realized position error [LU].
     """
     rng = np.random.default_rng(seed)
-    pre = precompute_ch(P, net, ch_modes, bulk)
+    pre = precompute_ch(P, bulk, net, ch_modes)
     pinv_list = [q["pinv"] for q in pre]
     # the same four configurations the mass experiment uses, as cylinder subsets
     subsets = dict(zip(keys, ([], [0], [0, 1], list(range(n_cyl)))))
     err = {k: np.empty((n_truth, len(P))) for k in keys}
     for i in range(n_truth):
         Pi = np.array([_jitter_inside(p, spread, V, F, tm, rng) for p in P])
-        sig_sh = G.od_sigma(G.stokes_total(f_true, Pi, bulk, 2, Lmax, Rref), eps)
+        sig_sh = G.od_sigma(G.sh_coefficients_total(beta_true, Pi, bulk, 2, Lmax, Rref), eps)
         sig_ch = [
-            G.od_sigma(q["pinv"] @ G.field_total(f_true, Pi, q["obs"], bulk), eps)
+            G.od_sigma(G.ch_coefficients_total(beta_true, Pi, bulk, q["obs"], q["pinv"]), eps)
             for q in pre
         ]
         for j in range(len(P)):
@@ -478,7 +478,7 @@ def truth_mc_position_net(
                 c = position_mc_net(
                     j,
                     Pi,
-                    f_true,
+                    beta_true,
                     net,
                     ch_modes,
                     Lmax,
@@ -520,9 +520,9 @@ def run(
     V, F, tm, Rb = G.load_eros()
     Rref = Rb
     net = build_network(V, F, tm, n_cyl=n_cyl)
-    names, P, f_true = place_mascons(net)
+    names, P, beta_true = place_mascons(net)
     bulk = G.Bulk(V, F)
-    beta_bulk = G.bulk_fraction(f_true)
+    beta_bulk = G.bulk_fraction(beta_true)
     c0, c1 = _axis_label(net[0]["dir"]), _axis_label(net[1]["dir"])
 
     if verbose:
@@ -539,7 +539,7 @@ def run(
         )
         print(
             f"  weights: OD-like σ_i = {eps}·|coeff_i| (floor 10% of RMS); the "
-            "inner Φ-to-field fit is unweighted"
+            "Φ-to-field fit is unweighted"
         )
         print("  CH cylinder sites (farthest-point order; all enter the joint fit):")
         for i_c, c in enumerate(net):
@@ -556,8 +556,8 @@ def run(
     # ── EXPERIMENT A — MASS FRACTIONS over TRUTH INTERIORS ──────────────────
     tmm = truth_mc_masses_net(
         P,
-        net,
         bulk,
+        net,
         ch_modes,
         Lmax_sh,
         Rref,
@@ -574,9 +574,9 @@ def run(
     pos_bounds = (V.min(0) - 0.05, V.max(0) + 0.05)  # keep the solver on the body
     pos_err = truth_mc_position_net(
         P,
-        f_true,
-        net,
+        beta_true,
         bulk,
+        net,
         ch_modes,
         Lmax_sh,
         Rref,
@@ -598,18 +598,18 @@ def run(
     # noise floor.  The network's CH coefficients are POOLED: every cylinder
     # carries the same (n_m, n_n) mode layout, so they group by azimuthal order
     # exactly as a single patch does in pt1.
-    pre_ch = precompute_ch(P, net, ch_modes, bulk)
+    pre_ch = precompute_ch(P, bulk, net, ch_modes)
     A_sh_n = G.A_stokes_contrast(P, bulk, 2, Lmax_sh, Rref)
-    sig_sh_n = G.od_sigma(G.stokes_total(f_true, P, bulk, 2, Lmax_sh, Rref), eps)
+    sig_sh_n = G.od_sigma(G.sh_coefficients_total(beta_true, P, bulk, 2, Lmax_sh, Rref), eps)
     A_ch_n = np.vstack([q["A"] for q in pre_ch])
     sig_ch_n = np.concatenate(
         [
-            G.od_sigma(q["pinv"] @ G.field_total(f_true, P, q["obs"], bulk), eps)
+            G.od_sigma(G.ch_coefficients_total(beta_true, P, bulk, q["obs"], q["pinv"]), eps)
             for q in pre_ch
         ]
     )
     rng_sp = np.random.default_rng(99)
-    d_sh, d_ch = A_sh_n @ f_true, A_ch_n @ f_true  # = CS_hetero - CS_homog
+    d_sh, d_ch = A_sh_n @ beta_true, A_ch_n @ beta_true  # = CS_hetero - CS_homog
     dat_sh = d_sh + rng_sp.normal(0.0, sig_sh_n)
     dat_ch = d_ch + rng_sp.normal(0.0, sig_ch_n)
     Aw = np.vstack([A_sh_n / sig_sh_n[:, None], A_ch_n / sig_ch_n[:, None]])
@@ -626,7 +626,7 @@ def run(
 
     # a single nominal interior, for the admissibility table
     a_min, d_surf, d_obs, b_max = G.admissibility(
-        P, f_true, beta_bulk, bulk.volume, np.vstack([c["obs"] for c in net]), tm
+        P, beta_true, beta_bulk, bulk.volume, np.vstack([c["obs"] for c in net]), tm
     )
 
     res = dict(
@@ -636,7 +636,7 @@ def run(
         net=net,
         names=names,
         P=P,
-        f_true=f_true,
+        beta_true=beta_true,
         bulk=bulk,
         beta_bulk=beta_bulk,
         n_cyl=n_cyl,
@@ -712,7 +712,7 @@ def _lognorm_fit(v):
 
 def results_report(res):
     names, tmm, cases = res["names"], res["truth_mc"], res["cases"]
-    ft, sig, bsig = res["f_true"], tmm["sig"], tmm["bulk_sig"]
+    ft, sig, bsig = res["beta_true"], tmm["sig"], tmm["bulk_sig"]
     net_k = cases[-1]
     rms = lambda M: np.sqrt(np.mean(np.asarray(M) ** 2, axis=0))
     print(f"\n{SEP}\n  RESULTS  (figures carry no numbers; quote from here)\n{SEP}")
@@ -935,7 +935,7 @@ def make_plots(res, outdir="Images"):
 
     V, F, P, net, names = res["V"], res["F"], res["P"], res["net"], res["names"]
     n_cyl, cases, tmm = res["n_cyl"], res["cases"], res["truth_mc"]
-    ft, bulk = res["f_true"], res["bulk"]
+    ft, bulk = res["beta_true"], res["bulk"]
     net_k = cases[-1]
     rms = lambda M: np.sqrt(np.mean(np.asarray(M) ** 2, axis=0))
     lab = [n.replace(" ", "\n", 1) for n in names]  # full name, wrapped once
@@ -995,7 +995,7 @@ def make_plots(res, outdir="Images"):
     # cylinder of the network marked: it shows at a glance which parts of the
     # surface the network covers and which heterogeneity sits under them.
     G.bouguer_map(
-        bulk, P, ft, V, outdir, "global_pt2_fig1b_bouguer.pdf",
+        ft, P, bulk, V, outdir, "global_pt2_fig1b_bouguer.pdf",
         names=names, marks=[c["cyl"].center for c in net],
     )
 
