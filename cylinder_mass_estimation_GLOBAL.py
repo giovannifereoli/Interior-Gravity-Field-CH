@@ -1295,7 +1295,6 @@ def truth_mc_position(
                 sol = least_squares(
                     _pos_residual,
                     p0 + start_offset,
-                    method="trf",
                     args=(
                         data,
                         sig_b,
@@ -1308,9 +1307,18 @@ def truth_mc_position(
                         pinvPhi,
                         use_ch,
                     ),
-                    xtol=1e-10,
-                    ftol=1e-10,
-                    max_nfev=300,
+                    # Optimization method
+                    method="trf",
+                    # Better numerical Jacobian
+                    jac="3-point",  # More accurate, about 2× the residual evaluations
+                    # Automatically account for differently sensitive coordinates
+                    x_scale="jac",
+                    # Convergence criteria
+                    xtol=1e-12,
+                    ftol=1e-12,
+                    gtol=1e-12,
+                    # Allow difficult cases to converge
+                    max_nfev=2000,
                 )
                 acc.append(sol.x)
             acc = np.asarray(acc)

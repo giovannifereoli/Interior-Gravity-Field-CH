@@ -109,14 +109,22 @@ def farthest_point_sample(pts, k, start_idx=None, seed=0):
     return np.asarray(idx)
 
 
+# TODO: fix the 0.03 and other hard coded number!
 def build_network(
     V, F, tm, n_cyl=6, radius=0.12, height=0.32, n_pts=180, brillouin_frac=0.80, seed=1
 ):
     """
     Network of CH cylinders on the INSIDE-Brillouin surface of the body.
+
+    The `brillouin_frac` parameter restricts candidate mesh vertices to those
+    whose radial distance from the origin is less than `brillouin_frac * Rb`,
+    where `Rb` is the maximum vertex radius. This excludes the elongated tips
+    and concentrates the cylinders around the body's sides and waist.
+
     Farthest-point sampling is anchored at the −z (underside) extreme so the
-    network is guaranteed a cylinder below the body — otherwise, on Eros's
+    network is guaranteed a cylinder below the body—otherwise, on Eros's
     flat-in-z shape, the greedy sampler tends to double up on the top face.
+
     Returns a list of dicts: {cyl, obs, dir, surf}.
     """
     Rb = float(np.linalg.norm(V, axis=1).max())
@@ -139,6 +147,8 @@ def build_network(
     return net
 
 
+# TODO: wait am i placing cylinders knowing their positions?...
+# I dont like this, also what does the 4% comment mean
 def place_mascons(net, seed=2):
     """
     Scatter ANOMALIES for the experiment: one near-surface anomaly under each of
@@ -199,15 +209,11 @@ def _axis_label(d):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# OBSERVABLE BLOCKS
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-# ═══════════════════════════════════════════════════════════════════════════
 # POSITION FIT (one mascon free, masses + other positions fixed) — network
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+# TODO: when i do the MC do I want to move them all?
 def _pos_forward_net(posj, j, P, masses, bulk, Lmax, Rref, ch_data):
     """
     Full forward model β̃·CD + Σ β_k pt_k with only anomaly j's position free.
@@ -232,6 +238,8 @@ def _pos_forward_net(posj, j, P, masses, bulk, Lmax, Rref, ch_data):
     return blocks
 
 
+# TODO: so wait am i not moving the nomaly??
+# Just the initial condition?? why do i have this and not for mass im confused
 def position_mc_net(
     j,
     P,
@@ -299,11 +307,20 @@ def position_mc_net(
             resid,
             p0,
             args=(data,),
-            method="trf",
             bounds=bounds,
+            # Optimization method
+            method="trf",
+            # Better numerical Jacobian
+            jac="3-point",  # More accurate, about 2× the residual evaluations
+            # jac="cs",             # Even better if _pos_residual supports complex inputs
+            # Automatically account for differently sensitive coordinates
+            x_scale="jac",
+            # Convergence criteria
             xtol=1e-12,
             ftol=1e-12,
-            max_nfev=300,
+            gtol=1e-12,
+            # Allow difficult cases to converge
+            max_nfev=2000,
         )
         out.append(sol.x)
     return np.asarray(out)
@@ -468,9 +485,13 @@ def truth_mc_position_net(
     err = {k: np.empty((n_truth, len(P))) for k in keys}
     for i in range(n_truth):
         Pi = np.array([_jitter_inside(p, spread, V, F, tm, rng) for p in P])
-        sig_sh = G.od_sigma(G.sh_coefficients_total(beta_true, Pi, bulk, 2, Lmax, Rref), eps)
+        sig_sh = G.od_sigma(
+            G.sh_coefficients_total(beta_true, Pi, bulk, 2, Lmax, Rref), eps
+        )
         sig_ch = [
-            G.od_sigma(G.ch_coefficients_total(beta_true, Pi, bulk, q["obs"], q["pinv"]), eps)
+            G.od_sigma(
+                G.ch_coefficients_total(beta_true, Pi, bulk, q["obs"], q["pinv"]), eps
+            )
             for q in pre
         ]
         for j in range(len(P)):
@@ -600,11 +621,15 @@ def run(
     # exactly as a single patch does in pt1.
     pre_ch = precompute_ch(P, bulk, net, ch_modes)
     A_sh_n = G.A_stokes_contrast(P, bulk, 2, Lmax_sh, Rref)
-    sig_sh_n = G.od_sigma(G.sh_coefficients_total(beta_true, P, bulk, 2, Lmax_sh, Rref), eps)
+    sig_sh_n = G.od_sigma(
+        G.sh_coefficients_total(beta_true, P, bulk, 2, Lmax_sh, Rref), eps
+    )
     A_ch_n = np.vstack([q["A"] for q in pre_ch])
     sig_ch_n = np.concatenate(
         [
-            G.od_sigma(G.ch_coefficients_total(beta_true, P, bulk, q["obs"], q["pinv"]), eps)
+            G.od_sigma(
+                G.ch_coefficients_total(beta_true, P, bulk, q["obs"], q["pinv"]), eps
+            )
             for q in pre_ch
         ]
     )
@@ -624,7 +649,7 @@ def run(
         ch=dict(sigma=sig_ch_n, data=dat_ch, model=A_ch_n @ beta_hat),
     )
 
-    # a single nominal interior, for the admissibility table
+    # A single nominal interior, for the admissibility table
     a_min, d_surf, d_obs, b_max = G.admissibility(
         P, beta_true, beta_bulk, bulk.volume, np.vstack([c["obs"] for c in net]), tm
     )
@@ -831,8 +856,10 @@ def results_report(res):
         f"  {'quantity':14s} {'anomaly':16s} {'SH median':>11} {'σx':>6} {'p':>6}"
         f" {'net median':>12} {'σx':>6} {'p':>6} {'med ratio':>10}"
     )
-    for title, data in (("mass fraction", {k: np.abs(tmm["dev"][k]) for k in cases}),
-                        ("position", pe)):
+    for title, data in (
+        ("mass fraction", {k: np.abs(tmm["dev"][k]) for k in cases}),
+        ("position", pe),
+    ):
         for i, nm in enumerate(names):
             ma, fa, pa = _lognorm_fit(data[cases[0]][:, i])
             mb, fb, pb = _lognorm_fit(data[net_k][:, i])
@@ -965,7 +992,7 @@ def make_plots(res, outdir="Images"):
             f"C{i_c} ({_axis_label(c['dir'])})",
             fontsize=8 * FONT_SCALE,
             color=ACCENT,
-                        ha="center",
+            ha="center",
             bbox=dict(fc="white", ec="0.7", alpha=0.8, pad=1.2, lw=0.4),
         )
     for nm, q, b in zip(names, P, ft):
@@ -995,8 +1022,14 @@ def make_plots(res, outdir="Images"):
     # cylinder of the network marked: it shows at a glance which parts of the
     # surface the network covers and which heterogeneity sits under them.
     G.bouguer_map(
-        ft, P, bulk, V, outdir, "global_pt2_fig1b_bouguer.pdf",
-        names=names, marks=[c["cyl"].center for c in net],
+        ft,
+        P,
+        bulk,
+        V,
+        outdir,
+        "global_pt2_fig1b_bouguer.pdf",
+        names=names,
+        marks=[c["cyl"].center for c in net],
     )
 
     # ---- FIG 2 / FIG 3: the two experiments, drawn identically -------------
@@ -1046,7 +1079,8 @@ def make_plots(res, outdir="Images"):
         ax.set_yscale("log")
         ax.set_xticks(x)
         ax.set_xticklabels(
-            lab + ([r"BODY $\tilde\beta$"] if n > len(lab) else []), fontsize=9 * FONT_SCALE
+            lab + ([r"BODY $\tilde\beta$"] if n > len(lab) else []),
+            fontsize=9 * FONT_SCALE,
         )
         ax.set_ylabel(ylabel)
         ax.grid(True, axis="y", which="both", alpha=0.3)
@@ -1083,10 +1117,19 @@ def make_plots(res, outdir="Images"):
         fig, axs = plt.subplots(2, 3, figsize=(11.4, 6.2), sharex=True, sharey=True)
         cmax = 0.0
         for i, (ax, nm) in enumerate(zip(axs.ravel(), names)):
-            for v, col, lab_ in ((a[:, i], COLOR[2], "SH only"),
-                                 (b[:, i], COLOR[0], f"SH + {n_cyl}-CH network")):
-                c, _, _ = ax.hist(np.clip(v, lo, None), bins=bins, color=col,
-                                  alpha=0.75, edgecolor="k", lw=0.4, label=lab_)
+            for v, col, lab_ in (
+                (a[:, i], COLOR[2], "SH only"),
+                (b[:, i], COLOR[0], f"SH + {n_cyl}-CH network"),
+            ):
+                c, _, _ = ax.hist(
+                    np.clip(v, lo, None),
+                    bins=bins,
+                    color=col,
+                    alpha=0.75,
+                    edgecolor="k",
+                    lw=0.4,
+                    label=lab_,
+                )
                 cmax = max(cmax, c.max())
             # RMS ratio, the SAME statistic the bar panel annotates, so a cell
             # here and its bar group there print the same number.  A ratio of
@@ -1113,9 +1156,14 @@ def make_plots(res, outdir="Images"):
             # name, gain and both fits as in-axes text, not a title (a small
             # multiple is unreadable without its label; the tables carry the rest)
             ax.text(
-                0.03, 0.96, "\n".join(txt),
-                transform=ax.transAxes, ha="left", va="top",
-                fontsize=7.5 * FONT_SCALE, linespacing=1.35,
+                0.03,
+                0.96,
+                "\n".join(txt),
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=7.5 * FONT_SCALE,
+                linespacing=1.35,
                 bbox=dict(fc="white", ec="0.8", lw=0.5, alpha=0.92, pad=2.5),
             )
             ax.set_xscale("log")
@@ -1127,20 +1175,26 @@ def make_plots(res, outdir="Images"):
         for ax in axs[-1]:
             ax.set_xlabel(xlabel, fontsize=10 * FONT_SCALE)
         for ax in axs[:, 0]:
-            ax.set_ylabel(f"Truth Interiors  (of {len(a)})  [-]",
-                          fontsize=10 * FONT_SCALE)
+            ax.set_ylabel(
+                f"Truth Interiors  (of {len(a)})  [-]", fontsize=10 * FONT_SCALE
+            )
         h, lab_ = axs[0, 0].get_legend_handles_labels()
-        fig.legend(h, lab_, loc="lower center", ncol=4, frameon=False,
-                   fontsize=9 * FONT_SCALE, bbox_to_anchor=(0.5, 0.005))
+        fig.legend(
+            h,
+            lab_,
+            loc="lower center",
+            ncol=4,
+            frameon=False,
+            fontsize=9 * FONT_SCALE,
+            bbox_to_anchor=(0.5, 0.005),
+        )
         fig.tight_layout(rect=[0, 0.08, 1, 1])
         fig.savefig(os.path.join(outdir, fname), bbox_inches="tight")
 
     # FIG 2 — MASS FRACTIONS
     real, pred = {}, {}
     for k in cases:
-        real[k] = np.append(
-            rms(tmm["dev"][k]), rms(tmm["dev_bulk"][k])
-        )
+        real[k] = np.append(rms(tmm["dev"][k]), rms(tmm["dev_bulk"][k]))
         pred[k] = np.append(rms(tmm["sig"][k]), rms(tmm["bulk_sig"][k]))
     fig, ax = plt.subplots(figsize=FS_BAR)
     _cases_panel(
