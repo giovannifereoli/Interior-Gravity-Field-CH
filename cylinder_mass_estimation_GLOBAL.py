@@ -959,7 +959,7 @@ def detection_sweep(A_sh, sig_sh, A_ch, sig_ch, f_base, mu_grid, n_mc=1000, seed
     """
     Smallest detectable anomaly with vs without the cylinder.
 
-    Sweeps the TRUE shallow fraction β_0 over `mu_grid` (deep anomalies held at
+    Sweeps the truth mass fraction β_0 of the shallow anomaly over `mu_grid` (deep anomalies held at
     nominal; β̃ = 1 − Σβ absorbs the change, so the body keeps unit mass) and at
     each value fits `n_mc` noisy realizations SH-only and SH+CH.
 
@@ -1003,8 +1003,8 @@ def detection_sweep(A_sh, sig_sh, A_ch, sig_ch, f_base, mu_grid, n_mc=1000, seed
     out["n_mc"] = n_mc
     out["mu_grid"] = np.asarray(mu_grid)
 
-    # 3σ detection threshold: the smallest true anomaly whose recovery stands
-    # 3 sigma clear of the noise.
+    # 3σ detection threshold: the smallest anomaly mass fraction whose
+    # recovery stands 3 sigma clear of the noise.
     out["thr_A"], out["thr_B"] = 3.0 * sA, 3.0 * sB
     return out
 
@@ -1846,7 +1846,7 @@ def run_experiment(
 
     # smallest detectable anomaly (part of Experiment 1: positions fixed)
     f_base = beta_true.copy()
-    mu_grid = np.logspace(*det_range, det_n)  # true anomaly mass-fraction sweep
+    mu_grid = np.logspace(*det_range, det_n)  # swept truth mass fraction beta_0
     det = detection_sweep(A_sh, sig_sh, A_ch, sig_ch, f_base, mu_grid, n_mc=n_sweep)
     det["acc"] = det_acc
     if verbose and detail:
@@ -2120,6 +2120,9 @@ def bouguer_map(
     R_map=None,
     n_lon=181,
     n_lat=91,
+    at="sphere",
+    F=None,
+    clearance=0.02,
 ):
     """
     BOUGUER MAP: the heterogeneous truth MINUS the constant-density shape model,
@@ -2140,14 +2143,31 @@ def bouguer_map(
     conventionally does (this file stores accelerations as a = +grad U, so
     a . rhat is negative outside a positive mass).
 
-    The sphere sits just outside the Brillouin sphere by default, the smallest
-    radius on which an exterior spherical-harmonic series is guaranteed to
-    converge — the natural surface on which to compare a global field.  This map
-    is EXACT, not truncated: it is what a perfect instrument would see, and the
-    point of the experiments is how little of it survives degree <= L_SH.
+    WHERE it is evaluated, `at`:
+
+      "sphere"   (default) just outside the Brillouin sphere, the smallest
+                 radius on which an exterior spherical-harmonic series is
+                 guaranteed to converge — the natural surface for comparing a
+                 GLOBAL field, and the one the SH experiments live on.
+      "surface"  a constant `clearance` above the local terrain, found by
+                 ray-casting the shape along each map direction.  The analogue
+                 of a terrestrial Bouguer map, and the honest choice when the
+                 question is WHICH heterogeneity sits WHERE.
+
+    The distinction matters for an elongated body.  Measured on Eros: the
+    Brillouin sphere grazes the long-axis tips (0.018 LU of clearance) but
+    stands 0.73 LU off the waist — 85% of the Brillouin radius, with a median
+    altitude of 0.58 LU.  A localized anomaly's signature falls off with
+    distance, so the sphere systematically SUPPRESSES anomalies under the waist
+    relative to those under the tips: part of "the lobes dominate" in the
+    default map is that geometry, not their masses.  "surface" removes it by
+    putting every point the same height above the terrain.
+
+    Either way the map is EXACT, not truncated: it is what a perfect instrument
+    would see, and the point of the experiments is how little of it survives
+    degree <= L_SH.
     """
     V = np.asarray(V, float)
-    R = float(np.linalg.norm(V, axis=1).max()) * 1.02 if R_map is None else R_map
     lon = np.linspace(-180.0, 180.0, n_lon)
     lat = np.linspace(-90.0, 90.0, n_lat)
     LON, LAT = np.meshgrid(lon, lat)
@@ -2155,7 +2175,30 @@ def bouguer_map(
     ux = (cl * np.cos(np.radians(LON))).ravel()
     uy = (cl * np.sin(np.radians(LON))).ravel()
     uz = sl.ravel()
-    obs = R * np.column_stack([ux, uy, uz])
+    u = np.column_stack([ux, uy, uz])
+    if at == "sphere":
+        r_eval = np.full(
+            len(u),
+            float(np.linalg.norm(V, axis=1).max()) * 1.02 if R_map is None else R_map,
+        )
+    elif at == "surface":
+        if F is None or not _HAVE_TRIMESH:
+            raise ValueError('at="surface" needs the faces F and trimesh')
+        # ray-cast the shape from the origin along every map direction; the
+        # clearance keeps the points strictly OUTSIDE, since a point sitting
+        # exactly on a face is a boundary case for the polyhedral kernel
+        tm_ = trimesh.Trimesh(V, np.asarray(F, int), process=False)
+        loc, i_ray, _ = tm_.ray.intersects_location(
+            ray_origins=np.zeros_like(u), ray_directions=u, multiple_hits=False
+        )
+        r_surf = np.full(len(u), np.nan)
+        r_surf[i_ray] = np.linalg.norm(loc, axis=1)
+        # a ray can miss on a numerically awkward edge; fall back to the median
+        r_surf[~np.isfinite(r_surf)] = np.nanmedian(r_surf)
+        r_eval = r_surf + clearance
+    else:
+        raise ValueError('at must be "sphere" or "surface"')
+    obs = r_eval[:, None] * u
 
     d = A_field_contrast(np.asarray(positions, float), bulk, obs) @ np.asarray(
         beta, float
@@ -2341,16 +2384,23 @@ def make_plots(res, outdir="Images"):
     _save3d(fig, outdir, PREFIX + "fig1_geometry.pdf")
 
     # ---- FIG 1b: Bouguer map of the truth interior -------------------------
-    bouguer_map(
-        ft,
-        P,
-        res["bulk"],
-        V,
-        outdir,
-        PREFIX + "fig1b_bouguer.pdf",
-        names=[n.split()[0] for n in names],
-        marks=[cyl.center],
-    )
+    # BOTH evaluation surfaces: they answer different questions and, for a body
+    # this elongated, they disagree about which anomaly dominates — see the
+    # `at` note in `bouguer_map`.
+    for _at, _stem in (("sphere", "fig1b_bouguer_sphere"),
+                       ("surface", "fig1c_bouguer_surface")):
+        bouguer_map(
+            ft,
+            P,
+            res["bulk"],
+            V,
+            outdir,
+            PREFIX + _stem + ".pdf",
+            names=[n.split()[0] for n in names],
+            marks=[cyl.center],
+            at=_at,
+            F=F,
+        )
 
     # ---- FIG 2a: EXPERIMENT 1 — mass recovery over TRUTH MASS FRACTIONS ----
     # Same three questions fig 3 asks of position, one file each: (a) how the
@@ -2659,9 +2709,12 @@ def make_plots(res, outdir="Images"):
     ax.set_yscale("log")
     ax.set_xlim(mug.min() * 0.7, mug.max() * 1.5)
     ax.set_ylim(min(relA.min(), relB.min()) * 0.45, 2.0e4)
-    ax.set_xlabel(r"True Anomaly $\beta_0$  [-]")  # TODO: true anomaly is a bad name!
+    # NOT "true anomaly": that is the orbital element (the angle from
+    # periapsis), and this is a mass fraction — the collision would be
+    # actively misleading in an asteroid-gravity paper.
+    ax.set_xlabel(r"Anomaly Mass Fraction $\beta_0$ (truth)  [-]")
     ax.set_ylabel(
-        r"MC RMS Error / True Anomaly $\beta_0$  " + (r"[$\%$]" if USE_TEX else "[%]")
+        r"MC RMS Error / $\beta_0$  " + (r"[$\%$]" if USE_TEX else "[%]")
     )
     ax.grid(True, which="both", alpha=0.3)
     ax.set_axisbelow(True)
@@ -2979,7 +3032,8 @@ if __name__ == "__main__":
     print("\nSaved to Images/ (one file per panel):")
     for _f in (
         PREFIX + "fig1_geometry.pdf",
-        PREFIX + "fig1b_bouguer.pdf",
+        PREFIX + "fig1b_bouguer_sphere.pdf",
+        PREFIX + "fig1c_bouguer_surface.pdf",
         PREFIX + "fig2a_massfraction_hist.pdf",
         PREFIX + "fig2a_massfraction_truths.pdf",
         PREFIX + "fig2a_massfraction_cov1.pdf",

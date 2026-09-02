@@ -1023,16 +1023,21 @@ def make_plots(res, outdir="Images"):
     # Same construction as pt1's, six anomalies instead of three and every
     # cylinder of the network marked: it shows at a glance which parts of the
     # surface the network covers and which heterogeneity sits under them.
-    G.bouguer_map(
-        ft,
-        P,
-        bulk,
-        V,
-        outdir,
-        "global_pt2_fig1b_bouguer.pdf",
-        names=names,
-        marks=[c["cyl"].center for c in net],
-    )
+    # both evaluation surfaces, as in pt1
+    for _at, _stem in (("sphere", "fig1b_bouguer_sphere"),
+                       ("surface", "fig1c_bouguer_surface")):
+        G.bouguer_map(
+            ft,
+            P,
+            bulk,
+            V,
+            outdir,
+            "global_pt2_" + _stem + ".pdf",
+            names=names,
+            marks=[c["cyl"].center for c in net],
+            at=_at,
+            F=F,
+        )
 
     # ---- FIG 2 / FIG 3: the two experiments, drawn identically -------------
     # Specular by construction: same four observation models, same bar chart,
@@ -1404,7 +1409,8 @@ if __name__ == "__main__":
     print("\nSaved to Images/ (one file per panel):")
     for _f in (
         "global_pt2_fig1_geometry.pdf",
-        "global_pt2_fig1b_bouguer.pdf",
+        "global_pt2_fig1b_bouguer_sphere.pdf",
+        "global_pt2_fig1c_bouguer_surface.pdf",
         "global_pt2_fig2_massratio_bars.pdf",
         "global_pt2_fig2_massratio_hist.pdf",
         "global_pt2_fig3_position_bars.pdf",
