@@ -70,6 +70,8 @@ FS_COR = (6.8, 5.8)  # correlation matrix + its own colour bar
 mpl.rcParams.update({"axes.prop_cycle": mpl.cycler(color=COLOR), "figure.dpi": 110})
 SEP = "=" * 72
 
+# TODO: PT1/PT2: How to prove low altitude data are better / how those
+# help in . Like what happens if SH is like 10? Do I loose CH benefits?
 
 # ═══════════════════════════════════════════════════════════════════════════
 # NETWORK OF CH CYLINDERS

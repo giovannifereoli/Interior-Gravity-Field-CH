@@ -101,6 +101,8 @@ import matplotlib as mpl
 from polyhedral_gravity import Polyhedron, PolyhedronIntegrity, GravityEvaluable
 import time, os
 
+# TODO: LOCAL: how much SH would do here? Is CH needed?
+
 # ── physical constants (SI) ────────────────────────────────────────────────
 # ═══════════════════════════════════════════════════════════════════════════
 # UNIT SYSTEM — the one switch that decides how the whole script computes

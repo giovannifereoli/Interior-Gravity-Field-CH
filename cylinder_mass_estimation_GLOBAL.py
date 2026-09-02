@@ -111,6 +111,10 @@ try:
 except Exception:
     _HAVE_PG = False
 
+
+# TODO: PT1/PT2: How to prove low altitude data are better / how
+# those help in . Like what happens if SH is like 10? Do I loose CH benefits?
+
 # ── plotting ────────────────────────────────────────────────────────────────
 # Okabe-Ito, the standard colour-vision-deficiency-safe qualitative palette.
 # The previous set paired #E6001A with #1a9641 — red against green, which is
