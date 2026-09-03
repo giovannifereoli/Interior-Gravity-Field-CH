@@ -2107,7 +2107,6 @@ def hist_legend(ax):
     )
 
 
-# TODO: maybe put option to map it to surface?
 def bouguer_map(
     beta,
     positions,
@@ -2387,8 +2386,10 @@ def make_plots(res, outdir="Images"):
     # BOTH evaluation surfaces: they answer different questions and, for a body
     # this elongated, they disagree about which anomaly dominates — see the
     # `at` note in `bouguer_map`.
-    for _at, _stem in (("sphere", "fig1b_bouguer_sphere"),
-                       ("surface", "fig1c_bouguer_surface")):
+    for _at, _stem in (
+        ("sphere", "fig1b_bouguer_sphere"),
+        ("surface", "fig1c_bouguer_surface"),
+    ):
         bouguer_map(
             ft,
             P,
@@ -2713,9 +2714,7 @@ def make_plots(res, outdir="Images"):
     # periapsis), and this is a mass fraction — the collision would be
     # actively misleading in an asteroid-gravity paper.
     ax.set_xlabel(r"Anomaly Mass Fraction $\beta_0$ (truth)  [-]")
-    ax.set_ylabel(
-        r"MC RMS Error / $\beta_0$  " + (r"[$\%$]" if USE_TEX else "[%]")
-    )
+    ax.set_ylabel(r"MC RMS Error / $\beta_0$  " + (r"[$\%$]" if USE_TEX else "[%]"))
     ax.grid(True, which="both", alpha=0.3)
     ax.set_axisbelow(True)
     ax.legend(fontsize=8.5 * FONT_SCALE, loc="lower left", framealpha=0.93, ncol=2)

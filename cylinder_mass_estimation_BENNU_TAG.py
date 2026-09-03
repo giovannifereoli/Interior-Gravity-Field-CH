@@ -1826,7 +1826,9 @@ def plot_results(res, outdir=None):
         # puts them on the numbers once the text is scaled up for print
         ax.set_xlabel(f"$x$ [{_UL['len']}]", labelpad=LPAD3D)
         ax.set_ylabel(f"$y$ [{_UL['len']}]", labelpad=LPAD3D)
-        ax.set_zlabel(f"$z$ [{_UL['len']}]", labelpad=LPAD3D)
+        # z needs a wider pad than x/y: its tick labels are the tallest numbers
+        # on the plot ("17.5"), and at LPAD3D the label sits on top of them
+        ax.set_zlabel(f"$z$ [{_UL['len']}]", labelpad=LPAD3D * 1.9)
         ax.view_init(elev=28, azim=-60)
 
     def _draw_cylinder(ax, color=ACCENT):
@@ -1891,11 +1893,12 @@ def plot_results(res, outdir=None):
     )
     _draw_cylinder(ax)
     # NOT `sm`: that name is the recovered sigma map further down this function
-    # TODO: this plot z-label off as well as i dont like pre-post
     cbar_src = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
     cbar_src.set_array([])
-    fig1.colorbar(cbar_src, ax=ax, pad=0.10, shrink=0.65).set_label(
-        rf"$\Delta h$ (post $-$ pre)  [{_UL['len']}]"
+    # pad clears the z label, which mplot3d places outboard of the z ticks;
+    # at 0.10 the bar sat on top of it
+    fig1.colorbar(cbar_src, ax=ax, pad=0.17, shrink=0.65).set_label(
+        rf"Surface Height Change $\Delta h$  [{_UL['len']}]"
     )
     ax.set_xlim(cx - W, cx + W)
     ax.set_ylim(cy - W, cy + W)

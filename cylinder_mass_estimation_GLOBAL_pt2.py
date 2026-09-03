@@ -111,9 +111,19 @@ def farthest_point_sample(pts, k, start_idx=None, seed=0):
     return np.asarray(idx)
 
 
-# TODO: fix the 0.03 and other hard coded number!
 def build_network(
-    V, F, tm, n_cyl=6, radius=0.12, height=0.32, n_pts=180, brillouin_frac=0.80, seed=1
+    V,
+    F,
+    tm,
+    n_cyl=6,
+    radius=0.12,  # cylinder radius [LU]
+    height=0.32,  # cylinder height [LU]
+    gap=0.03,  # lift of the base above its surface vertex [LU]
+    alpha=100.0,  # Bessel extension; the Cylinder default, named here so a
+    #                 caller can change it without editing the constructor
+    n_pts=180,  # field samples drawn per cylinder
+    brillouin_frac=0.80,
+    seed=1,
 ):
     """
     Network of CH cylinders on the INSIDE-Brillouin surface of the body.
@@ -127,6 +137,12 @@ def build_network(
     network is guaranteed a cylinder below the body—otherwise, on Eros's
     flat-in-z shape, the greedy sampler tends to double up on the top face.
 
+    `gap` lifts each cylinder off the vertex it is anchored to, along the
+    outward normal, so its base clears the local terrain — pt1 calls the same
+    quantity `cyl_gap`.  It is 0.03 LU here against pt1's 0.005 because these
+    cylinders sit on the curved sides rather than flat on the +z pole, where a
+    thinner gap lets the rim cut back into the body.
+
     Returns a list of dicts: {cyl, obs, dir, surf}.
     """
     Rb = float(np.linalg.norm(V, axis=1).max())
@@ -137,10 +153,10 @@ def build_network(
     for s in surf[idx]:
         d = s / np.linalg.norm(s)  # outward radial normal
         cyl = G.Cylinder(
-            center=s + 0.03 * d,
+            center=s + gap * d,
             radius=radius,
             height=height,
-            alpha=100.0,
+            alpha=alpha,
             R=rot_z_to(d),
         )
         obs = G.cylinder_points(cyl, n=n_pts, seed=seed + 1)
