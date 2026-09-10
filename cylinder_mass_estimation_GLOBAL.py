@@ -112,8 +112,9 @@ except Exception:
     _HAVE_PG = False
 
 
-# TODO: PT1/PT2: How to prove low altitude data are better / how
-# those help in . Like what happens if SH is like 10? Do I loose CH benefits?
+# TODO: PT1/PT2: quantify the benefit of low-altitude data as a function
+# of SH maximum degree. Sweep L_SH and compare SH vs SH+CH mass and
+# position uncertainties. Does the CH advantage persist as L_SH increases?
 
 # ── plotting ────────────────────────────────────────────────────────────────
 # Okabe-Ito, the standard colour-vision-deficiency-safe qualitative palette.
@@ -412,16 +413,7 @@ def cyl_basis(cyl: Cylinder, obs, n_m, n_n):
 # based — max(M,N)*eps*s_max, ~9e-12 relative — so it keeps directions whose
 # singular value is ~1e-13 of the largest.  Their coefficients come out as
 # (projection)/sigma, i.e. enormous, and cancel again when multiplied back by
-# Phi.  That, and nothing else, is why raw CH coefficients come out at 1e10 and
-# refuse to decay with m.  Measured here at (8,8), 200 pts:
-#
-#   rcond    kept   ||c||    fit err   m-spectrum last/first
-#   default    82   9.5e+09    2.1 %   3.13   (RISES)
-#   1e-8       46   8.8e+05    4.7 %   0.18
-#   1e-6       31   6.9e+03    6.9 %   1.2e-04
-#   1e-4       16   1.6e+02   10.0 %   3.8e-07
-#
-# Truncating is not cosmetic: the discarded directions carry noise, not signal,
+# Phi. Truncating is not cosmetic: the discarded directions carry noise, not signal,
 # so counting them as information inflates what the CH block appears to know.
 # `cylinder_mass_estimation_BENNU_TAG.fit_coefficients` has always passed an
 # explicit cond for this reason.
@@ -545,7 +537,458 @@ class Bulk:
         return self._fd[key]
 
     # ── Stokes coefficients ────────────────────────────────────────────────
-    # TODO: do I like this?
+    # The Stokes coefficients can be computed by a brute-force tetrahedral quadrature of the solid harmonics, but Werner (1997) gives a recurrence that is faster and more numerically stable.  Anyway, they are both exact!
+    def stokes_werner(self, Lmin, Lmax, Rref, chunk=200_000):
+        """
+        Fully-normalized Stokes coefficients of the unit-mass constant-density
+        polyhedron, following Werner (1997).
+
+        The polyhedron is decomposed into signed tetrahedra
+        (origin, v0, v1, v2). For each tetrahedron, the normalized solid-harmonic
+        integrands are generated recursively as homogeneous trinomials in the
+        local simplex coordinates, then integrated analytically:
+
+            ∫_simplex X^i Y^j Z^k dX dY dZ
+                = i! j! k! / (n + 3)!,
+                i + j + k = n.
+
+        The final coefficients are normalized by the total polyhedron volume,
+        corresponding to a unit-mass constant-density body.
+
+        Werner's recurrences are:
+
+            c̄00 = 1
+            s̄00 = 0
+
+            [c̄11]   1/(Rref*sqrt(3)) [x]
+            [s̄11] =                      [y]
+
+            [c̄nn]                    2n-1
+            [s̄nn] = -------------------------- [x  -y] [c̄n-1,n-1]
+                        Rref*sqrt(2n(2n+1)) [y   x] [s̄n-1,n-1]
+
+            [c̄n,n-1]   2n-1    z
+            [s̄n,n-1] = -------- --- [c̄n-1,n-1]
+                        sqrt(2n+1) Rref
+
+        and, for m < n-1,
+
+            [c̄nm] = A_nm (z/Rref) [c̄n-1,m]
+                    - B_nm (r/Rref)^2 [c̄n-2,m]
+
+            [s̄nm] = A_nm (z/Rref) [s̄n-1,m]
+                    - B_nm (r/Rref)^2 [s̄n-2,m]
+
+        with
+
+            A_nm = (2n-1) sqrt(
+                        (2n-1) /
+                        ((2n+1)(n+m)(n-m))
+                    )
+
+            B_nm = sqrt(
+                        (2n-3)(n+m-1)(n-m-1) /
+                        ((2n+1)(n+m)(n-m))
+                    ).
+
+        The trinomial integration is the analytic Lien-Kajiya integral used by
+        Werner (1997). Signed tetrahedral Jacobians preserve the orientation of
+        the polyhedron, including concave bodies.
+        """
+        key = (Lmin, Lmax, round(float(Rref), 12))
+        if key in self._sh:
+            return self._sh[key]
+
+        Rref = float(Rref)
+        if Lmin < 0 or Lmax < Lmin:
+            raise ValueError("require 0 <= Lmin <= Lmax")
+        if not np.isfinite(Rref) or Rref <= 0.0:
+            raise ValueError("Rref must be finite and positive")
+        if chunk <= 0:
+            raise ValueError("chunk must be positive")
+
+        import math
+
+        # ------------------------------------------------------------------
+        # Homogeneous monomial lists.
+        #
+        # mons[n] contains all (i,j,k) with i+j+k=n.
+        # ------------------------------------------------------------------
+        mons = {
+            n: [(i, j, n - i - j) for i in range(n + 1) for j in range(n + 1 - i)]
+            for n in range(Lmax + 1)
+        }
+
+        # ------------------------------------------------------------------
+        # Index maps for multiplying a degree-n polynomial by X, Y, Z.
+        # ------------------------------------------------------------------
+        mul_xyz = {}
+        for n in range(Lmax):
+            dst = {ijk: q for q, ijk in enumerate(mons[n + 1])}
+
+            ix = np.array(
+                [dst[(i + 1, j, k)] for i, j, k in mons[n]],
+                dtype=np.intp,
+            )
+            iy = np.array(
+                [dst[(i, j + 1, k)] for i, j, k in mons[n]],
+                dtype=np.intp,
+            )
+            iz = np.array(
+                [dst[(i, j, k + 1)] for i, j, k in mons[n]],
+                dtype=np.intp,
+            )
+
+            mul_xyz[n] = (ix, iy, iz)
+
+        # ------------------------------------------------------------------
+        # Index maps for multiplying by
+        #
+        #     r^2 = qXX X^2 + qYY Y^2 + qZZ Z^2
+        #             + qXY XY + qXZ XZ + qYZ YZ.
+        # ------------------------------------------------------------------
+        qmons = (
+            (2, 0, 0),
+            (0, 2, 0),
+            (0, 0, 2),
+            (1, 1, 0),
+            (1, 0, 1),
+            (0, 1, 1),
+        )
+
+        mul_r2 = {}
+        for n in range(max(0, Lmax - 1)):
+            dst = {ijk: q for q, ijk in enumerate(mons[n + 2])}
+            mul_r2[n] = [
+                np.array(
+                    [
+                        dst[
+                            (
+                                i + dq[0],
+                                j + dq[1],
+                                k + dq[2],
+                            )
+                        ]
+                        for i, j, k in mons[n]
+                    ],
+                    dtype=np.intp,
+                )
+                for dq in qmons
+            ]
+
+        # ------------------------------------------------------------------
+        # Exact simplex moments:
+        #
+        #     ∫ X^i Y^j Z^k dX dY dZ = i!j!k!/(n+3)!
+        # ------------------------------------------------------------------
+        simplex_moments = {}
+        for n in range(Lmax + 1):
+            denom = float(math.factorial(n + 3))
+            simplex_moments[n] = np.array(
+                [
+                    (math.factorial(i) * math.factorial(j) * math.factorial(k) / denom)
+                    for i, j, k in mons[n]
+                ],
+                dtype=float,
+            )
+
+        # ------------------------------------------------------------------
+        # Accumulated global coefficients.
+        #
+        # Assumed ordering:
+        #   [C00, S00, C10, S10, C11, S11, C20, S20, ...]
+        #
+        # If sh_stokes_of_point uses a different packing, only this final
+        # packing section needs to change.
+        # ------------------------------------------------------------------
+        accumulated = {}
+
+        V = self.V
+        F = self.F
+
+        for s0 in range(0, len(F), chunk):
+            sl = slice(s0, min(s0 + chunk, len(F)))
+
+            # Tetrahedron vertices:
+            #   origin, a, b, c
+            a = V[F[sl, 0]]
+            b = V[F[sl, 1]]
+            c = V[F[sl, 2]]
+
+            nt = len(a)
+
+            # J maps local simplex coordinates (X,Y,Z) to physical (x,y,z):
+            #
+            # [x]   [x1 x2 x3] [X]
+            # [y] = [y1 y2 y3] [Y]
+            # [z]   [z1 z2 z3] [Z]
+            #
+            # Each row is therefore the coefficient vector of x,y,z.
+            J = np.stack((a, b, c), axis=2)  # (nt, 3, 3)
+            detJ = 6.0 * self._tet[sl]  # signed det(J)
+
+            lin_x = J[:, 0, :]
+            lin_y = J[:, 1, :]
+            lin_z = J[:, 2, :]
+
+            # r^2 = x^2 + y^2 + z^2 as a quadratic in X,Y,Z.
+            q = np.empty((nt, 6), dtype=float)
+            q[:, 0] = lin_x[:, 0] ** 2 + lin_y[:, 0] ** 2 + lin_z[:, 0] ** 2  # X^2
+            q[:, 1] = lin_x[:, 1] ** 2 + lin_y[:, 1] ** 2 + lin_z[:, 1] ** 2  # Y^2
+            q[:, 2] = lin_x[:, 2] ** 2 + lin_y[:, 2] ** 2 + lin_z[:, 2] ** 2  # Z^2
+            q[:, 3] = 2.0 * (
+                lin_x[:, 0] * lin_x[:, 1]
+                + lin_y[:, 0] * lin_y[:, 1]
+                + lin_z[:, 0] * lin_z[:, 1]
+            )  # XY
+            q[:, 4] = 2.0 * (
+                lin_x[:, 0] * lin_x[:, 2]
+                + lin_y[:, 0] * lin_y[:, 2]
+                + lin_z[:, 0] * lin_z[:, 2]
+            )  # XZ
+            q[:, 5] = 2.0 * (
+                lin_x[:, 1] * lin_x[:, 2]
+                + lin_y[:, 1] * lin_y[:, 2]
+                + lin_z[:, 1] * lin_z[:, 2]
+            )  # YZ
+
+            def mul_linear(poly, linear, degree):
+                """Multiply degree-(n) polynomial by a linear form."""
+                out = np.zeros((nt, len(mons[degree + 1])), dtype=float)
+                ix, iy, iz = mul_xyz[degree]
+
+                out[:, ix] += poly * linear[:, 0, None]
+                out[:, iy] += poly * linear[:, 1, None]
+                out[:, iz] += poly * linear[:, 2, None]
+                return out
+
+            def mul_r_squared(poly, degree):
+                """Multiply a degree-n polynomial by r^2."""
+                out = np.zeros((nt, len(mons[degree + 2])), dtype=float)
+
+                for t, idx in enumerate(mul_r2[degree]):
+                    out[:, idx] += poly * q[:, t, None]
+
+                return out
+
+            def integrate(poly, degree):
+                """Exact integral of a degree-n trinomial over each tetrahedron."""
+                return detJ * (poly @ simplex_moments[degree])
+
+            # ==============================================================
+            # Werner recursion
+            #
+            # prev2 = degree n-2
+            # prev  = degree n-1
+            # curr  = degree n
+            # ==============================================================
+
+            prev2 = {
+                0: (
+                    np.ones((nt, 1), dtype=float),
+                    np.zeros((nt, 1), dtype=float),
+                )
+            }
+
+            # Degree 0
+            if Lmin <= 0:
+                c0 = integrate(prev2[0][0], 0).sum()
+                s0 = integrate(prev2[0][1], 0).sum()
+                accumulated[(0, 0)] = (
+                    accumulated.get((0, 0), (0.0, 0.0))[0] + c0,
+                    accumulated.get((0, 0), (0.0, 0.0))[1] + s0,
+                )
+
+            if Lmax >= 1:
+                # ----------------------------------------------------------
+                # n = 1
+                #
+                # c10 = z / (sqrt(3) Rref)
+                # s10 = 0
+                #
+                # c11 = x / (sqrt(3) Rref)
+                # s11 = y / (sqrt(3) Rref)
+                #
+                # The c10 relation is the n=1 sub-diagonal case.
+                # ----------------------------------------------------------
+                c10 = mul_linear(
+                    prev2[0][0],
+                    lin_z / (Rref * np.sqrt(3.0)),
+                    0,
+                )
+                s10 = np.zeros_like(c10)
+
+                c11 = mul_linear(
+                    prev2[0][0],
+                    lin_x / (Rref * np.sqrt(3.0)),
+                    0,
+                )
+                s11 = mul_linear(
+                    prev2[0][0],
+                    lin_y / (Rref * np.sqrt(3.0)),
+                    0,
+                )
+
+                prev = {
+                    0: (c10, s10),
+                    1: (c11, s11),
+                }
+
+                if Lmin <= 1:
+                    accumulated[(1, 0)] = (
+                        accumulated.get((1, 0), (0.0, 0.0))[0]
+                        + integrate(c10, 1).sum(),
+                        accumulated.get((1, 0), (0.0, 0.0))[1]
+                        + integrate(s10, 1).sum(),
+                    )
+                    accumulated[(1, 1)] = (
+                        accumulated.get((1, 1), (0.0, 0.0))[0]
+                        + integrate(c11, 1).sum(),
+                        accumulated.get((1, 1), (0.0, 0.0))[1]
+                        + integrate(s11, 1).sum(),
+                    )
+
+                # ----------------------------------------------------------
+                # n >= 2
+                # ----------------------------------------------------------
+                for n in range(2, Lmax + 1):
+                    curr = {}
+
+                    cdiag_prev, sdiag_prev = prev[n - 1]
+
+                    # ------------------------------------------------------
+                    # Diagonal: m = n
+                    #
+                    # [c_nn]   (2n-1)/(R sqrt(2n(2n+1))) [ x -y ] [c]
+                    # [s_nn]                                      [ y  x ] [s]
+                    # ------------------------------------------------------
+                    fdiag = (2.0 * n - 1.0) / (
+                        Rref * np.sqrt(2.0 * n * (2.0 * n + 1.0))
+                    )
+
+                    cdiag = mul_linear(
+                        cdiag_prev,
+                        lin_x * fdiag,
+                        n - 1,
+                    ) - mul_linear(
+                        sdiag_prev,
+                        lin_y * fdiag,
+                        n - 1,
+                    )
+
+                    sdiag = mul_linear(
+                        sdiag_prev,
+                        lin_x * fdiag,
+                        n - 1,
+                    ) + mul_linear(
+                        cdiag_prev,
+                        lin_y * fdiag,
+                        n - 1,
+                    )
+
+                    curr[n] = (cdiag, sdiag)
+
+                    # ------------------------------------------------------
+                    # Sub-diagonal: m = n-1
+                    # ------------------------------------------------------
+                    fsub = (2.0 * n - 1.0) / (Rref * np.sqrt(2.0 * n + 1.0))
+
+                    csub = mul_linear(
+                        cdiag_prev,
+                        lin_z * fsub,
+                        n - 1,
+                    )
+                    ssub = mul_linear(
+                        sdiag_prev,
+                        lin_z * fsub,
+                        n - 1,
+                    )
+
+                    curr[n - 1] = (csub, ssub)
+
+                    # ------------------------------------------------------
+                    # Vertical coefficients: m < n-1
+                    # ------------------------------------------------------
+                    for m in range(n - 1):
+                        c_prev, s_prev = prev[m]
+                        c_prev2, s_prev2 = prev2[m]
+
+                        A_nm = (2.0 * n - 1.0) * np.sqrt(
+                            (2.0 * n - 1.0) / ((2.0 * n + 1.0) * (n + m) * (n - m))
+                        )
+
+                        B_nm = np.sqrt(
+                            ((2.0 * n - 3.0) * (n + m - 1.0) * (n - m - 1.0))
+                            / ((2.0 * n + 1.0) * (n + m) * (n - m))
+                        )
+
+                        z_term_c = mul_linear(
+                            c_prev,
+                            lin_z * (A_nm / Rref),
+                            n - 1,
+                        )
+                        z_term_s = mul_linear(
+                            s_prev,
+                            lin_z * (A_nm / Rref),
+                            n - 1,
+                        )
+
+                        r2_term_c = mul_r_squared(c_prev2, n - 2)
+                        r2_term_s = mul_r_squared(s_prev2, n - 2)
+
+                        ccur = z_term_c - (B_nm / Rref**2) * r2_term_c
+                        scur = z_term_s - (B_nm / Rref**2) * r2_term_s
+
+                        curr[m] = (ccur, scur)
+
+                    # ------------------------------------------------------
+                    # Integrate this degree immediately; no need to retain
+                    # older levels beyond the two required by the recurrence.
+                    # ------------------------------------------------------
+                    if Lmin <= n <= Lmax:
+                        for m, (c_poly, s_poly) in curr.items():
+                            c_val = integrate(c_poly, n).sum()
+                            s_val = integrate(s_poly, n).sum()
+
+                            old_c, old_s = accumulated.get(
+                                (n, m),
+                                (0.0, 0.0),
+                            )
+
+                            accumulated[(n, m)] = (
+                                old_c + c_val,
+                                old_s + s_val,
+                            )
+
+                    prev2, prev = prev, curr
+
+        # ------------------------------------------------------------------
+        # Normalize by total volume.
+        # Werner's equation has rho/M = 1/V for constant density.
+        # ------------------------------------------------------------------
+        if self.volume == 0.0:
+            raise ValueError("polyhedron volume is zero")
+
+        inv_volume = 1.0 / self.volume
+
+        # ------------------------------------------------------------------
+        # Pack in the assumed sh_stokes_of_point ordering.
+        # ------------------------------------------------------------------
+        result = []
+        for n in range(Lmin, Lmax + 1):
+            for m in range(n + 1):
+                c_val, s_val = accumulated[(n, m)]
+                result.extend(
+                    (
+                        c_val * inv_volume,
+                        s_val * inv_volume,
+                    )
+                )
+
+        result = np.asarray(result, dtype=float)
+        self._sh[key] = result
+        return result
+
     def stokes(self, Lmin, Lmax, Rref, chunk=200_000):
         """
         Fully-normalized Stokes coefficients of the unit-mass constant-density
@@ -658,7 +1101,7 @@ def field_samples_total(beta, positions, bulk, obs):
 # the residual coefficients because subtracting the noise-free
 # constant-density model does not change their covariance.
 # TODO: how to make realistic od sigmas?
-def od_sigma(cs, eps, floor_frac=0.1):
+def od_sigma2(cs, eps, floor_frac=0.1):
     """
     OD-like 1σ for a measured coefficient vector `cs`:
 
@@ -679,6 +1122,38 @@ def od_sigma(cs, eps, floor_frac=0.1):
     cs = np.asarray(cs, float)
     floor = floor_frac * float(np.sqrt(np.mean(cs**2)))
     return eps * np.maximum(np.abs(cs), floor)
+
+
+def od_sigma(cs, eps, floor_frac=0.1, alpha=0.25):
+    """
+    Degree-dependent OD-like 1σ uncertainties.
+
+    Keeps the original interface, but lets uncertainty grow with spherical-
+    harmonic degree to mimic the loss of sensitivity to shorter-wavelength
+    gravity structure at high degree.
+    """
+    cs = np.asarray(cs, float)
+
+    # Infer degree from packing:
+    # [C_n0,S_n0,C_n1,S_n1,...], starting at n=2.
+    degrees = []
+    n = 2
+    while len(degrees) < len(cs):
+        degrees.extend([n] * (2 * (n + 1)))
+        n += 1
+    degrees = np.asarray(degrees[: len(cs)])
+
+    # Global absolute noise floor.
+    scale = float(np.sqrt(np.mean(cs**2)))
+    floor = floor_frac * scale
+
+    # Baseline coefficient uncertainty.
+    sigma = eps * np.maximum(np.abs(cs), floor)
+
+    # OD sensitivity degrades with degree.
+    sigma *= np.exp(alpha * (degrees - degrees.min()))
+
+    return sigma
 
 
 def _col(sig):
@@ -1025,13 +1500,6 @@ def _pos_forward(pos0, masses, bulk, lobe_pos, Lmax, Rref, obs, pinvPhi, use_ch)
     """
     positions = [pos0, lobe_pos[0], lobe_pos[1]]
     # ONE batched Stokes evaluation for all three anomalies, not one call each.
-    # This runs inside every least-squares residual evaluation (~83k times per
-    # run), and `sh_stokes_of_point` is a wrapper that would re-pay the whole
-    # vectorized setup — Legendre recursion, 2*(Lmax+1)^2 column ops, a
-    # column_stack — for a single point, three times over.  Rows of the batched
-    # call are bit-identical to the per-point call (every numpy op here is
-    # elementwise across points), and the accumulation order below is unchanged,
-    # so this is purely a cost fix.
     S = sh_stokes_basis(np.asarray(positions, float), 2, Lmax, Rref)
     y_sh = bulk_fraction(masses) * bulk.stokes(2, Lmax, Rref)
     for mj, Sj in zip(masses, S):
@@ -1795,7 +2263,6 @@ def run_experiment(
     # ── COEFFICIENT SPECTRA: homogeneous vs heterogeneous, pre/post fit ────
     # One noisy realization, fitted jointly, so fig 3 can show the residual
     # collapsing from the pre-fit discrepancy onto the noise floor.
-    # TODO: is it okay postfits spectra slightly off 1std? is the seed?
     rng_sp = np.random.default_rng(99)
     d_sh, d_ch = A_sh @ beta_true, A_ch @ beta_true  # = CS_hetero − CS_homog
     dat_sh = d_sh + rng_sp.normal(0.0, sig_sh)

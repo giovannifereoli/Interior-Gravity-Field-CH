@@ -70,8 +70,9 @@ FS_COR = (6.8, 5.8)  # correlation matrix + its own colour bar
 mpl.rcParams.update({"axes.prop_cycle": mpl.cycler(color=COLOR), "figure.dpi": 110})
 SEP = "=" * 72
 
-# TODO: PT1/PT2: How to prove low altitude data are better / how those
-# help in . Like what happens if SH is like 10? Do I loose CH benefits?
+# TODO: PT1/PT2: quantify the benefit of low-altitude data as a function
+# of SH maximum degree. Sweep L_SH and compare SH vs SH+CH mass and
+# position uncertainties. Does the CH advantage persist as L_SH increases?
 
 # ═══════════════════════════════════════════════════════════════════════════
 # NETWORK OF CH CYLINDERS
@@ -1040,8 +1041,10 @@ def make_plots(res, outdir="Images"):
     # cylinder of the network marked: it shows at a glance which parts of the
     # surface the network covers and which heterogeneity sits under them.
     # both evaluation surfaces, as in pt1
-    for _at, _stem in (("sphere", "fig1b_bouguer_sphere"),
-                       ("surface", "fig1c_bouguer_surface")):
+    for _at, _stem in (
+        ("sphere", "fig1b_bouguer_sphere"),
+        ("surface", "fig1c_bouguer_surface"),
+    ):
         G.bouguer_map(
             ft,
             P,
