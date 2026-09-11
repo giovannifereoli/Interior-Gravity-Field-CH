@@ -138,7 +138,7 @@ COLOR = ["#D55E00", "#E69F00", "#0072B2", "#009E73", "#CC79A7", "#56B4E9"]
 # local instrument that outperforms the entire global field where it looks and
 # loses to it everywhere else.  Reading the pair without it invites the wrong
 # conclusion, that CH is simply better data.
-SH_ONLY, CH_ONLY, SH_CH = "SH only", "CH only", "SH + CH"
+SH_ONLY, CH_ONLY, SH_CH = "SH", "CH", "SH + CH"
 CASES = (SH_ONLY, CH_ONLY, SH_CH)
 # SH keeps the blue it has always had (the "no cylinder" baseline) and SH+CH the
 # vermillion ("with cylinder").  CH-only has been through the palette: the
@@ -168,6 +168,8 @@ def case_blocks(A_sh, sig_sh, A_ch, sig_ch):
         CH_ONLY: [(A_ch, sig_ch)],
         SH_CH: [(A_sh, sig_sh), (A_ch, sig_ch)],
     }
+
+
 # structural elements (cylinder outlines and their labels), kept clear of the
 # data colours above
 ACCENT = "#882255"
@@ -1139,7 +1141,6 @@ def field_samples_total(beta, positions, bulk, obs):
 # NOTE: Use the OD uncertainty of the absolute coefficients for
 # the residual coefficients because subtracting the noise-free
 # constant-density model does not change their covariance.
-# TODO: how to make realistic od sigmas?
 def od_sigma2(cs, eps, floor_frac=0.1):
     """
     OD-like 1σ for a measured coefficient vector `cs`:
@@ -1391,7 +1392,16 @@ def mass_fraction_covariance(blocks, prior_sigma=1.0):
 
 
 def position_covariance(
-    idx, P, obs, cyl, ch_modes, sig_sh, sig_ch, Lmax, Rref, pinvPhi,
+    idx,
+    P,
+    obs,
+    cyl,
+    ch_modes,
+    sig_sh,
+    sig_ch,
+    Lmax,
+    Rref,
+    pinvPhi,
     prior_sigma=None,
 ):
     """
@@ -1645,9 +1655,7 @@ def detection_sweep(A_sh, sig_sh, A_ch, sig_ch, f_base, mu_grid, n_mc=1000, seed
     Returns `rms` (MC) beside `sd` (analytic) per case, measurement vs theory.
     """
     blocks = case_blocks(A_sh, sig_sh, A_ch, sig_ch)
-    sd = {
-        k: math.sqrt(mass_fraction_covariance(blocks[k])[0, 0]) for k in CASES
-    }
+    sd = {k: math.sqrt(mass_fraction_covariance(blocks[k])[0, 0]) for k in CASES}
     rms = {k: [] for k in CASES}
     mu1 = {k: [] for k in CASES}
     for j, mu in enumerate(mu_grid):
@@ -2193,11 +2201,7 @@ def results_report(res, tex=True):
     print(f"  {'case':22s} {'median':>10} {'[10–90%]':>21} {'gain over SH':>13}")
     for k in CASES:
         Q = q(pe[k])
-        gs = (
-            f"{np.median(pe[SH_ONLY] / pe[k]):12.1f}×"
-            if k != SH_ONLY
-            else " " * 13
-        )
+        gs = f"{np.median(pe[SH_ONLY] / pe[k]):12.1f}×" if k != SH_ONLY else " " * 13
         print(f"  {k:22s} {Q[1]:10.2e} [{Q[0]:8.2e},{Q[2]:8.2e}] {gs}")
     ed = np.quantile(dax, [0, 0.25, 0.5, 0.75, 1.0])
     ed[-1] += 1e-9
@@ -2218,9 +2222,7 @@ def results_report(res, tex=True):
 
     sp = {
         # `cov` is keyed per case AND per anomaly now; TABLE 4 quotes the target
-        k: np.sqrt(
-            np.trace(tmc["cov"][k][res["target"]][np.ix_([0, 2], [0, 2])]) / 2
-        )
+        k: np.sqrt(np.trace(tmc["cov"][k][res["target"]][np.ix_([0, 2], [0, 2])]) / 2)
         for k in CASES
     }
     print(f"\n  TABLE 4 — single-interior detail and detection limit")
@@ -2315,9 +2317,7 @@ def results_report(res, tex=True):
     print(r"  % Table 2 — position RMS error [LU]")
     for k in CASES:
         Q = q(pe[k])
-        print(
-            rf"  {k} & {_tex_num(Q[1])} & {_tex_num(Q[0])} & {_tex_num(Q[2])} \\"
-        )
+        print(rf"  {k} & {_tex_num(Q[1])} & {_tex_num(Q[0])} & {_tex_num(Q[2])} \\")
     print(
         rf"  % gain (median of per-interior ratios): "
         rf"${np.median(pe[SH_ONLY]/pe[SH_CH]):.1f}$"
@@ -2546,8 +2546,7 @@ def run_experiment(
             print(
                 f"  {nm:22s} "
                 + "  ".join(
-                    " ".join(f"{x:8.2e}" for x in q(tmm["sig"][k][:, j]))
-                    for k in CASES
+                    " ".join(f"{x:8.2e}" for x in q(tmm["sig"][k][:, j])) for k in CASES
                 )
                 + f" {g:6.1f}×"
             )
@@ -2911,7 +2910,7 @@ def lognormal_overlay(ax, v, bins, color, ls="-", name="", npts=400):
     med, fac = math.exp(mu), math.exp(sd)
     e = int(math.floor(math.log10(abs(med))))
     lab = (
-        rf"{name} lognormal: $\mu={med / 10 ** e:.2f}"
+        rf"{name} Log-normal fit: $\mu={med / 10 ** e:.2f}"
         rf"\times 10^{{{e}}}$, $\sigma=\times{fac:.2f}$"
     ).lstrip()
     ax.plot(x, y, color=color, lw=2.0, ls=ls, zorder=7, label=lab)
@@ -3286,9 +3285,7 @@ def case_hist(ax, series, xlabel, n_label):
     colours are already spoken for by the histograms underneath.
     """
     allv = np.concatenate([series[k] for k in CASES])
-    bins = np.logspace(
-        np.log10(allv.min() * 0.8), np.log10(allv.max() * 1.2), 26
-    )
+    bins = np.logspace(np.log10(allv.min() * 0.8), np.log10(allv.max() * 1.2), 26)
     for k in CASES:
         ax.hist(
             series[k],
@@ -3312,7 +3309,18 @@ def case_hist(ax, series, xlabel, n_label):
 
 
 def reach_panels(
-    maps, x, z, V, P, star, cyls, titles, levels, ceiling, cbar_label, path,
+    maps,
+    x,
+    z,
+    V,
+    P,
+    star,
+    cyls,
+    titles,
+    levels,
+    ceiling,
+    cbar_label,
+    path,
     cyl_lw=1.4,
 ):
     """
@@ -3579,7 +3587,7 @@ def make_plots(res, outdir="Images"):
             "k",
             lw=2.4,
             zorder=6,
-            label=rf"SH only {COV_NSIG:.0f}$\sigma$ (predicted)" if first else None,
+            label=rf"SH Analytical {COV_NSIG:.0f}$\sigma$" if first else None,
         )
         # CH-only in the MAIN axes, not just the zoom.  Along the target (x) it
         # is as tight as SH+CH and is a sliver at this scale, but along the lobe
@@ -3604,9 +3612,7 @@ def make_plots(res, outdir="Images"):
             lw=2.2,
             ls="-.",
             zorder=6.5,
-            label=(
-                rf"{CH_ONLY} {COV_NSIG:.0f}$\sigma$ (predicted)" if first else None
-            ),
+            label=(rf"{CH_ONLY} Analytical {COV_NSIG:.0f}$\sigma$" if first else None),
         )
         axc.scatter(
             cB[:, 0],
@@ -3626,7 +3632,7 @@ def make_plots(res, outdir="Images"):
             lw=2.4,
             ls=":",
             zorder=7,
-            label=rf"SH + CH {COV_NSIG:.0f}$\sigma$ (predicted)" if first else None,
+            label=rf"SH + CH Analytical {COV_NSIG:.0f}$\sigma$" if first else None,
         )
         axc.plot(
             *tru,
@@ -3726,7 +3732,7 @@ def make_plots(res, outdir="Images"):
         # sits OUTSIDE the inset's own patch, over the parent SH scatter, and
         # points showing through the letters make it hard to read at print size.
         axin.set_title(
-            "CH only / SH + CH zoom",
+            "CH / SH + CH Zoom",
             fontsize=7 * FONT_SCALE,
             color=COLOR[0],
             pad=4,  # clears the inset's own top spine
@@ -3831,9 +3837,7 @@ def make_plots(res, outdir="Images"):
     xs = {k: 100.0 * det["sd"][k] / acc for k in CASES}
     ax.plot([xs[SH_CH], xs[SH_ONLY]], [acc, acc], color="k", lw=1.8, zorder=6)
     for k in CASES:
-        ax.plot(
-            [xs[k], xs[k]], [acc / 1.7, acc * 1.7], color="k", lw=1.8, zorder=6
-        )
+        ax.plot([xs[k], xs[k]], [acc / 1.7, acc * 1.7], color="k", lw=1.8, zorder=6)
 
     ax.set_xscale("log")
     ax.set_yscale("log")
@@ -3967,7 +3971,9 @@ def make_plots(res, outdir="Images"):
                     ls=ls_,
                     zorder=6,
                     label=(
-                        f"{case} {COV_NSIG:.0f}$\\sigma$" if (ja == 0 and ic == 0) else None
+                        f"{case} {COV_NSIG:.0f}$\\sigma$"
+                        if (ja == 0 and ic == 0)
+                        else None
                     ),
                 )
             axg.plot(
@@ -4018,8 +4024,13 @@ def make_plots(res, outdir="Images"):
                 for cse in sorted(near, key=lambda c: -sig_of[c]):
                     cl = tmc["cloud"][cse][ja][:, [ia, ib]]
                     azi.scatter(
-                        cl[:, 0], cl[:, 1], s=14, color=CASE_COLOR[cse],
-                        edgecolor="none", alpha=0.45, zorder=2 + CASES.index(cse),
+                        cl[:, 0],
+                        cl[:, 1],
+                        s=14,
+                        color=CASE_COLOR[cse],
+                        edgecolor="none",
+                        alpha=0.45,
+                        zorder=2 + CASES.index(cse),
                     )
                 for case in near:
                     cov_ellipse_nsig(
@@ -4031,8 +4042,9 @@ def make_plots(res, outdir="Images"):
                         ls=LS_OF_CASE[case],
                         zorder=6,
                     )
-                azi.plot(tru3[ia], tru3[ib], "*", color="w", ms=8, mec="k",
-                         mew=0.8, zorder=8)
+                azi.plot(
+                    tru3[ia], tru3[ib], "*", color="w", ms=8, mec="k", mew=0.8, zorder=8
+                )
                 azi.set_xlim(cz[0] - rz, cz[0] + rz)
                 azi.set_ylim(cz[1] - rz, cz[1] + rz)
                 azi.set_aspect("equal")
@@ -4094,8 +4106,13 @@ def make_plots(res, outdir="Images"):
     ax0 = axs[0, 0]
     for c in CASES:
         ax0.scatter(
-            [], [], s=20, color=CASE_COLOR[c], edgecolor="none", alpha=0.6,
-            label=f"{c} cloud",
+            [],
+            [],
+            s=20,
+            color=CASE_COLOR[c],
+            edgecolor="none",
+            alpha=0.6,
+            label=f"{c}",
         )
     handles, labels = ax0.get_legend_handles_labels()
     fig.tight_layout(rect=[0, 0.06, 1, 1])
@@ -4129,7 +4146,7 @@ def make_plots(res, outdir="Images"):
         titles,
         REACH_LEVELS_MASS,
         PRIOR_SIGMA,
-        r"1$\sigma$ on a Test Anomaly's $\beta$  [-]",
+        r"Mass-fraction 1$\sigma$  [-]",
         os.path.join(outdir, PREFIX + "fig3b_reach_map.pdf"),
     )
     reach_panels(
@@ -4143,8 +4160,7 @@ def make_plots(res, outdir="Images"):
         titles,
         REACH_LEVELS_POS,
         rm["pos_prior"],
-        # two lines: on one the label outgrew the bar and was clipped
-        "Position 1$\\sigma$  [LU]\n" + rf"Test Anomaly, $\beta$ = {rm['beta_test']:.2f}",
+        r"Position 1$\sigma$  [LU]",
         os.path.join(outdir, PREFIX + "fig3b_reach_map_position.pdf"),
     )
 
@@ -4256,8 +4272,6 @@ def make_plots(res, outdir="Images"):
             bbox_inches="tight",
         )
 
-    plt.show()
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SECTION 7 — HOW GOOD WOULD THE GLOBAL FIELD HAVE TO BE?  (L_SH SWEEP)
@@ -4319,9 +4333,7 @@ def _first_reach(L_values, curve, level):
     return None
 
 
-def sweep_lmax_sh(
-    res, L_values=None, alphas=(0.10,), ch_alpha=None, verbose=True
-):
+def sweep_lmax_sh(res, L_values=None, alphas=(0.10,), ch_alpha=None, verbose=True):
     """
     Mass-fraction and position 1-sigma for every case and EVERY anomaly as L_SH
     walks up, at each noise rule in `alphas`, with their posterior/prior ratios
@@ -4383,7 +4395,16 @@ def sweep_lmax_sh(
             # POS_PRIOR_SIGMA so that R is defined where the data see nothing
             C_pos = [
                 position_covariance(
-                    j, P, obs, cyl, ch_modes, sig_sh, sig_ch, L, Rref, pinvPhi,
+                    j,
+                    P,
+                    obs,
+                    cyl,
+                    ch_modes,
+                    sig_sh,
+                    sig_ch,
+                    L,
+                    Rref,
+                    pinvPhi,
                     prior_sigma=POS_PRIOR_SIGMA,
                 )
                 for j in range(len(P))
@@ -4396,9 +4417,7 @@ def sweep_lmax_sh(
                 mass_prior[k].append(m_sig / PRIOR_SIGMA >= PRIOR_RATIO_THRESHOLD)
                 p_sig = np.array([posterior_rms(c[k]) for c in C_pos])
                 pos[k].append(p_sig)
-                pos_prior[k].append(
-                    p_sig / POS_PRIOR_SIGMA >= PRIOR_RATIO_THRESHOLD
-                )
+                pos_prior[k].append(p_sig / POS_PRIOR_SIGMA >= PRIOR_RATIO_THRESHOLD)
             ncf.append(nk)
         out[a] = dict(
             mass={k: np.array(v) for k, v in mass.items()},  # (n_L, n_anom)
@@ -4407,9 +4426,7 @@ def sweep_lmax_sh(
             mass_prior_ratio={k: np.array(v) / PRIOR_SIGMA for k, v in mass.items()},
             mass_prior={k: np.array(v) for k, v in mass_prior.items()},
             pos={k: np.array(v) for k, v in pos.items()},  # (n_L, n_anom)
-            pos_prior_ratio={
-                k: np.array(v) / POS_PRIOR_SIGMA for k, v in pos.items()
-            },
+            pos_prior_ratio={k: np.array(v) / POS_PRIOR_SIGMA for k, v in pos.items()},
             pos_prior={k: np.array(v) for k, v in pos_prior.items()},
             n_coef=np.array(ncf),
             ch_alpha=a_ch,
@@ -4487,7 +4504,7 @@ def sweep_report(sw):
             ("mass fraction", ms[SH_ONLY], (ms[SH_CH][i_nom], ms[CH_ONLY][i_nom])),
             ("position", ps[SH_ONLY], (ps[SH_CH][i_nom], ps[CH_ONLY][i_nom])),
         ):
-            for what, tv in zip(("SH+CH", "CH-only"), tgts):
+            for what, tv in zip(("SH+CH", "CH"), tgts):
                 hit = _first_reach(L, cs, tv)
                 if hit is None:
                     print(
@@ -4515,8 +4532,7 @@ def sweep_report(sw):
         g = d0["mass"][SH_ONLY][:, j] / d0["mass"][SH_CH][:, j]
         pr = d0["mass_prior"][SH_ONLY][:, j]
         cells = "".join(
-            f"{g[i]:8.1f}x" if not pr[i] else f"{'(prior)':>9s}"
-            for i in (0, i_nom, -1)
+            f"{g[i]:8.1f}x" if not pr[i] else f"{'(prior)':>9s}" for i in (0, i_nom, -1)
         )
         print(f"  {nm:22s}{cells}")
 
@@ -4614,7 +4630,11 @@ def make_sweep_plots(sw, outdir="Images"):
                 )
             ax.axhline(1.0, color="0.35", lw=1.0, zorder=1, label=r"Prior $R = 1$")
             ax.axhline(
-                thr, color="0.55", lw=1.0, ls="--", zorder=1,
+                thr,
+                color="0.55",
+                lw=1.0,
+                ls="--",
+                zorder=1,
                 label=rf"Threshold $R = {thr:.2f}$",
             )
             ax.axvline(Ln, color="0.55", lw=1.0, ls=":", zorder=1)
@@ -4672,12 +4692,11 @@ def make_sweep_plots(sw, outdir="Images"):
     )
     _grid(
         _pos_ratio,
-        r"Position RMS $R = \sigma_{\mathrm{post}} / \sigma_{\mathrm{prior}}$  [-]",
+        r"Position $R = \sigma_{\mathrm{post}} / \sigma_{\mathrm{prior}}$  [-]",
         PREFIX + "fig5b_lsh_position_prior_ratio.pdf",
         ylim=ratio_lim,
         flags=_pos_prior,
     )
-
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -4722,3 +4741,6 @@ if __name__ == "__main__":
     ):
         print("  " + _f)
     print("Done.")
+    # every figure at once, the sweep ones included: `make_plots` used to
+    # call this itself, before `make_sweep_plots` had drawn anything
+    plt.show()

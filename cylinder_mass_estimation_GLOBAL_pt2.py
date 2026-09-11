@@ -172,7 +172,6 @@ def build_network(
     return net
 
 
-# TODO: wait am i placing cylinders knowing their positions?...
 # I dont like this, also what does the 4% comment mean
 def place_mascons(net, seed=2):
     """
@@ -308,8 +307,10 @@ def _pos_jacobian_net(positions, masses, Lmax, Rref, ch_data, use_sh=True, h=1e-
         blocks.append(dS.T * w)
     for pinvPhi, obs in ch_data:
         dF = np.column_stack(
-            [G.point_mass_field(a, obs) - G.point_mass_field(b, obs)
-             for a, b in zip(plus, minus)]
+            [
+                G.point_mass_field(a, obs) - G.point_mass_field(b, obs)
+                for a, b in zip(plus, minus)
+            ]
         )
         blocks.append((pinvPhi @ dF) * w)
     return blocks
@@ -461,8 +462,8 @@ def case_blocks(pre, A_sh, sig_sh, sig_ch, n_cyl, c0, c1):
     base = [(A_sh, sig_sh)]
     ch = [(pre[k]["A"], sig_ch[k]) for k in range(n_cyl)]
     return {
-        "SH only": base,
-        f"{n_cyl}-CH only": ch,
+        "SH": base,
+        f"{n_cyl}-CH": ch,
         f"SH + 1 CH ({c0})": base + ch[:1],
         f"SH + 2 CH ({c0},{c1})": base + ch[:2],
         f"SH + {n_cyl}-CH": base + ch,
@@ -1150,8 +1151,8 @@ def results_report(res):
     rm = res["reach"]
     mk_cases = [G.SH_ONLY, G.CH_ONLY, G.SH_CH]
     lbl = {
-        G.SH_ONLY: "SH only",
-        G.CH_ONLY: f"{res['n_cyl']}-CH only",
+        G.SH_ONLY: "SH",
+        G.CH_ONLY: f"{res['n_cyl']}-CH",
         G.SH_CH: f"SH + {res['n_cyl']}-CH",
     }
     print("\n  TABLE 5 — reach: fraction of the body each model can see")
@@ -1447,20 +1448,16 @@ def make_plots(res, outdir="Images"):
                     label=k,
                 )
                 cmax = max(cmax, c.max())
-            # RMS ratio, the SAME statistic the bar panel annotates, so a cell
-            # here and its bar group there print the same number.  A ratio of
-            # medians would not: |e| is skewed, and the two differ by ~40%.
-            g = np.sqrt(np.mean(arrs[cases[0]][:, i] ** 2)) / np.sqrt(
-                np.mean(arrs[cases[-1]][:, i] ** 2)
-            )
             # log-normal fitted to each cell separately, drawn AND quoted here in
             # the same style pt1's histograms use.  `lognormal_overlay` writes a
             # label carrying mu and sigma, which would put a different legend on
             # every cell, so only the first cell contributes generic entries and
             # the per-cell values go in the corner box instead.
-            txt = [rf"SH / net  {g:.1f}$\times$"]
+            txt = []
             for k in show:
-                med, fac = G.lognormal_overlay(ax, arrs[k][:, i], bins, "k", ls=ls_of[k])
+                med, fac = G.lognormal_overlay(
+                    ax, arrs[k][:, i], bins, "k", ls=ls_of[k]
+                )
                 ax.get_lines()[-1].set_label(
                     f"Log-normal fit, {short[k]}" if i == 0 else "_nolegend_"
                 )
@@ -1576,7 +1573,7 @@ def make_plots(res, outdir="Images"):
     # the network's own labels, not pt1's: "CH only" here means all of them
     titles = {
         G.SH_ONLY: G.SH_ONLY,
-        G.CH_ONLY: f"{n_c}-CH only",
+        G.CH_ONLY: f"{n_c}-CH",
         G.SH_CH: f"SH + {n_c}-CH",
     }
     cyls = [c["cyl"] for c in res["net"]]
@@ -1585,15 +1582,14 @@ def make_plots(res, outdir="Images"):
             rm["sigma"],
             G.REACH_LEVELS_MASS,
             G.PRIOR_SIGMA,
-            r"1$\sigma$ on a Test Anomaly's $\beta$  [-]",
+            r"Mass-fraction 1$\sigma$  [-]",
             "global_pt2_fig3b_reach_map.pdf",
         ),
         (
             rm["sigma_pos"],
             G.REACH_LEVELS_POS,
             rm["pos_prior"],
-            "Position 1$\\sigma$  [LU]\n"
-            + rf"Test Anomaly, $\beta$ = {rm['beta_test']:.2f}",
+            r"Position 1$\sigma$  [LU]",
             "global_pt2_fig3b_reach_map_position.pdf",
         ),
     ):
@@ -1770,7 +1766,6 @@ def make_plots(res, outdir="Images"):
             os.path.join(outdir, f"global_pt2_fig5_coefficients_{key}.pdf"),
             bbox_inches="tight",
         )
-    plt.show()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1825,8 +1820,15 @@ def position_covariance_net(
     return np.linalg.inv(Fi)
 
 
-def position_sigma_net(J_sh, J_ch, subset, sig_sh, sig_ch, use_sh=True,
-                       ratio_threshold=PRIOR_RATIO_THRESHOLD):
+def position_sigma_net(
+    J_sh,
+    J_ch,
+    subset,
+    sig_sh,
+    sig_ch,
+    use_sh=True,
+    ratio_threshold=PRIOR_RATIO_THRESHOLD,
+):
     """
     Per-anomaly position 1σ — `G.posterior_rms` of its MARGINAL 3x3 block of
     the joint covariance — and a prior-dominated flag.  Compute the covariance
@@ -1838,12 +1840,19 @@ def position_sigma_net(J_sh, J_ch, subset, sig_sh, sig_ch, use_sh=True,
     Returns (sigma (N,), prior_bound (N,) bool).
     """
     C = position_covariance_net(
-        J_sh, J_ch, subset, sig_sh, sig_ch, use_sh,
+        J_sh,
+        J_ch,
+        subset,
+        sig_sh,
+        sig_ch,
+        use_sh,
         prior_sigma=POS_PRIOR_SIGMA,
     )
     sigma = np.array(
-        [G.posterior_rms(C[3 * j:3 * j + 3, 3 * j:3 * j + 3])
-         for j in range(len(C) // 3)]
+        [
+            G.posterior_rms(C[3 * j : 3 * j + 3, 3 * j : 3 * j + 3])
+            for j in range(len(C) // 3)
+        ]
     )
     return sigma, sigma / POS_PRIOR_SIGMA >= ratio_threshold
 
@@ -1924,7 +1933,12 @@ def sweep_lmax_sh(res, L_values=None, alphas=(0.10,), ch_alpha=None):
                 # the JOINT position covariance, all anomalies free — the
                 # linearized twin of TABLE 2's fit
                 p_sig, p_pr = position_sigma_net(
-                    J_sh_top[:k_n], J_ch, idx_k, sig_sh, sig_ch, use_sh_k,
+                    J_sh_top[:k_n],
+                    J_ch,
+                    idx_k,
+                    sig_sh,
+                    sig_ch,
+                    use_sh_k,
                     ratio_threshold=PRIOR_RATIO_THRESHOLD,
                 )
                 pos[k].append(p_sig)
@@ -2047,17 +2061,16 @@ def sweep_report(sw):
         pr = d0["mass_prior"][sh_k][:, j]
         tag = "  <- no patch above it" if j == sw["i_deep"] else ""
         cells = "".join(
-            f"{g[i]:8.1f}x" if not pr[i] else f"{'(prior)':>9s}"
-            for i in (0, i_nom, -1)
+            f"{g[i]:8.1f}x" if not pr[i] else f"{'(prior)':>9s}" for i in (0, i_nom, -1)
         )
         print(f"  {nm:22s}{cells}{tag}")
 
 
 def make_sweep_plots(sw, outdir="Images"):
     """
-    Mass-fraction and position sigma against L_SH, plus their posterior/prior
-    sigma ratios R.  One file per quantity, one cell per anomaly with every
-    model in each cell, and shared y ranges within the sigma and ratio pairs.
+    Posterior/prior sigma ratios R of the mass fraction and the position
+    against L_SH.  One file per quantity, one cell per anomaly with every model
+    in each cell, and ONE y range across the pair.
 
     NO GAIN PANELS.  They plotted ratios of curves already on these axes, which
     is the same information twice over — with SH-only drawn in every cell the
@@ -2122,8 +2135,9 @@ def make_sweep_plots(sw, outdir="Images"):
                 bbox_to_anchor=(0.5, -0.015 - 0.058 * r),
             )
 
-    def _grid(getter, ylab, fname, gain=False, ylim=None, flags=None,
-              prior_ratio=False):
+    def _grid(
+        getter, ylab, fname, gain=False, ylim=None, flags=None, prior_ratio=False
+    ):
         """
         One cell per ANOMALY, every model drawn in each.
 
@@ -2184,11 +2198,15 @@ def make_sweep_plots(sw, outdir="Images"):
                 # break-even: below it the extra data has stopped paying
                 ax.axhline(1.0, color="0.35", lw=1.0, zorder=1)
             if prior_ratio:
-                ax.axhline(1.0, color="0.35", lw=1.0, zorder=1,
-                           label=r"Prior $R = 1$")
-                ax.axhline(sw["prior_ratio_threshold"], color="0.55", lw=1.0,
-                           ls="--", zorder=1,
-                           label=rf"Threshold $R = {sw['prior_ratio_threshold']:.2f}$")
+                ax.axhline(1.0, color="0.35", lw=1.0, zorder=1, label=r"Prior $R = 1$")
+                ax.axhline(
+                    sw["prior_ratio_threshold"],
+                    color="0.55",
+                    lw=1.0,
+                    ls="--",
+                    zorder=1,
+                    label=rf"Threshold $R = {sw['prior_ratio_threshold']:.2f}$",
+                )
             ax.axvline(Ln, color="0.55", lw=1.0, ls=":", zorder=1)
             ax.set_title(nm, fontsize=10.5 * FONT_SCALE)
             ax.set_yscale("log")
@@ -2215,7 +2233,12 @@ def make_sweep_plots(sw, outdir="Images"):
         ):
             handles.append(
                 mpl.lines.Line2D(
-                    [], [], ls="none", marker="x", ms=9, color="0.15",
+                    [],
+                    [],
+                    ls="none",
+                    marker="x",
+                    ms=9,
+                    color="0.15",
                     mew=1.3,
                 )
             )
@@ -2226,17 +2249,13 @@ def make_sweep_plots(sw, outdir="Images"):
         fig.savefig(os.path.join(outdir, fname), bbox_inches="tight")
 
     # EVERY degree is drawn, the prior-bound ones included, and tagged
-    _mass_g = lambda d, k, j: d["mass"][k][:, j]
     _mass_prior_g = lambda d, k, j: d["mass_prior"][k][:, j]
-
-    _pos_g = lambda d, k, j: d["pos"][k][:, j]
     _pos_prior_g = lambda d, k, j: d["pos_prior"][k][:, j]
     _mass_ratio_g = lambda d, k, j: d["mass_prior_ratio"][k][:, j]
     _pos_ratio_g = lambda d, k, j: d["pos_prior_ratio"][k][:, j]
 
-    # Share y ranges within the sigma and prior-ratio pairs so mass and
-    # position can be read side by side.  The sigma pair has different units
-    # (mass fraction versus LU); the ratio pair is dimensionless throughout.
+    # ONE y range across the pair so mass and position can be read side by
+    # side; R is dimensionless throughout.
     def _span(getter, gain):
         v = []
         for k in keys:
@@ -2249,28 +2268,12 @@ def make_sweep_plots(sw, outdir="Images"):
         v = v[np.isfinite(v) & (v > 0)]
         return (0.6 * v.min(), 1.9 * v.max())
 
-    sig_lim = (
-        lambda a, b: (min(a[0], b[0]), max(a[1], b[1]))
-    )(_span(_mass_g, False), _span(_pos_g, False))
-
-    _grid(
-        _mass_g,
-        r"Mass-Fraction 1$\sigma$  [-]",
-        "global_pt2_fig6a_lsh_mass.pdf",
-        ylim=sig_lim,
-        flags=_mass_prior_g,
-    )
-    _grid(
-        _pos_g,
-        r"Position 1$\sigma$  [LU]",
-        "global_pt2_fig6b_lsh_position.pdf",
-        ylim=sig_lim,
-        flags=_pos_prior_g,
-    )
     mass_ratio_lim = _span(_mass_ratio_g, False)
     pos_ratio_lim = _span(_pos_ratio_g, False)
-    ratio_lim = (min(mass_ratio_lim[0], pos_ratio_lim[0]),
-                 max(1.2, mass_ratio_lim[1], pos_ratio_lim[1]))
+    ratio_lim = (
+        min(mass_ratio_lim[0], pos_ratio_lim[0]),
+        max(1.2, mass_ratio_lim[1], pos_ratio_lim[1]),
+    )
     _grid(
         _mass_ratio_g,
         r"Mass-Fraction $R = \sigma_{\mathrm{post}} / \sigma_{\mathrm{prior}}$  [-]",
@@ -2281,13 +2284,12 @@ def make_sweep_plots(sw, outdir="Images"):
     )
     _grid(
         _pos_ratio_g,
-        r"Position RMS $R = \sigma_{\mathrm{post}} / \sigma_{\mathrm{prior}}$  [-]",
+        r"Position $R = \sigma_{\mathrm{post}} / \sigma_{\mathrm{prior}}$  [-]",
         "global_pt2_fig6d_lsh_position_prior_ratio.pdf",
         ylim=ratio_lim,
         flags=_pos_prior_g,
         prior_ratio=True,
     )
-
 
 
 if __name__ == "__main__":
@@ -2326,10 +2328,11 @@ if __name__ == "__main__":
         "global_pt2_fig4_separability_net.pdf",
         "global_pt2_fig5_coefficients_sh.pdf",
         "global_pt2_fig5_coefficients_ch.pdf",
-        "global_pt2_fig6a_lsh_mass.pdf",
-        "global_pt2_fig6b_lsh_position.pdf",
         "global_pt2_fig6c_lsh_mass_prior_ratio.pdf",
         "global_pt2_fig6d_lsh_position_prior_ratio.pdf",
     ):
         print("  " + _f)
     print("Done.")
+    # every figure at once, the sweep ones included: `make_plots` used to
+    # call this itself, before `make_sweep_plots` had drawn anything
+    plt.show()
