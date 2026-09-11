@@ -33,7 +33,7 @@ Brillouin sphere (the sides / waist), where exterior SH is weakest and CH
 converges; the long-axis tips, which sit on the Brillouin sphere, are skipped.
 
 Three observation models are compared:
-    A  : SH only               (global Stokes, degree 2..L, + total mass)
+    A  : SH only               (global Stokes, degree 1..L)
     A1 : SH + ONE CH cylinder  (pt1-style, single near-surface patch)
     AN : SH + the CH NETWORK   (all cylinders' coefficients)
 
@@ -245,11 +245,13 @@ def _axis_label(d):
 # network, and it is the one an observer actually faces.
 #
 # Data vs unknowns.  Counting is not the problem at the nominal setup: SH gives
-# 45 informative Stokes coefficients for L_SH = 6 (the 50 packed entries include
-# the five S̄_n0 ≡ 0), and each cylinder another 72, against 18 unknowns.  The
-# joint Jacobian is full rank in every case, condition ~10^2.5-10^3.  Counting
-# DOES bite in the L_SH sweep: SH alone has 5, 12 informative coefficients at
-# L_SH = 2, 3, fewer than 18, so some position combinations need the prior.
+# 48 informative Stokes coefficients for degree 1..6 (the 54 packed entries
+# include the six S̄_n0 ≡ 0), and each cylinder another 72, against 18 unknowns.
+# Degree 1 adds only 3 of them, but they are the centre-of-mass offset, Σβ_j p_j
+# — the one SH quantity linear in the positions.  The joint Jacobian is full
+# rank in every case, condition ~10^2.5-10^3.  Counting DOES bite in the L_SH
+# sweep: SH alone has 8, 15 informative coefficients at L_SH = 2, 3, fewer than
+# 18, so some position combinations need the prior.
 # `position_sigma_net` reports how much each anomaly's marginal sigma shrinks
 # relative to its prior; rank deficiency alone does not set this ratio flag.
 
@@ -269,8 +271,8 @@ def _pos_forward_net(positions, masses, bulk, Lmax, Rref, ch_data, use_sh=True):
     if use_sh:
         # one batched Stokes evaluation for all the anomalies, not one call each
         # — see the same note in `G._pos_forward`; with 6 anomalies it matters more
-        S = G.sh_stokes_basis(positions, 2, Lmax, Rref)
-        y_sh = G.bulk_fraction(masses) * bulk.stokes(2, Lmax, Rref)
+        S = G.sh_stokes_basis(positions, G.SH_LMIN, Lmax, Rref)
+        y_sh = G.bulk_fraction(masses) * bulk.stokes(G.SH_LMIN, Lmax, Rref)
         for mk, Sk in zip(masses, S):
             y_sh = y_sh + mk * Sk
         blocks.append(y_sh)
@@ -301,8 +303,8 @@ def _pos_jacobian_net(positions, masses, Lmax, Rref, ch_data, use_sh=True, h=1e-
     w = np.repeat(np.asarray(masses, float), 3) / (2 * h)
     blocks = []
     if use_sh:
-        dS = G.sh_stokes_basis(plus, 2, Lmax, Rref) - G.sh_stokes_basis(
-            minus, 2, Lmax, Rref
+        dS = G.sh_stokes_basis(plus, G.SH_LMIN, Lmax, Rref) - G.sh_stokes_basis(
+            minus, G.SH_LMIN, Lmax, Rref
         )
         blocks.append(dS.T * w)
     for pinvPhi, obs in ch_data:
@@ -528,7 +530,7 @@ def truth_mc_masses_net(
     betas = rng.uniform(mag[0], mag[1], size=(n_truth, len(P))) * rng.choice(
         [-1.0, 1.0], size=(n_truth, len(P))
     )
-    A_sh = G.A_stokes_contrast(P, bulk, 2, Lmax, Rref)
+    A_sh = G.A_stokes_contrast(P, bulk, G.SH_LMIN, Lmax, Rref)
     pre = precompute_ch(P, bulk, net, ch_modes)
     keys = list(case_blocks(pre, A_sh, None, [None] * n_cyl, n_cyl, c0, c1))
     one = np.ones(len(P))
@@ -539,7 +541,11 @@ def truth_mc_masses_net(
     dev = {k: np.empty((n_truth, len(P))) for k in keys}
     dev_bulk = {k: np.empty(n_truth) for k in keys}
     for i, b in enumerate(betas):
-        sig_sh = G.od_sigma(G.sh_coefficients_total(b, P, bulk, 2, Lmax, Rref), eps)
+        sig_sh = G.od_sigma(
+            G.sh_coefficients_total(b, P, bulk, G.SH_LMIN, Lmax, Rref),
+            eps,
+            Lmin=G.SH_LMIN,
+        )
         sig_ch = [
             G.od_sigma(G.ch_coefficients_total(b, P, bulk, q["obs"], q["pinv"]), eps)
             for q in pre
@@ -615,7 +621,9 @@ def truth_mc_position_net(
     for i in range(n_truth):
         Pi = np.array([_jitter_inside(p, spread, V, F, tm, rng) for p in P])
         sig_sh = G.od_sigma(
-            G.sh_coefficients_total(beta_true, Pi, bulk, 2, Lmax, Rref), eps
+            G.sh_coefficients_total(beta_true, Pi, bulk, G.SH_LMIN, Lmax, Rref),
+            eps,
+            Lmin=G.SH_LMIN,
         )
         sig_ch = [
             G.od_sigma(
@@ -813,9 +821,11 @@ def run(
     # carries the same (n_m, n_n) mode layout, so they group by azimuthal order
     # exactly as a single patch does in pt1.
     pre_ch = precompute_ch(P, bulk, net, ch_modes)
-    A_sh_n = G.A_stokes_contrast(P, bulk, 2, Lmax_sh, Rref)
+    A_sh_n = G.A_stokes_contrast(P, bulk, G.SH_LMIN, Lmax_sh, Rref)
     sig_sh_n = G.od_sigma(
-        G.sh_coefficients_total(beta_true, P, bulk, 2, Lmax_sh, Rref), eps
+        G.sh_coefficients_total(beta_true, P, bulk, G.SH_LMIN, Lmax_sh, Rref),
+        eps,
+        Lmin=G.SH_LMIN,
     )
     A_ch_n = np.vstack([q["A"] for q in pre_ch])
     sig_ch_n = np.concatenate(
@@ -834,7 +844,7 @@ def run(
     yw = np.concatenate([dat_sh / sig_sh_n, dat_ch / sig_ch_n])
     beta_hat, *_ = np.linalg.lstsq(Aw, yw, rcond=None)
     spectra = dict(
-        Lmin=2,
+        Lmin=G.SH_LMIN,
         Lmax=Lmax_sh,
         ch_modes=ch_modes,
         n_cyl=n_cyl,
@@ -1136,7 +1146,10 @@ def results_report(res):
     sp = res["spectra"]
     print("\n  TABLE 4 — coefficient residuals at the nominal truth, whitened by σ")
     print(f"  {'observable':22s} {'PRE-fit RMS':>12} {'POST-fit RMS':>13}")
-    for key, nm in (("sh", "SH (degree 2..L)"), ("ch", f"CH ({res['n_cyl']} patches)")):
+    for key, nm in (
+        ("sh", f"SH (degree {G.SH_LMIN}..L)"),
+        ("ch", f"CH ({res['n_cyl']} patches)"),
+    ):
         d = sp[key]
         pre = np.sqrt(np.mean((d["data"] / d["sigma"]) ** 2))
         post = np.sqrt(np.mean(((d["data"] - d["model"]) / d["sigma"]) ** 2))
@@ -1459,7 +1472,7 @@ def make_plots(res, outdir="Images"):
                     ax, arrs[k][:, i], bins, "k", ls=ls_of[k]
                 )
                 ax.get_lines()[-1].set_label(
-                    f"Log-normal fit, {short[k]}" if i == 0 else "_nolegend_"
+                    f"Log-normal Fit, {short[k]}" if i == 0 else "_nolegend_"
                 )
                 ex = int(np.floor(np.log10(abs(med))))
                 txt.append(
@@ -1876,8 +1889,8 @@ def sweep_lmax_sh(res, L_values=None, alphas=(0.10,), ch_alpha=None):
     # ONE quadrature at the top degree, then sliced — the SH packing runs
     # strictly degree by degree, so the first G._sh_count(L) rows ARE the
     # degree-L truncation.  See the same note in pt1.
-    cs_top = bulk.stokes(2, Ltop, Rref)
-    A_sh_top = G.A_stokes(P, 2, Ltop, Rref) - cs_top[:, None]
+    cs_top = bulk.stokes(G.SH_LMIN, Ltop, Rref)
+    A_sh_top = G.A_stokes(P, G.SH_LMIN, Ltop, Rref) - cs_top[:, None]
 
     # nothing about the network depends on L_SH — that is the comparison
     pre = precompute_ch(P, bulk, net, ch_modes)
@@ -1919,7 +1932,9 @@ def sweep_lmax_sh(res, L_values=None, alphas=(0.10,), ch_alpha=None):
             # sigma rebuilt from the TRUNCATED measured vector: a solution that
             # stops at L never saw the degrees above it, and the noise floor is
             # a fraction of the RMS of what was actually measured
-            sig_sh = G.od_sigma(cs_top[:k_n] + A_sh @ beta_true, eps, alpha=a)
+            sig_sh = G.od_sigma(
+                cs_top[:k_n] + A_sh @ beta_true, eps, alpha=a, Lmin=G.SH_LMIN
+            )
             for k in keys:
                 idx_k, use_sh_k = cfg[k]
                 blocks = ([(A_sh, sig_sh)] if use_sh_k else []) + [
@@ -2199,14 +2214,6 @@ def make_sweep_plots(sw, outdir="Images"):
                 ax.axhline(1.0, color="0.35", lw=1.0, zorder=1)
             if prior_ratio:
                 ax.axhline(1.0, color="0.35", lw=1.0, zorder=1, label=r"Prior $R = 1$")
-                ax.axhline(
-                    sw["prior_ratio_threshold"],
-                    color="0.55",
-                    lw=1.0,
-                    ls="--",
-                    zorder=1,
-                    label=rf"Threshold $R = {sw['prior_ratio_threshold']:.2f}$",
-                )
             ax.axvline(Ln, color="0.55", lw=1.0, ls=":", zorder=1)
             ax.set_title(nm, fontsize=10.5 * FONT_SCALE)
             ax.set_yscale("log")

@@ -54,8 +54,10 @@ field by polyhedral_gravity.
 
 Two observables (both fitted as DISCREPANCIES from the constant-density model)
 ------------------------------------------------------------------------------
-  A (SH)    : fully-normalized C̄_nm, S̄_nm, degree 2..L_SH, from tracking.  No
-              total-mass row — the budget is structural, β̃ = 1 − Σβ.
+  A (SH)    : fully-normalized C̄_nm, S̄_nm, degree 1..L_SH, from tracking.  No
+              total-mass row — the budget is structural, β̃ = 1 − Σβ.  Degree 1
+              is the centre-of-mass offset from the centre of figure (the bulk
+              centroid sits at the origin), i.e. Σ β_j p_j up to normalization.
   B (SH+CH) : plus the CH coefficients of the near-surface field (potential +
               acceleration) in a cylinder above the anomaly, from an UNWEIGHTED
               fit of the Bessel–Fourier basis, c = Φ⁺ field.  Only what Φ can
@@ -247,6 +249,10 @@ mpl.rcParams.update(
 G = 1.0  # gravitational constant in normalized units
 G_SI = 6.67430e-11  # polyhedral_gravity works in SI; divided out to get G = 1
 SEP = "=" * 70
+# Lowest SH degree observed.  Degree 1 (C̄10, C̄11, S̄11) is the centre-of-mass
+# offset from the origin — the centre of FIGURE for the constant-density bulk —
+# so it measures Σ β_j p_j directly.  OD + landmark navigation delivers it.
+SH_LMIN = 1
 
 
 # NOTE: incosistency on how MC is used and results plotted. ls_fit_once used just in mc. avoid montecarlo come one over noise..
@@ -1164,34 +1170,40 @@ def od_sigma2(cs, eps, floor_frac=0.1):
     return eps * np.maximum(np.abs(cs), floor)
 
 
-def od_sigma(cs, eps, floor_frac=0.1, alpha=0.10):
+def od_sigma(cs, eps, floor_frac=0.1, alpha=0.10, Lmin=2):
     """
     Degree-dependent OD-like 1σ uncertainties.
 
     Keeps the original interface, but lets uncertainty grow with spherical-
     harmonic degree to mimic the loss of sensitivity to shorter-wavelength
     gravity structure at high degree.
+
+    `Lmin` is the first degree in the packing (SH blocks pass `SH_LMIN`; the
+    CH vectors keep the default).  Degree 1 is treated as a frame quantity,
+    not field power: it is left out of the floor RMS and degrades no faster
+    than degree 2, so adding it never changes the σ of any degree ≥ 2 entry.
     """
     cs = np.asarray(cs, float)
 
     # Infer degree from packing:
-    # [C_n0,S_n0,C_n1,S_n1,...], starting at n=2.
+    # [C_n0,S_n0,C_n1,S_n1,...], starting at n=Lmin.
     degrees = []
-    n = 2
+    n = Lmin
     while len(degrees) < len(cs):
         degrees.extend([n] * (2 * (n + 1)))
         n += 1
     degrees = np.asarray(degrees[: len(cs)])
 
-    # Global absolute noise floor.
-    scale = float(np.sqrt(np.mean(cs**2)))
+    # Global absolute noise floor, from the field power (degree ≥ 2).
+    field = degrees >= 2
+    scale = float(np.sqrt(np.mean(cs[field] ** 2 if field.any() else cs**2)))
     floor = floor_frac * scale
 
     # Baseline coefficient uncertainty.
     sigma = eps * np.maximum(np.abs(cs), floor)
 
-    # OD sensitivity degrades with degree.
-    sigma *= np.exp(alpha * (degrees - degrees.min()))
+    # OD sensitivity degrades with degree, anchored at degree 2.
+    sigma *= np.exp(alpha * np.maximum(degrees - 2, 0))
 
     return sigma
 
@@ -1428,8 +1440,8 @@ def position_covariance(
         return J
 
     Jsh = jac(
-        lambda p: sh_stokes_of_point(p, 2, Lmax, Rref),
-        A_stokes(P, 2, Lmax, Rref).shape[0],
+        lambda p: sh_stokes_of_point(p, SH_LMIN, Lmax, Rref),
+        A_stokes(P, SH_LMIN, Lmax, Rref).shape[0],
     )
     Jsh_w = Jsh / _col(sig_sh)
     Fi_sh = Jsh_w.T @ Jsh_w
@@ -1516,7 +1528,7 @@ def reach_map(
     I_ch = np.full(XX.size, np.nan)
     Fp_sh = np.zeros((XX.size, 3, 3))
     Fp_ch = np.zeros((XX.size, 3, 3))
-    cs_bulk = bulk.stokes(2, Lmax, Rref)
+    cs_bulk = bulk.stokes(SH_LMIN, Lmax, Rref)
     f_bulk = [bulk.field(o) for o in obs_list]
 
     def grad(func, p, h=1e-4):
@@ -1530,9 +1542,9 @@ def reach_map(
 
     for i in ins:
         p = pts[i]
-        a = (sh_stokes_of_point(p, 2, Lmax, Rref) - cs_bulk) / sig_sh
+        a = (sh_stokes_of_point(p, SH_LMIN, Lmax, Rref) - cs_bulk) / sig_sh
         I_sh[i] = a @ a
-        J = grad(lambda q: sh_stokes_of_point(q, 2, Lmax, Rref), p) / _col(sig_sh)
+        J = grad(lambda q: sh_stokes_of_point(q, SH_LMIN, Lmax, Rref), p) / _col(sig_sh)
         Fp_sh[i] = J.T @ J
         tot = 0.0
         for o, pinv, s_ch, fb in zip(obs_list, pinv_list, sig_ch_list, f_bulk):
@@ -1707,8 +1719,8 @@ def _pos_forward(posj, j, P, masses, bulk, Lmax, Rref, obs, pinvPhi, case):
     blocks = []
     if case in (SH_ONLY, SH_CH):
         # ONE batched Stokes evaluation for all three anomalies, not one call each.
-        S = sh_stokes_basis(np.asarray(positions, float), 2, Lmax, Rref)
-        y_sh = bulk_fraction(masses) * bulk.stokes(2, Lmax, Rref)
+        S = sh_stokes_basis(np.asarray(positions, float), SH_LMIN, Lmax, Rref)
+        y_sh = bulk_fraction(masses) * bulk.stokes(SH_LMIN, Lmax, Rref)
         for mj, Sj in zip(masses, S):
             y_sh = y_sh + mj * Sj
         blocks.append(y_sh)
@@ -1840,7 +1852,7 @@ def truth_mc_masses(
     rng = np.random.default_rng(seed)
     betas = draw_truth_masses(n_truth, rng, mag=mag)
     pinvPhi = ch_pinv_for(cyl, obs, ch_modes)
-    A_sh = A_stokes_contrast(P, bulk, 2, Lmax, Rref)
+    A_sh = A_stokes_contrast(P, bulk, SH_LMIN, Lmax, Rref)
     A_ch = A_ch_contrast(P, bulk, obs, cyl, ch_modes)
     sig = {k: np.empty((n_truth, len(P))) for k in CASES}
     dev = {k: np.empty((n_truth, len(P))) for k in CASES}
@@ -1857,7 +1869,7 @@ def truth_mc_masses(
     )
     rep = {}
     for i, b in enumerate(betas):
-        s_sh = od_sigma(sh_coefficients_total(b, P, bulk, 2, Lmax, Rref), eps)
+        s_sh = od_sigma(sh_coefficients_total(b, P, bulk, SH_LMIN, Lmax, Rref), eps, Lmin=SH_LMIN)
         s_ch = od_sigma(ch_coefficients_total(b, P, bulk, obs, pinvPhi), eps)
         blocks = case_blocks(A_sh, s_sh, A_ch, s_ch)
         for k in CASES:
@@ -1936,7 +1948,7 @@ def truth_mc_position(
     for i, p0 in enumerate(pts):
         Pi = P.copy()
         Pi[0] = p0
-        s_sh = od_sigma(sh_coefficients_total(beta_true, Pi, bulk, 2, Lmax, Rref), eps)
+        s_sh = od_sigma(sh_coefficients_total(beta_true, Pi, bulk, SH_LMIN, Lmax, Rref), eps, Lmin=SH_LMIN)
         s_ch = od_sigma(ch_coefficients_total(beta_true, Pi, bulk, obs, pinvPhi), eps)
         v = p0 - cyl.center
         d_ax[i] = np.linalg.norm(v - np.dot(v, axis) * axis)
@@ -2394,7 +2406,8 @@ def run_experiment(
         )
         print(
             f"  BULK: constant-density polyhedron, β̃ = 1 − Σβ = {beta_bulk:.3f} "
-            f"of M*  (C̄20 = {bulk.stokes(2, Lmax_sh, Rref)[0]:+.4f})"
+            f"of M*  (C̄20 = "
+            f"{bulk.stokes(SH_LMIN, Lmax_sh, Rref)[_sh_count(1, SH_LMIN)]:+.4f})"
         )
         print("  anomalies (truth mass fractions β_j, + = excess, − = deficit):")
         for nm, p, fr in zip(names, P, beta_true):
@@ -2419,15 +2432,15 @@ def run_experiment(
     # DISCREPANCY designs: every column is (point mass at p_j) − (same mass
     # spread through the body), so β is estimated against the constant-density
     # model rather than against vacuum.
-    A_sh = A_stokes_contrast(P, bulk, 2, Lmax_sh, Rref)
+    A_sh = A_stokes_contrast(P, bulk, SH_LMIN, Lmax_sh, Rref)
     pinvPhi = ch_pinv_for(cyl, obs, ch_modes)  # UNWEIGHTED Phi-to-field fit, trunc. SVD
     A_ch = A_ch_contrast(P, bulk, obs, cyl, ch_modes)
 
     # OD-like per-coefficient noise on the FULL measured coefficients (bulk +
     # anomalies), the same relative rule on both observables.
-    y_sh_tot = sh_coefficients_total(beta_true, P, bulk, 2, Lmax_sh, Rref)
+    y_sh_tot = sh_coefficients_total(beta_true, P, bulk, SH_LMIN, Lmax_sh, Rref)
     y_ch_tot = ch_coefficients_total(beta_true, P, bulk, obs, pinvPhi)
-    sig_sh = od_sigma(y_sh_tot, eps)
+    sig_sh = od_sigma(y_sh_tot, eps, Lmin=SH_LMIN)
     sig_ch = od_sigma(y_ch_tot, eps)
     blocks = case_blocks(A_sh, sig_sh, A_ch, sig_ch)
     if verbose:
@@ -2436,7 +2449,7 @@ def run_experiment(
             f"|r|∈[{r_obs.min():.2f},{r_obs.max():.2f}] ⊂ Brillouin {Rb:.2f}"
         )
         print(
-            f"  observables: SH deg 2..{Lmax_sh} ({A_sh.shape[0]} coeffs)"
+            f"  observables: SH deg {SH_LMIN}..{Lmax_sh} ({A_sh.shape[0]} coeffs)"
             f" | CH modes {ch_modes} ({2 * ch_modes[0] * ch_modes[1]} cols)"
             f"  [no Σβ=1 row — the mass budget is structural]"
         )
@@ -2621,7 +2634,7 @@ def run_experiment(
 
     spectra = dict(
         sh=dict(
-            homog=bulk.stokes(2, Lmax_sh, Rref),
+            homog=bulk.stokes(SH_LMIN, Lmax_sh, Rref),
             hetero=y_sh_tot,
             diff=d_sh,
             sigma=sig_sh,
@@ -2637,7 +2650,7 @@ def run_experiment(
             model=A_ch @ beta_hat,
         ),
         beta_hat=beta_hat,
-        Lmin=2,
+        Lmin=SH_LMIN,
         Lmax=Lmax_sh,
         ch_modes=ch_modes,
     )
@@ -4310,7 +4323,7 @@ def make_plots(res, outdir="Images"):
 # choice, and the sweep prints which convention is in force.
 
 
-def _sh_count(L, Lmin=2):
+def _sh_count(L, Lmin=SH_LMIN):
     """How many packed coefficients degrees Lmin..L occupy."""
     return sum(2 * (n + 1) for n in range(Lmin, L + 1))
 
@@ -4353,15 +4366,15 @@ def sweep_lmax_sh(res, L_values=None, alphas=(0.10,), ch_alpha=None, verbose=Tru
     Ltop = max(L_values)
 
     # ONE quadrature at the top degree, then SLICED.  The packing runs
-    # [C20,S20,C21,S21,C22,S22,C30,...], strictly degree by degree, so the first
-    # `_sh_count(L)` rows ARE the degree-L truncation.  `Bulk.stokes` picks its
+    # [C10,S10,C11,S11,C20,S20,...] from SH_LMIN, strictly degree by degree, so
+    # the first `_sh_count(L)` rows ARE the degree-L truncation.  `Bulk.stokes` picks its
     # Gauss order from Lmax, so a sliced high-order result and a directly
     # computed low-order one differ at the 1e-11 level — eleven orders below the
     # 2% noise this whole study is about.  The alternative is re-integrating
     # 14744 faces once per degree: two minutes at L = 22 against thirty seconds
     # once, and the sweep would be dominated by an exactness nobody can measure.
-    cs_top = bulk.stokes(2, Ltop, Rref)
-    A_sh_top = A_stokes(P, 2, Ltop, Rref) - cs_top[:, None]
+    cs_top = bulk.stokes(SH_LMIN, Ltop, Rref)
+    A_sh_top = A_stokes(P, SH_LMIN, Ltop, Rref) - cs_top[:, None]
 
     # The CH block does not depend on L_SH at all — that is the point of the
     # comparison — so it is built once and reused at every degree.  CH-only is
@@ -4388,7 +4401,7 @@ def sweep_lmax_sh(res, L_values=None, alphas=(0.10,), ch_alpha=None, verbose=Tru
             # from a top-degree sigma: the noise floor is a fraction of the RMS
             # of what was actually measured, and a solution that stops at L
             # never saw the degrees above it.
-            sig_sh = od_sigma(cs_top[:nk] + A_sh @ beta_true, eps, alpha=a)
+            sig_sh = od_sigma(cs_top[:nk] + A_sh @ beta_true, eps, alpha=a, Lmin=SH_LMIN)
             blk = case_blocks(A_sh, sig_sh, A_ch, sig_ch)
             # EVERY anomaly's position, each with the others held — TABLE 2's
             # linearization, applied beyond the target — seeded with
@@ -4629,14 +4642,6 @@ def make_sweep_plots(sw, outdir="Images"):
                     zorder=10 + rank,
                 )
             ax.axhline(1.0, color="0.35", lw=1.0, zorder=1, label=r"Prior $R = 1$")
-            ax.axhline(
-                thr,
-                color="0.55",
-                lw=1.0,
-                ls="--",
-                zorder=1,
-                label=rf"Threshold $R = {thr:.2f}$",
-            )
             ax.axvline(Ln, color="0.55", lw=1.0, ls=":", zorder=1)
             ax.set_title(nm, fontsize=10.5 * FONT_SCALE)
             ax.set_yscale("log")
