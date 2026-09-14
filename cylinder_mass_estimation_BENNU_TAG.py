@@ -5,7 +5,8 @@ Estimates the mass moved by the OSIRIS-REx TAG event from the *difference* of
 cylindrical-harmonic coefficients fitted before and after TAG, and validates it
 against the geometric ground truth (the DTM height change itself).  Units are
 selected by the module-level `MODE` switch: "SI" (m, kg, s) or "NORM" (L_REF,
-RHO_REF, G = 1); every physical result is identical, only the numbers scale.
+RHO_REF, G = 1).  The raw unweighted potential/acceleration fit depends on the
+unit system: the basis and cutoff calibrated in SI need rechecking in NORM.
 
 Input data
 ----------
@@ -32,38 +33,42 @@ Pipeline
     the local Δ sources are still below them.
 5.  Evaluate polyhedral gravity (U, g) at identical field points for both
     states (polyhedral_gravity: U > 0, g = +∇U, verified).
-6.  Weighted LS fit of the CH coefficients per state, identical design matrix
-    and weights -> ΔA = A_post − A_pre.  LS being linear, this equals fitting
+6.  Unweighted LS fit of the CH coefficients per state, identical design matrix
+    and SVD cutoff -> ΔA = A_post − A_pre.  LS being linear, this equals fitting
     the difference field directly: every static source cancels exactly in Δc.
     That is WHY only the local patch needs meshing even though the field inside
     the cylinder is dominated by the whole ~490 m asteroid — TAG changed only
     the local site, so the unchanged bulk contributes IDENTICALLY to U_pre and
-    U_post.  The weights are likewise built from the DIFFERENCE field, not the
-    absolute pre field: the absolute field is set by the unchanged background
-    (Bennu's gradient across the site dwarfs the TAG signal) and would leak a
-    few-% background-dependent bias into ΔM.  Regularised by truncated SVD
-    (`cond`).  Caveat: the cancellation assumes the local Δh map captures ALL
+    U_post.  Potential and acceleration rows are stacked without weighting
+    or rescaling, as in cylindrical_acc_pot_SHORT_fitting_both_MOV.py.
+    Regularised by truncated SVD (`cond`).  Caveat: the cancellation assumes
+    the local Δh map captures ALL
     the mass that moved — ejecta beyond the meshed patch, or mass moved to
     ρ > R*, is not counted.
 
-    Validated against the geometric truth (3 draws, cond 1e-4, uniform volume
-    sampling, 0.5 m clearance):
-        (m,n) = (5,6)  → ΔM ratio 1.018 ± 0.021
-        (m,n) = (6,8)  → ΔM ratio 1.012 ± 0.012   (default)
-        (m,n) = (8,10) → collapses to 0.464 ± 0.060 (unobservable modes)
-    The (8,10) collapse is the price of an unbiased sample: only ~2 % of a
-    uniform draw sits within one e-folding 1/k_max of the sheet, so the shortest
-    modes are never observed and the SVD cutoff discards them.  An altitude-
-    biased sampler (z ∝ u², ~8 % of points that low) held (8,10) at ≈0.78–0.88
-    but carried more ΔM bias at the default truncation (1.024 ± 0.009 vs
-    1.008 ± 0.019 over 5 draws), with half the per-draw spread (0.9 % vs 1.9 %)
-    and formal √Σ_ΔM 0.17 % vs 0.29 %.  Unbiased sampling therefore trades
-    precision, and headroom to raise the truncation, for less bias.  The
-    residual deficit at the default is bandlimit truncation plus the thin-sheet
-    approximation (sources spread ±1 m about the sheet).
-7.  Wahr-like inversion of ΔA -> ΔM and Δσ(ρ,φ).
+    The cutoff is chosen WITHOUT the true ΔM by `calibration_sweep`: over a
+    log grid of cutoffs, several field draws and two clearances, reject
+    cutoffs whose held-out misfit (fit on one draw, predict the others)
+    exceeds kappa x the best, then take the admissible cutoff where ΔM is
+    most stable against draw, clearance and a small change of cutoff.  The
+    true ΔM is only reported next to it, as validation (fig6_*).  These are
+    sampling checks on the same terrain, not validation on new physical data.
+    Uniform volume sampling does not imply an unbiased inverse.
+7.  Wahr-like inversion of ΔA -> ΔM and Δσ(ρ,φ).  With n_ensemble > 1 the
+    coefficients are averaged over that many field draws and the spread of
+    ΔM over the draws is reported as the field-sampling scatter.
 8.  Geometric ground truth: ΔM_true = ρ_bulk ∫∫ Δh dA over the footprint,
     Δσ_true = ρ_bulk Δh — a direct validation of the inversion.
+9.  Assumed OD uncertainty via GLOBAL.od_sigma, by default on the recovered
+    CHANGE ΔCS (route "delta"): a static background cancels in ΔCS, so it
+    must not set the error bar.  Route "epoch" books od_sigma on each epoch's
+    full CS with Σ_ΔCS = Σ_post + Σ_pre − Σ_post,pre − Σ_pre,post; it scales
+    with that background unless rho_epoch ≈ 1 (covariance_report prints the
+    sweep in rho and a point-mass background check).  Either Σ_ΔCS is
+    propagated exactly to ΔM and Δσ.
+10. Monte Carlo draws ΔCS from N(CS_post-CS_pre, Σ_ΔCS), with fixed geometry,
+    and inverts those coefficient realizations.  It checks the propagated
+    noise dispersion, not the terrain, truncation or thin-sheet model bias.
 
 Formulae
 --------
@@ -99,6 +104,10 @@ import matplotlib as mpl
 from polyhedral_gravity import Polyhedron, PolyhedronIntegrity, GravityEvaluable
 import time, os
 
+# Reuse the GLOBAL experiment's assumed per-coefficient OD uncertainty rule.
+# Import before this module's rcParams setup so its plotting defaults win here.
+from cylinder_mass_estimation_GLOBAL import od_sigma
+
 # TODO: LOCAL: how much SH would do here? Is CH needed?
 
 # ── physical constants (SI) ────────────────────────────────────────────────
@@ -115,11 +124,9 @@ import time, os
 #                U~ = U/(G rho L^2),  g~ = g/(G rho L),  and Poisson's equation
 #          becomes lap U~ = -4 pi rho~.  That single substitution is what strips
 #          G out of the inversion, the surface-density functional and the mass
-#          functional.  The estimator itself is scale-free — the design matrix,
-#          the Bessel basis and the weights were always dimensionless — so the
-#          recovery ratio DeltaM/DeltaM_true is comparable between the modes.
-#          Only `load_terrain_points` and `make_evaluable` touch a unit; nothing
-#          downstream ever sees one.
+#          functional.  The physical formulae transform consistently, but raw
+#          unweighted LS changes the relative influence of U and g when length
+#          units change.  The SI-calibrated basis/cutoff need rechecking in NORM.
 MODE = "SI"  # "SI" or "NORM"
 
 G_SI = 6.67430e-11  # [m³/kg/s²]  the physical constant, always
@@ -188,9 +195,21 @@ else:
 COLOR = ["#D55E00", "#E69F00", "#0072B2", "#009E73", "#CC79A7", "#56B4E9"]
 ACCENT = "#882255"  # structural elements (the analysis cylinder), as in GLOBAL
 
-# Truncated-SVD cutoff of the weighted least squares, the same value the
-# GLOBAL scripts use as CH_RCOND.
-CH_COND = 1e-4
+# Raw unweighted SI fit at R*=8 m, H=16 m, N_field=2000.  cond is relative to
+# the largest singular value.  ΔM is a STAIRCASE in cond (one step per
+# retained singular value), so it is chosen WITHOUT the true ΔM by
+# `calibration_sweep` (Section 5b): among cutoffs whose held-out misfit is
+# within kappa of the best, take the one where ΔM is most stable against
+# field draws, clearance and the cutoff itself.  __main__ reruns that sweep
+# and uses its c*; CH_COND is that c* (5.62e-3 on seeds 1..8, clearances
+# 0.25/0.5 m), rounded, for callers that skip the sweep.  The earlier 3.1e-3
+# was tuned against the true ΔM and sits on a one-step plateau next to a
+# ~20% drop — see fig6_calibration_ratio.  Empirical for this geometry, not
+# a universal resolution or accuracy guarantee.
+CH_ALPHA = 3.0
+CH_M_MAX = 5
+CH_N_MAX = 10
+CH_COND = 5.6e-3
 
 USE_TEX = False  # os.environ.get("GLOBAL_NO_TEX", "") == ""
 
@@ -529,16 +548,23 @@ def cart_to_cyl_g(gx, gy, phi_pts):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# SECTION 3 — DESIGN MATRIX & WEIGHTED LEAST SQUARES
+# SECTION 3 — DESIGN MATRIX & UNWEIGHTED LEAST SQUARES
 # ═══════════════════════════════════════════════════════════════════════════
 
-# TODO: understand this and find fix? if it exists!
+# Checked: the scales below are correct, so there is no bug to fix, only a
+# trade-off.  At fixed n_max, k_max ∝ 1/α: pushing the Dirichlet boundary αR*
+# outward coarsens the basis.  To keep the bandlimit, grow n_max ∝ α, which
+# `required_n_max` (n_max="auto") does.  Current defaults (R*=8 m, α=3,
+# m_max=5, n_max=10): j_{4,10}=36.699, k_max*R*=12.23, λ_min=4.109 m; the
+# zonal modes, the only ones in ΔM, stop at k*R*=10.21, λ=4.922 m.
 # Basis wavenumbers and characteristic radial wavelengths:
 #   k_mn = j_{m,n} / (α R*)             [1 / working length unit]
 #   λ_mn = 2π / k_mn                   [working length unit]
 # Included indices: m = 0..m_max-1, n = 1..n_max.  Hence:
 #   k_max = j_{m_max-1,n_max} / (α R*)
 #   λ_min = 2π / k_max = 2π α R* / j_{m_max-1,n_max}
+#   k_min = j_{0,1} / (α R*)
+#   λ_max = 2π / k_min = 2π α R* / j_{0,1}
 # In Python (jn_zeros returns the first n_max positive zeros):
 #   k_max = jn_zeros(m_max - 1, n_max)[-1] / (alpha * R_star)
 #   lambda_min = 2.0 * np.pi / k_max
@@ -556,12 +582,43 @@ def cart_to_cyl_g(gx, gy, phi_pts):
 KR_TARGET_DEFAULT = 12.0
 
 
-# TODO: what's going on here? is formula correct?
+def basis_spectral_scales(R_star, alpha, m_max, n_max, zeros_dict=None):
+    """Characteristic scales of the INCLUDED basis, in working length units.
+
+    lambda_min = 2π/k_max; lambda_max = 2π/k_min. Only m=0 contributes
+    to the circular-footprint mass, so its shortest wavelength is also given.
+    An individual mode decays by exp(-1) over a height 1/k. These scales
+    precede SVD filtering; retained singular vectors mix Bessel modes and
+    cannot be assigned a resolved wavelength from their rank alone.
+    """
+    if zeros_dict is None:
+        zeros_dict = {m: jn_zeros(m, n_max) for m in range(m_max)}
+    k = np.concatenate([zeros_dict[m][:n_max] for m in range(m_max)]) / (alpha * R_star)
+    k_min, k_max = float(k.min()), float(k.max())
+    return dict(
+        k_min=k_min,
+        k_max=k_max,
+        k_max_R=k_max * R_star,
+        lambda_min=2 * np.pi / k_max,
+        lambda_max=2 * np.pi / k_min,
+        lambda_min_zonal=2 * np.pi * alpha * R_star / zeros_dict[0][n_max - 1],
+        efold_height_min=1 / k_max,
+        efold_height_max=1 / k_min,
+    )
+
+
+# Checked: correct.  McMahon's large-n form j_{m,n} ≈ π(n + m/2 − 1/4), solved
+# for n, only sets the starting guess; the while-loop then tests the EXACT zero,
+# so the approximation cannot make the result wrong, only larger by the margin.
+# m = m_max−1 is used because j_{m,n} grows with m, so that order sets k_max.
+# The zonal (m = 0) modes that carry ΔM stay coarser — see lambda_min_zonal.
 def required_n_max(alpha, R_star, m_max, k_target_R=KR_TARGET_DEFAULT, margin=2):
     """
-    Smallest n_max such that the highest retained mode (m = m_max−1) still
-    reaches k_max·R* ≥ k_target_R at the given α — i.e. the n_max needed
-    to preserve spatial resolution when α is increased.
+    Estimate n_max with a margin, then verify k_max*R* >= k_target_R.
+    The asymptotic zero j_mn ≈ π(n + m/2 - 1/4) gives the initial count.
+    The margin and upward search can return more than the smallest count.
+    R_star cancels from this dimensionless criterion.  This preserves a basis
+    bandlimit when alpha grows; it does not optimize mass recovery or cutoff.
     """
     m = m_max - 1
     target_j = k_target_R * alpha
@@ -614,50 +671,22 @@ def assemble_obs_vector(U, gr, gphi, gz):
     b[0::4], b[1::4], b[2::4], b[3::4] = U, gr, gphi, gz
     return b
 
-# TODO: does this make sense? i'm od-aware guving uncertainty in same fashion too?
-# TODO; change it being like no weigts to LS fit cylindrical_acc_pot_SHORT_fitting_both_mov, only to cov prop later on
-def make_weights(U, gr, gphi, gz, U2=None, gr2=None, gphi2=None, gz2=None):
-    """
-    Per-observable weights w = 1/RMS for the mixed-unit LS problem (U is
-    m²/s², g is m/s² — unweighted mixing would make the solution depend on
-    the unit system).  The SAME weight vector is used for the pre and post
-    fits so that Δc = c_post − c_pre stays meaningful.
 
-    If the post-TAG fields (U2, gr2, ...) are supplied, the weights come from
-    the DIFFERENCE field (post − pre), not the absolute pre-TAG field.  This
-    matters physically: the field inside the cylinder is dominated by the WHOLE
-    asteroid (~490 m across, not 16 m), whose gradient over the site far exceeds
-    the local TAG signal — so absolute-field weights are set by unchanged
-    background mass rather than by the change being measured, and ΔM then drifts
-    a few % with how much of Bennu is meshed.  The difference field cancels
-    every static source exactly (verified: ΔU is bit-identical with the slab
-    bottom at 0 m or −500 m), so difference-field weights make ΔM INVARIANT to
-    all mass that did not move — correct behaviour for a change detector.
+def fit_coefficients(A_des, U, gr, gphi, gz, cond=CH_COND):
     """
-    rms = lambda v: np.sqrt(np.mean(v**2)) + 1e-30
-    if U2 is not None:  # difference-field weights (background-invariant)
-        U, gr, gphi, gz = U2 - U, gr2 - gr, gphi2 - gphi, gz2 - gz
-    W = np.zeros(4 * len(U))
-    W[0::4] = 1.0 / rms(U)
-    W[1::4] = 1.0 / rms(gr)
-    W[2::4] = 1.0 / rms(gphi)
-    W[3::4] = 1.0 / rms(gz)
-    return W
-
-
-def fit_coefficients(A_des, U, gr, gphi, gz, W, cond=CH_COND):
-    """
-    Weighted, truncated-SVD-regularised LS:  (W A) c ≈ (W b).
-    Singular values below cond·s_max are discarded (they correspond to
-    mode combinations the field-point geometry cannot observe; without
-    the cutoff their coefficients are noise amplified by 1/s).
-    Returns coeffs, weighted RMS, weighted relative RMS.
+    Unweighted, truncated-SVD LS: A_des @ coeffs ≈ b, as in the MOV fit.
+    No row scaling or RMS weights are applied to potential or acceleration.
+    This objective depends on the working units selected by MODE; basis and
+    cutoff calibration in SI does not automatically transfer to NORM.
+    Singular values below cond*s_max are discarded (None uses SciPy's default).
+    Returns coeffs, raw stacked RMS, raw stacked relative RMS.  These mixed-unit
+    residual diagnostics do not supply the assumed coefficient uncertainties.
     """
     b = assemble_obs_vector(U, gr, gphi, gz)
-    coeffs, _, _, _ = lstsq(A_des * W[:, None], b * W, cond=cond)
-    resid = (A_des @ coeffs - b) * W
+    coeffs, _, _, _ = lstsq(A_des, b, cond=cond)
+    resid = A_des @ coeffs - b
     rms = np.sqrt(np.mean(resid**2))
-    rel = rms / (np.sqrt(np.mean((b * W) ** 2)) + 1e-30)
+    rel = rms / (np.sqrt(np.mean(b**2)) + 1e-30)
     return coeffs, rms, rel
 
 
@@ -665,7 +694,7 @@ def fit_coefficients(A_des, U, gr, gphi, gz, W, cond=CH_COND):
 # SECTION 4 — WAHR-LIKE THIN-SHEET INVERSION  (ΔM [kg], Δσ [kg/m²])
 # ═══════════════════════════════════════════════════════════════════════════
 
-# TODO: check with claude
+
 def wahr_invert(
     delta_coeffs, R_star, alpha, m_max, n_max, zeros_dict, n_rho=80, n_phi=120
 ):
@@ -726,68 +755,102 @@ def wahr_invert(
 # which must be expanded about a reference state first, these covariances are
 # EXACT consequences of Σ_ΔCS.  They describe dispersion only — truncation bias,
 # mass that left the footprint, and the thin-sheet idealization are systematic
-# and invisible to them, so a quoted √Σ_ΔM is a LOWER BOUND on the total error.
+# and invisible to them.  A quoted √Σ_ΔM is a conditional noise uncertainty,
+# not a bound on the realized error against geometric truth.
 # The analysis thus reduces to writing down f_Δσ and f_ΔM, as done below.
 
 
-def projection_matrix(A_des, W, cond=CH_COND):
-    """
-    The map M with c = M y that `fit_coefficients` actually applies:
-
-        (W Ψ) = U S Vᵀ  →   M = V S⁺ Uᵀ diag(W)     (S⁺ truncated at cond·s_max)
-
-    M is identical for the two epochs (same Ψ, same W), which is exactly what
-    lets the epoch difference be taken in coefficient space:
-    ΔCS = M y_post − M y_pre = M Δy.  Returns (M, n_kept, s_ratio).
-    """
-    Aw = A_des * W[:, None]
-    Us, S, Vt = np.linalg.svd(Aw, full_matrices=False)
-    keep = S > cond * S[0]
-    Sp = np.zeros_like(S)
-    Sp[keep] = 1.0 / S[keep]
-    M = (Vt.T * Sp) @ Us.T * W[None, :]
-    return M, int(keep.sum()), float(S[keep][-1] / S[0])
-
-# TODO; start from here!
-def diff_field_variance(
-    W, meas_rel=0.02, y_pre=None, y_post=None, epoch_rel=None, rho_epoch=0.0
+def coefficient_difference_covariance(
+    c_pre, c_post, eps=0.02, floor_frac=0.1, od_alpha=0.10, rho_epoch=0.0,
+    route="delta",
 ):
     """
-    Diagonal of Σ_Δy, the covariance of the DIFFERENCED field samples.
+    Assumed diagonal OD covariance of ΔCS = CS_post - CS_pre.  Two routes:
 
-    Route A (default — `meas_rel`).  Book the precision on the difference
-    directly: σ_i = meas_rel / W_i, with W = 1/RMS of the Δ-field per observable
-    type — "each sample's epoch-to-epoch INDEPENDENT error is meas_rel of the
-    RMS of the signal being measured".  It also makes the fit's own weights the
-    whitening matrix, W = Σ_Δy^{-1/2}/meas_rel, so the information form
-    Σ_ΔCS = 2(Ψᵀ Σ_y⁻¹ Ψ)⁻¹ applies exactly.
+    route="delta" (default) books od_sigma on the recovered CHANGE itself,
 
-    Route B (`epoch_rel` with `y_pre`, `y_post`).  Book it per epoch on the
-    ABSOLUTE field, σ_pre = epoch_rel·RMS(y_pre) per observable type, and remove
-    the common mode through the cross-covariance:
+        sigma_delta = od_sigma(c_post - c_pre, eps, floor_frac, alpha=od_alpha),
 
-        Σ_Δy = σ_pre² + σ_post² − 2 ρ σ_pre σ_post ,    ρ = `rho_epoch` ∈ [0,1)
+    i.e. eps is the precision of the differenced solution.  A static background
+    (the rest of Bennu, any mismodelled field common to both epochs) cancels in
+    ΔCS, so it cancels here too: σ_ΔM is a property of the TAG signal alone.
 
-    ρ = 0 is the conservative choice (it can only inflate Σ_Δy); ρ → 1 is the
-    statistical counterpart of the background cancellation that makes the local
-    method work at all — a shape or frame mismodelling shared by both epochs
-    subtracts out of ΔCS exactly as the static field does.
+    route="epoch" books it on each epoch's FULL coefficients and subtracts,
+
+        sigma_pre  = od_sigma(c_pre,  eps, floor_frac, alpha=od_alpha)
+        sigma_post = od_sigma(c_post, eps, floor_frac, alpha=od_alpha)
+        var(ΔCS_i) = sigma_pre_i² + sigma_post_i²
+                     - 2*rho_epoch*sigma_pre_i*sigma_post_i
+
+    Because od_sigma is RELATIVE, this σ scales with |CS|, i.e. with the static
+    background, even though ΔM does not.  It is meaningful only for rho_epoch
+    close to 1 (the common-mode error cancelling like the background does), or
+    with an absolute eps taken from a real OD covariance.  covariance_report()
+    prints the rho_epoch sweep and _selftest_covariance() the background check.
+
+    Different coefficients are independent in both assumed models.  A supplied
+    OD covariance can instead go straight into propagate_covariance(), including
+    off-diagonal coefficient correlations.
+
+    GLOBAL's od_sigma is reused unchanged: its degree labels are inferred from
+    SH-style array packing (Lmin=2 here).  On CH coefficients this exponential
+    factor is an index-based heuristic, not a function of k_mn.  od_alpha=0
+    gives the relative-precision-plus-floor rule without that factor.
+    od_alpha is distinct from the cylinder's Bessel extension alpha.
     """
-    if epoch_rel is None:
-        return (meas_rel / W) ** 2  # σ_Δy booked directly on the difference
-    sig = np.zeros_like(W)
-    for k in range(4):  # per observable type: U, gρ, gφ, gz
-        r_pre = np.sqrt(np.mean(y_pre[k::4] ** 2))
-        r_post = np.sqrt(np.mean(y_post[k::4] ** 2))
-        sig[k::4] = epoch_rel**2 * (
-            r_pre**2 + r_post**2 - 2.0 * rho_epoch * r_pre * r_post
+    c_pre, c_post = np.asarray(c_pre, float), np.asarray(c_post, float)
+    if c_pre.ndim != 1 or c_pre.size == 0 or c_post.shape != c_pre.shape:
+        raise ValueError(
+            "c_pre and c_post must be nonempty matching coefficient vectors"
         )
-    return sig
+    if not (np.isfinite(c_pre).all() and np.isfinite(c_post).all()):
+        raise ValueError("coefficient vectors must be finite")
+    if not np.isfinite([eps, floor_frac, od_alpha, rho_epoch]).all():
+        raise ValueError("OD uncertainty settings must be finite")
+    if eps < 0 or floor_frac < 0 or od_alpha < 0 or not -1 <= rho_epoch <= 1:
+        raise ValueError(
+            "eps, floor_frac and od_alpha must be nonnegative; |rho_epoch| <= 1"
+        )
+    if route not in ("delta", "epoch"):
+        raise ValueError("route must be 'delta' or 'epoch'")
+    sig_pre = od_sigma(c_pre, eps, floor_frac=floor_frac, alpha=od_alpha)
+    sig_post = od_sigma(c_post, eps, floor_frac=floor_frac, alpha=od_alpha)
+    if route == "delta":
+        var_delta = od_sigma(c_post - c_pre, eps, floor_frac=floor_frac,
+                             alpha=od_alpha) ** 2
+    else:
+        # Equivalent to the subtraction formula, stable when rho_epoch is near 1.
+        var_delta = (sig_post - sig_pre) ** 2 + 2 * (1 - rho_epoch) * sig_pre * sig_post
+    return dict(
+        Sigma_cs=np.diag(var_delta),
+        sigma_pre=sig_pre,
+        sigma_post=sig_post,
+        sigma_delta=np.sqrt(var_delta),
+        coeff_rel=eps,
+        coeff_floor_frac=floor_frac,
+        od_alpha=od_alpha,
+        rho_epoch=rho_epoch,
+        route=route,
+    )
 
 
-def coeff_covariance(M, var_dy):
-    """Σ_ΔCS = M Σ_Δy Mᵀ, with Σ_Δy diagonal (vector `var_dy`)."""
-    return (M * var_dy[None, :]) @ M.T
+def _coefficient_covariance_factor(Sigma_cs, n_coeff):
+    """Validate a coefficient covariance and factor it, allowing zero modes."""
+    S = np.asarray(Sigma_cs, float)
+    if S.shape != (n_coeff, n_coeff) or not np.isfinite(S).all():
+        raise ValueError(f"Sigma_cs must be a finite ({n_coeff}, {n_coeff}) matrix")
+    tol = 100 * np.finfo(float).eps * n_coeff * np.max(np.abs(S))
+    if np.max(np.abs(S - S.T)) > tol:
+        raise ValueError("Sigma_cs must be symmetric")
+    S = (S + S.T) / 2
+    eig, Q = np.linalg.eigh(S)
+    if eig[0] < -tol:
+        raise ValueError("Sigma_cs must be positive semidefinite")
+    factor = Q * np.sqrt(np.maximum(eig, 0.0))
+    # Clip only negative eigenvalues within roundoff of zero.
+    if eig[0] < 0:
+        S = factor @ factor.T
+    return S, factor
 
 
 def sigma_functional(RHO, PHI, R_alpha, m_max, n_max, zeros_dict):
@@ -834,10 +897,9 @@ def mass_functional(R_star, alpha, m_max, n_max, zeros_dict):
         )
     return f
 
-# TODO: what is this returning? I want input to be coefficient covariance...
+
 def propagate_covariance(
-    A_des,
-    W,
+    Sigma_cs,
     R_star,
     alpha,
     m_max,
@@ -845,15 +907,19 @@ def propagate_covariance(
     zeros_dict,
     RHO,
     PHI,
-    cond=CH_COND,
-    meas_rel=0.02,
-    y_pre=None,
-    y_post=None,
-    epoch_rel=None,
-    rho_epoch=0.0,
 ):
     """
-    Full covariance analysis of one TAG inversion.  Returns a dict with
+    Propagate an INPUT covariance of ΔCS = CS_post - CS_pre through the
+    thin-sheet inversion.  Sigma_cs has shape (N_k, N_k), N_k=2*m_max*n_max, in
+    the same interleaved cosine/sine packing as wahr_invert.  Both diagonal
+    and correlated covariances are supported.  No field samples, fitting
+    weights or SVD projection enter this uncertainty calculation:
+
+        var(ΔM) = f_dM.T @ Sigma_cs @ f_dM
+        Cov(Δσ) = F_sigma @ Sigma_cs @ F_sigma.T
+
+    Only the diagonal and one correlation row of the map covariance are
+    evaluated, avoiding a dense (n_grid, n_grid) allocation.  Returns:
 
       sigma_dM        √Σ_ΔM   [kg]        formal 1σ of the moved mass
       sigma_map_1sig  √Σ_Δσ   [kg/m²]     pointwise 1σ of the density map
@@ -862,19 +928,10 @@ def propagate_covariance(
       naive_dM        the WRONG route ∫√Σ_Δσ dA, for comparison
       modal           per-mode diagnostics (k, σ of ΔC_0n, share of Σ_ΔM)
     """
-    M, n_kept, s_ratio = projection_matrix(A_des, W, cond=cond)
-    var_dy = diff_field_variance(
-        W,
-        meas_rel=meas_rel,
-        y_pre=y_pre,
-        y_post=y_post,
-        epoch_rel=epoch_rel,
-        rho_epoch=rho_epoch,
-    )
-    S_cs = coeff_covariance(M, var_dy)
+    S_cs, _ = _coefficient_covariance_factor(Sigma_cs, 2 * m_max * n_max)
 
     f_dM = mass_functional(R_star, alpha, m_max, n_max, zeros_dict)
-    var_dM = float(f_dM @ S_cs @ f_dM)
+    var_dM = max(0.0, float(f_dM @ S_cs @ f_dM))
 
     F_sig = sigma_functional(RHO, PHI, alpha * R_star, m_max, n_max, zeros_dict)
     var_map = np.einsum("gk,kl,gl->g", F_sig, S_cs, F_sig).reshape(RHO.shape)
@@ -894,8 +951,10 @@ def propagate_covariance(
     )
     zc = [2 * (0 * n_max + (n - 1)) for n in range(1, n_max + 1)]
     sig_c0n = np.sqrt(np.diag(S_cs)[zc])
-    share = np.array([f_dM[c] ** 2 * S_cs[c, c] for c in zc])
-    share = share / share.sum() if share.sum() > 0 else share
+    # Include cross-covariances in the budget.  Contributions sum to var_dM
+    # and can be negative when coefficient correlations cancel mass error.
+    contribution = (f_dM * (S_cs @ f_dM))[zc]
+    share = contribution / var_dM if var_dM > 0 else np.zeros(n_max)
     k_all = np.array(
         [
             zeros_dict[m][n - 1] / (alpha * R_star)
@@ -909,21 +968,22 @@ def propagate_covariance(
     # N_k coefficients however finely the map is gridded, so it has rank ≤ N_k
     # and neighbouring points do NOT carry independent errors.  Measure it: the
     # correlation between the innermost point and the rest of its radial line,
-    # against the shortest retained wavelength 2π/k_max.
+    # against the shortest included basis wavelength 2π/k_max.
     n_phi = RHO.shape[1]
     row = (F_sig[0] @ S_cs) @ F_sig.T
-    denom = np.sqrt(var_map.ravel()[0] * np.maximum(var_map.ravel(), 1e-300))
-    corr_rad = (row / denom)[::n_phi]  # along φ = φ_0
+    denom = np.sqrt(
+        np.maximum(var_map.ravel()[0], 0.0) * np.maximum(var_map.ravel(), 0.0)
+    )
+    corr_rad = np.divide(row, denom, out=np.zeros_like(row), where=denom > 0)[::n_phi]
     d_rad = rho_1d - rho_1d[0]
     below = np.where(corr_rad < np.exp(-1.0))[0]
-    corr_len = float(d_rad[below[0]]) if below.size else float(d_rad[-1])
+    corr_len = float("nan")
+    if var_map.ravel()[0] > 0:
+        corr_len = float(d_rad[below[0]]) if below.size else float(d_rad[-1])
     lam_min = float(2.0 * np.pi / k_all.max())
+    scales = basis_spectral_scales(R_star, alpha, m_max, n_max, zeros_dict)
 
     return dict(
-        M=M,
-        n_kept=n_kept,
-        s_ratio=s_ratio,
-        var_dy=var_dy,
         Sigma_cs=S_cs,
         f_dM=f_dM,
         F_sigma=F_sig,
@@ -943,12 +1003,10 @@ def propagate_covariance(
         d_rad=d_rad,
         corr_len=corr_len,
         lam_min=lam_min,
+        lam_max=scales["lambda_max"],
+        basis_scales=scales,
         rank_max=S_cs.shape[0],
         n_grid=RHO.size,
-        meas_rel=meas_rel,
-        epoch_rel=epoch_rel,
-        rho_epoch=rho_epoch,
-        cond=cond,
     )
 
 
@@ -962,27 +1020,46 @@ def covariance_report(cov, res, verbose=True):
     print(
         f"\n{DASH}\n  COVARIANCE ANALYSIS  (formal 1σ — dispersion, not accuracy)\n{DASH}"
     )
-    src = (
-        f"Δ-samples known to {cov['meas_rel']:.1%} of the Δ-field RMS"
-        if cov["epoch_rel"] is None
-        else f"each epoch to {cov['epoch_rel']:.1%} of its absolute field, "
-        f"epoch correlation ρ={cov['rho_epoch']:.2f}"
-    )
-    print(f"    noise model     : {src}")
-    print(
-        f"    projection M    : {cov['n_kept']}/{2*m_max*n_max} SVD modes kept "
-        f"(cond={cov['cond']:.0e}, smallest kept s/s_max = {cov['s_ratio']:.1e})"
-    )
+    if "coeff_rel" in cov:
+        if cov.get("route", "epoch") == "delta":
+            where = "od_sigma on the recovered change ΔCS (background-free)"
+        else:
+            where = (f"od_sigma on each epoch's full CS, "
+                     f"epoch correlation ρ={cov['rho_epoch']:.3f}")
+        print(f"    noise model     : {where}")
+        print(
+            f"                      eps={cov['coeff_rel']:.1%}, "
+            f"floor_frac={cov['coeff_floor_frac']:.2f}, od_alpha={cov['od_alpha']:.2f}"
+        )
+        print("    CH degree factor: GLOBAL's SH-packing index heuristic (not k_mn)")
+    else:
+        print("    noise model     : supplied covariance of ΔCS")
+    print("    propagation     : Σ_ΔCS → fᵀ Σ_ΔCS f and diag(F Σ_ΔCS Fᵀ)")
+    rel_sd = sd / abs(dM) if dM else float("nan")
     print(
         f"    √Σ_ΔM           = {sd:.3e} {_U['mass']}   "
-        f"({100*sd/abs(dM):.2f} % of ΔM = {dM:+.3e} {_U['mass']})"
+        f"({100*rel_sd:.2f} % of ΔM = {dM:+.3e} {_U['mass']})"
     )
     print(f"    ΔM = {dM:+.3e} ± {sd:.2e} {_U['mass']}  (1σ, formal)")
-    scale = cov["meas_rel"] if cov["epoch_rel"] is None else cov["epoch_rel"]
-    print(
-        f"      Σ_ΔM is quadratic in the assumed precision, so √Σ_ΔM is LINEAR in it:"
-        f"\n      {sd/(100*scale):.2e} {_U['mass']} per 1% — rescale rather than re-running."
-    )
+    scale = cov.get("coeff_rel", 0.0)
+    if scale > 0:
+        print(
+            f"      √Σ_ΔM scales linearly with eps: "
+            f"{sd/(100*scale):.2e} {_U['mass']} per 1% coefficient precision."
+        )
+        # Why the default books eps on ΔCS: the per-epoch rule vs epoch correlation.
+        kw = dict(eps=scale, floor_frac=cov["coeff_floor_frac"], od_alpha=cov["od_alpha"])
+        f = cov["f_dM"]
+        s_d = np.sqrt(f @ coefficient_difference_covariance(
+            res["c_pre"], res["c_post"], route="delta", **kw)["Sigma_cs"] @ f)
+        print(f"    per-epoch rule vs ρ (same eps; delta route gives "
+              f"{100*s_d/abs(dM):.2f} % of ΔM):")
+        for rho in (0.0, 0.9, 0.99, 0.999, 1.0):
+            s_e = np.sqrt(f @ coefficient_difference_covariance(
+                res["c_pre"], res["c_post"], route="epoch", rho_epoch=rho,
+                **kw)["Sigma_cs"] @ f)
+            print(f"      ρ = {rho:5.3f}: √Σ_ΔM = {s_e:.3e} {_U['mass']} "
+                  f"({100*s_e/abs(dM):9.2f} % of ΔM)")
     sm = cov["sigma_map_1sig"]
     print(
         f"    √Σ_Δσ pointwise : centre {sm[0].mean():.1f}, median "
@@ -991,7 +1068,7 @@ def covariance_report(cov, res, verbose=True):
     )
     print(
         f"    WRONG route ∫√Σ_Δσ dA = {cov['naive_dM']:.3e} {_U['mass']} — "
-        f"{cov['naive_dM']/sd:.0f}× the correct √Σ_ΔM: it sums standard"
+        f"{cov['naive_dM']/sd if sd else float('nan'):.0f}× the correct √Σ_ΔM: it sums standard"
     )
     print(
         f"      deviations that partly cancel and credits the m≥1 modes, which "
@@ -1022,23 +1099,20 @@ def covariance_report(cov, res, verbose=True):
     ka, sa = md["k_all"], md["sigma_all"]
     o = np.argsort(ka)
     i_pk = int(np.argmax(sa))
-    print(f"\n    coefficient σ vs wavenumber k (downward continuation, e^{{+2k h̄}}):")
+    print("\n    assumed coefficient σ, listed against basis wavenumber k:")
     print(
         f"      lowest k={ka[o][0]:.3f} → σ={sa[o][0]:.2e};  "
-        f"worst k={ka[i_pk]:.3f} → σ={sa[i_pk]:.2e}  "
-        f"({sa[i_pk]/sa[o][0]:.0f}× amplification)"
+        f"largest σ at k={ka[i_pk]:.3f} → σ={sa[i_pk]:.2e}"
     )
     print(
-        f"      beyond that the σ FALL again — not because those modes are well "
-        f"determined\n      but because the SVD cutoff has removed them "
-        f"({cov['n_kept']}/{2*m_max*n_max} kept).  Truncation is\n      what "
-        f"regularizes the downward continuation; it trades resolution for stability."
+        "      This covariance is assigned to CS after fitting.  It is not "
+        "inferred from the field samples or their SVD cutoff."
     )
     print(
         "    → Σ_Δσ carries k² on top of that growth (the inversion is a "
         "differentiation);\n      Σ_ΔM carries none — the k from the derivative is "
-        "cancelled by the 1/k from the\n      radial integral — which is why the mass "
-        "is the robust product of the two."
+        "cancelled by the 1/k from the\n      radial integral.  This does not "
+        "guarantee small mass bias."
     )
     print(
         f"\n    map-error coherence: Σ_Δσ is {cov['n_grid']} × {cov['n_grid']} but has "
@@ -1046,8 +1120,8 @@ def covariance_report(cov, res, verbose=True):
     )
     print(
         f"      so the errors are correlated: 1/e correlation length "
-        f"{cov['corr_len']:.2f} {_U['len']} vs shortest\n      retained wavelength "
-        f"2π/k_max = {cov['lam_min']:.2f} m.  Refining the grid does not buy "
+        f"{cov['corr_len']:.2f} {_U['len']} vs shortest\n      included basis wavelength "
+        f"2π/k_max = {cov['lam_min']:.2f} {_U['len']}.  Refining the grid does not buy "
         f"independent points."
     )
     st = cov.get("selftest")
@@ -1057,17 +1131,26 @@ def covariance_report(cov, res, verbose=True):
             f"f_ΔMᵀ·ΔCS to {st['e_dM']:.1e};\n      equal-variance modes give an "
             f"azimuth-independent σ map to {st['aniso']:.1e} (isotropy test)."
         )
+        if "bg_delta" in st:
+            print(
+                f"      static background (Bennu-mass point {st['bg_depth']:.0f} "
+                f"{_U['len']} below the sheet) added to both epochs:\n"
+                f"      ΔM changes by {st['bg_dM']:.1e} (rel.), delta-route √Σ_ΔM by "
+                f"{st['bg_delta']:.1e}, per-epoch (ρ={cov['rho_epoch']:.3f}) √Σ_ΔM "
+                f"×{st['bg_epoch']:.1e}."
+            )
     print(
         "    NOTE: formal covariance only.  Bandlimit truncation, mass moved past "
-        "ρ>R*,\n      and the thin-sheet idealization are systematic — √Σ_ΔM is a "
-        "LOWER BOUND\n      on the total error; the geometric ground truth measures "
-        "the rest."
+        "ρ>R*,\n      and the thin-sheet idealization are excluded.  The Monte "
+        "Carlo tests\n      propagation of the assumed CS errors, not physical accuracy."
     )
 
 
 def _tex(v, nd=2):
     """A number as LaTeX scientific notation, or plain if it is O(1)."""
-    if v == 0 or not np.isfinite(v):
+    if not np.isfinite(v):
+        return r"\mathrm{n/a}"
+    if v == 0:
         return "0"
     if float(v).is_integer() and abs(v) < 1e5:
         return f"{int(v)}"  # mode counts and the like, not 8.00
@@ -1094,7 +1177,7 @@ def latex_tables(res, cov=None):
         ("Sheet plane $z_0$", res["z_sheet"], "m"),
         ("Azimuthal orders $M_c$", res["m_max"], "--"),
         ("Radial modes $N_c$", res["n_max"], "--"),
-        ("SVD cutoff", cov["cond"] if cov else float("nan"), "--"),
+        ("Coefficient-fit SVD cutoff", res["cond"], "--"),
     ]:
         print(rf"  {lab} & ${_tex(v)}$ & {u} \\")
 
@@ -1114,16 +1197,32 @@ def latex_tables(res, cov=None):
     if cov is None:
         return
     sd, dM = cov["sigma_dM"], res["dM_est"]
-    rel = cov["meas_rel"] if cov["epoch_rel"] is None else cov["epoch_rel"]
+    rel = cov.get("coeff_rel", float("nan"))
+    epoch = cov.get("route") == "epoch"
+    rows = [
+        ("Assumed per-epoch coefficient precision" if epoch
+         else "Assumed precision of the coefficient change", 100 * rel, "\\%"),
+        ("Coefficient floor fraction", cov.get("coeff_floor_frac", float("nan")), "--"),
+        ("OD index growth parameter", cov.get("od_alpha", float("nan")), "--"),
+    ]
+    if epoch:
+        rows.append(("Pre/post coefficient correlation",
+                     cov.get("rho_epoch", float("nan")), "--"))
     print("\n  % Table — formal uncertainty of the moved mass (dispersion only)")
-    for lab, v, u in [
-        ("Assumed field precision", 100 * rel, "\\%"),
+    for lab, v, u in rows + [
         ("$\\sqrt{\\Sigma_{\\Delta M}}$", sd, "kg"),
-        ("as a fraction of $\\Delta M$", 100 * sd / abs(dM), "\\%"),
-        ("scaling, per 1\\% precision", sd / (100 * rel), "kg"),
-        ("SVD modes retained", cov["n_kept"], "--"),
+        (
+            "as a fraction of $\\Delta M$",
+            100 * sd / abs(dM) if dM else float("nan"),
+            "\\%",
+        ),
+        (
+            "scaling, per 1\\% coefficient precision",
+            sd / (100 * rel) if rel > 0 else float("nan"),
+            "kg",
+        ),
         ("Map-error correlation length", cov["corr_len"], "m"),
-        ("Shortest retained wavelength", cov["lam_min"], "m"),
+        ("Shortest included basis wavelength", cov["lam_min"], "m"),
         (
             "Incorrect route $\\int\\!\\sqrt{\\Sigma_{\\Delta\\sigma}}\\,dA$",
             cov["naive_dM"],
@@ -1135,8 +1234,13 @@ def latex_tables(res, cov=None):
     if "mc" in cov:
         mc = cov["mc"]
         print("\n  % Table — Monte-Carlo verification of the analytic covariance")
-        r_dM = mc["mc_sigma_dM"] / mc["an_sigma_dM"]
-        rat = mc["mc_sigma_map"] / np.maximum(mc["an_sigma_map"], 1e-300)
+        r_dM = (
+            mc["mc_sigma_dM"] / mc["an_sigma_dM"]
+            if mc["an_sigma_dM"] > 0
+            else float("nan")
+        )
+        observed = mc["an_sigma_map"] > 0
+        rat = mc["mc_sigma_map"][observed] / mc["an_sigma_map"][observed]
         tol = 100.0 / np.sqrt(2.0 * mc["n_map"])  # the map is the shallower one
         for lab, v, u in [
             ("Noise realizations, $\\Delta M$", mc["n_mc"], "--"),
@@ -1144,8 +1248,16 @@ def latex_tables(res, cov=None):
             ("MC $\\sqrt{\\Sigma_{\\Delta M}}$", mc["mc_sigma_dM"], "kg"),
             ("Analytic $\\sqrt{\\Sigma_{\\Delta M}}$", mc["an_sigma_dM"], "kg"),
             ("Ratio MC/analytic", r_dM, "--"),
-            ("Map ratio, median", float(np.median(rat)), "--"),
-            ("Map ratio, worst point", float(np.max(np.abs(rat - 1.0)) + 1.0), "--"),
+            (
+                "Map ratio, median",
+                float(np.median(rat)) if rat.size else float("nan"),
+                "--",
+            ),
+            (
+                "Map ratio, worst point",
+                float(np.max(np.abs(rat - 1.0)) + 1.0) if rat.size else float("nan"),
+                "--",
+            ),
             ("MC precision on a std", tol, "\\%"),
         ]:
             print(rf"  {lab} & ${_tex(v, 3)}$ & {u} \\")
@@ -1162,46 +1274,65 @@ def latex_tables(res, cov=None):
         )
 
 
-def covariance_mc(res, cov, n_mc=200000, n_map=20000, seed=3):
+def covariance_mc(res, cov, n_mc=200000, n_map=20000, seed=3, batch_size=256):
     """
-    Monte-Carlo check of the analytic covariance chain.
+    Draw ΔCS ~ N(res['d_coeffs'], cov['Sigma_cs']) and invert every draw.
+    With route="delta" this samples the assumed error of the recovered change
+    directly; with route="epoch" it is equivalent to drawing jointly Gaussian
+    pre/post CS and subtracting them (coefficient_difference_covariance).
+    No field samples, field noise or coefficient refits are used; the scatter
+    over field-point draws is a separate number (res['dM_ens_std']).
 
-    Draw noise on the DIFFERENCED field samples with the assumed
-    Sigma_dy, push each realization through the SAME operators the analytic
-    result uses --  M -> dCS,  then f_dM -> dM  and  F_sigma -> the map --
-    and compare the realized spread against Sigma_dM and diag(Sigma_dsigma).
-
-    Nothing here re-derives the covariance: it re-measures it.  The propagation
-    is exact linear algebra, so agreement is expected to sampling precision.
-    What the test catches is an implementation error -- wrong column ordering in
-    F_sigma or f_dM, a stale M, a mis-scaled var_dy -- the class of bug that
-    would otherwise pass unnoticed because the analytic number looks perfectly
-    reasonable on its own.
-
-    Errors here are GAUSSIAN, unlike the positive RMS quantities of the GLOBAL
-    scripts: dM is a fixed linear functional of Gaussian sample noise, so the
-    right reference overlay is normal, not log-normal.
+    The inversion is linear: evaluating the functionals on coefficient errors
+    and adding the nominal result equals inverting each perturbed coefficient
+    vector.  Both independent and correlated coefficient errors are supported.
+    Map moments are accumulated in batches to avoid an n_grid*n_map allocation.
+    Only res['d_coeffs'] is needed from the nominal fit; all other inputs are
+    the coefficient covariance and the propagation functionals in cov.
     """
+    for name, value in (("n_mc", n_mc), ("n_map", n_map), ("batch_size", batch_size)):
+        minimum = 1 if name == "batch_size" else 2
+        if not isinstance(value, (int, np.integer)) or value < minimum:
+            raise ValueError(f"{name} must be an integer >= {minimum}")
+    dc = np.asarray(res["d_coeffs"], float)
+    if dc.ndim != 1 or not np.isfinite(dc).all():
+        raise ValueError("d_coeffs must be a finite coefficient vector")
+    _, factor = _coefficient_covariance_factor(cov["Sigma_cs"], dc.size)
     rng = np.random.default_rng(seed)
-    sd_y = np.sqrt(cov["var_dy"])
-    # noise-only coefficient realizations: dCS = M (dy + n) - M dy = M n.
-    # E is (N_k x n_mc) and tiny, and dM is one inner product against it, so the
-    # mass histogram is essentially free — hence n_mc large.  The MAP costs
-    # F_sigma @ E, which is (N_grid x n) and hundreds of megabytes, so it uses
-    # the first n_map columns only: same realizations, shallower.
-    E = cov["M"] @ (rng.normal(size=(sd_y.size, n_mc)) * sd_y[:, None])
-    dM_err = cov["f_dM"] @ E  # (n_mc,)
     n_map = min(n_map, n_mc)
-    map_err = cov["F_sigma"] @ E[:, :n_map]  # (N_g, n_map)
+    dM_err = np.empty(n_mc)
+    map_mean = np.zeros(cov["F_sigma"].shape[0])
+    map_m2 = np.zeros_like(map_mean)
+    count = 0
+    for start in range(0, n_mc, batch_size):
+        stop = min(start + batch_size, n_mc)
+        errors = factor @ rng.normal(size=(stop - start, dc.size)).T
+        dM_err[start:stop] = cov["f_dM"] @ errors
+        take = min(stop, n_map) - start
+        if take > 0:
+            maps = cov["F_sigma"] @ errors[:, :take]
+            mean = maps.mean(axis=1)
+            delta = mean - map_mean
+            total = count + take
+            map_m2 += np.sum((maps - mean[:, None]) ** 2, axis=1)
+            map_m2 += delta**2 * count * take / total
+            map_mean += delta * take / total
+            count = total
+    nominal_mass = float(cov["f_dM"] @ dc)
+    nominal_map = cov["F_sigma"] @ dc
     an_map = np.ravel(cov["sigma_map_1sig"])
     return dict(
         dM_err=dM_err,
+        dM_samples=nominal_mass + dM_err,
+        mc_mean_dM=nominal_mass + float(dM_err.mean()),
         mc_sigma_dM=float(dM_err.std(ddof=1)),
         an_sigma_dM=float(cov["sigma_dM"]),
-        mc_sigma_map=map_err.std(axis=1, ddof=1),
+        mc_mean_map=nominal_map + map_mean,
+        mc_sigma_map=np.sqrt(np.maximum(map_m2 / (count - 1), 0.0)),
         an_sigma_map=an_map,
         n_mc=n_mc,
         n_map=n_map,
+        seed=seed,
     )
 
 
@@ -1235,7 +1366,7 @@ def plot_covariance_mc(res, cov, outdir="Images", n_mc=200000, n_map=20000, mc=N
 
     an = mc["an_sigma_map"].reshape(RHO.shape)
     nu = mc["mc_sigma_map"].reshape(RHO.shape)
-    ratio = nu / np.maximum(an, 1e-300)
+    ratio = np.divide(nu, an, out=np.full_like(nu, np.nan), where=an > 0)
     tol = 1.0 / np.sqrt(2.0 * mc["n_map"])
 
     # The maps and the mass go to separate files.  Delta sigma is a field and
@@ -1300,35 +1431,40 @@ def plot_covariance_mc(res, cov, outdir="Images", n_mc=200000, n_map=20000, mc=N
     # of the uncertainty readable straight off the axis.
     fig_m, ax = plt.subplots(figsize=FS)
     e, sd = mc["dM_err"], mc["an_sigma_dM"]
-    ax.hist(
-        e,
-        bins=60,
-        density=True,
-        color=COLOR[0],
-        alpha=0.78,
-        edgecolor="k",
-        lw=0.3,
-        label="Monte-Carlo realizations",
-    )
-    xg = np.linspace(e.min(), e.max(), 400)
-    ax.plot(
-        xg,
-        np.exp(-0.5 * (xg / sd) ** 2) / (sd * np.sqrt(2 * np.pi)),
-        color="k",
-        lw=2.2,
-        zorder=4,
-        label=r"Analytic $N(0,\Sigma_{\Delta M})$",
-    )
-    for k in (-1, 1):
-        ax.axvline(
-            k * sd,
-            color="0.30",
-            ls="--",
-            lw=1.5,
-            zorder=3,
-            label=r"Analytic $\pm\sqrt{\Sigma_{\Delta M}}$" if k == 1 else None,
+    if sd > 0:
+        ax.hist(
+            e,
+            bins=60,
+            density=True,
+            color=COLOR[0],
+            alpha=0.78,
+            edgecolor="k",
+            lw=0.3,
+            label="Monte-Carlo coefficient draws",
         )
-    ax.set_xlabel(rf"$\widehat{{\Delta M}}-\Delta M$  [{_UL['mass']}]")
+        xg = np.linspace(e.min(), e.max(), 400)
+        ax.plot(
+            xg,
+            np.exp(-0.5 * (xg / sd) ** 2) / (sd * np.sqrt(2 * np.pi)),
+            color="k",
+            lw=2.2,
+            zorder=4,
+            label=r"Analytic $N(0,\Sigma_{\Delta M})$",
+        )
+        for k in (-1, 1):
+            ax.axvline(
+                k * sd,
+                color="0.30",
+                ls="--",
+                lw=1.5,
+                zorder=3,
+                label=r"Analytic $\pm\sqrt{\Sigma_{\Delta M}}$" if k == 1 else None,
+            )
+    else:
+        ax.axvline(0, color="k", label="Zero assumed mass variance")
+    ax.set_xlabel(
+        rf"$\Delta M_{{\mathrm{{draw}}}}-\Delta M_{{\mathrm{{nominal}}}}$  [{_UL['mass']}]"
+    )
     ax.set_ylabel(f"PDF  [1/{_U['mass']}]")
     ax.grid(True, alpha=0.3)
     ax.set_axisbelow(True)
@@ -1341,10 +1477,12 @@ def _selftest_covariance(res, cov):
     """
     Consistency checks the derivation implies.
       1. F_Δσ ΔCS reproduces `wahr_invert`'s map, f_ΔMᵀ ΔCS its ΔM.
-      2. M applied to the differenced samples reproduces the fitted Δ coefficients.
-      3. If Σ_ΔCS is diagonal with equal cos/sin variance per mode, the 1σ map is
+      2. If Σ_ΔCS is diagonal with equal cos/sin variance per mode, the 1σ map is
          a function of ρ ALONE (cos²+sin² = 1) — isotropic even though the
          recovered feature is not.
+      3. A static background common to both epochs (a Bennu-mass point 245 m
+         below the sheet, fitted with the same design matrix and cutoff) leaves
+         ΔM and the delta-route σ_ΔM unchanged; the per-epoch σ_ΔM inflates.
     """
     dc = res["d_coeffs"]
     m1 = (cov["F_sigma"] @ dc).reshape(res["RHO"].shape)
@@ -1360,7 +1498,35 @@ def _selftest_covariance(res, cov):
     )
     aniso = float(np.max(np.ptp(v, axis=1) / (np.mean(v, axis=1) + 1e-300)))
     assert aniso < 1e-9, f"equal-variance modes gave an anisotropic map ({aniso:.1e})"
-    return dict(e_map=e_map, e_dM=e_dM, aniso=aniso)
+    out = dict(e_map=e_map, e_dM=e_dM, aniso=aniso)
+    if "coeff_rel" not in cov:
+        return out
+
+    depth = 245.0 / TO_SI["length"]
+    GM = G_W * 7.33e10 / TO_SI["mass"]  # Bennu's mass
+    rp, dz = res["rp"], res["zp"] + depth
+    r = np.hypot(rp, dz)
+    sgn = np.sign(np.mean(res["U_pre"]))  # the potential sign convention in use
+    b_bg = assemble_obs_vector(sgn * GM / r, -GM * rp / r**3, 0 * r, -GM * dz / r**3)
+    c_bg = lstsq(res["design_matrix"], b_bg, cond=res["cond"])[0]
+    kw = dict(eps=cov["coeff_rel"], floor_frac=cov["coeff_floor_frac"],
+              od_alpha=cov["od_alpha"], rho_epoch=cov["rho_epoch"])
+    f = cov["f_dM"]
+
+    def sd(cp, cq, route):
+        S = coefficient_difference_covariance(cp, cq, route=route, **kw)["Sigma_cs"]
+        return np.sqrt(f @ S @ f)
+
+    cp, cq = res["c_pre"], res["c_post"]
+    bg_dM = abs(f @ ((cq + c_bg) - (cp + c_bg)) - f @ (cq - cp)) / abs(f @ (cq - cp))
+    bg_delta = abs(sd(cp + c_bg, cq + c_bg, "delta") / sd(cp, cq, "delta") - 1)
+    # round-off only: the background coefficients are ~1e6× the TAG change
+    assert bg_dM < 1e-6 and bg_delta < 1e-6, (
+        f"background leaked into ΔM ({bg_dM:.1e}) or delta σ ({bg_delta:.1e})")
+    bg_epoch = sd(cp + c_bg, cq + c_bg, "epoch") / sd(cp, cq, "epoch")
+    out.update(bg_dM=bg_dM, bg_delta=bg_delta, bg_epoch=bg_epoch,
+               bg_depth=depth * TO_SI["length"])
+    return out
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1378,44 +1544,44 @@ def run_bennu_tag(
     R_star: float = R_STAR_SI / L_REF,  # cylinder radius (1 in NORM)
     H: float = 16.0 / L_REF,  # cylinder height above the sheet
     clearance: float = 0.5,  # local terrain clearance of field points [m]
-    alpha: float = 2.0,  # Bessel extension — boundary-placement only (α > 1)
-    m_max: int = 6,  # azimuthal orders 0..m_max−1
-    n_max=8,  # radial modes 1..n_max; int, or "auto" to derive from α
+    alpha: float = CH_ALPHA,  # Bessel extension (α > 1)
+    m_max: int = CH_M_MAX,  # azimuthal orders 0..m_max−1
+    n_max=CH_N_MAX,  # radial modes 1..n_max; int, or "auto" for bandlimit only
     N_field: int = 2000,
     seed: int = 1,
-    cond: float = CH_COND,  # truncated-SVD cutoff of the weighted LS
-    n_ensemble: int = 1,  # independent field-point draws averaged for ΔM
+    n_ensemble: int = 1,  # field-point draws (seeds seed..seed+n−1), averaged
+    cond: float = CH_COND,  # truncated-SVD cutoff of the unweighted LS
     k_target_R: float = KR_TARGET_DEFAULT,  # bandlimit target for n_max="auto"
     # covariance analysis (Section 4b)
     do_covariance: bool = True,
-    meas_rel: float = 0.02,  # 1σ of a DIFFERENCED sample, as a fraction of the
-    #                          Δ-field RMS of its observable type (route A)
-    epoch_rel=None,  # instead: 1σ per epoch as a fraction of the ABSOLUTE field
-    rho_epoch: float = 0.0,  # epoch-to-epoch error correlation (route B only)
+    cov_route: str = "delta",  # od_sigma on ΔCS ("delta") or per epoch ("epoch")
+    coeff_rel: float = 0.02,  # od_sigma eps (on ΔCS, or on each epoch's CS)
+    coeff_floor_frac: float = 0.1,  # floor relative to the CS RMS it is applied to
+    od_alpha: float = 0.10,  # GLOBAL's index-based OD growth; distinct from alpha
+    rho_epoch: float = 0.0,  # pre/post error correlation (route="epoch" only)
     verbose: bool = True,
 ):
     """
     Full pre/post TAG pipeline in the unit system selected by `MODE`.  Returns
     a dict of all intermediate and final results (see bottom of function).
 
-    `n_ensemble` > 1 repeats field-point generation + gravity + LS fit for that
-    many independent seeds (seed, seed+1, ...) and reports ΔM as a mean ± sd
-    over the ensemble instead of a single draw.  This does NOT remove the
-    systematic bandlimit / thin-sheet bias (validated ≈ 4-5 % low against
-    geometric truth at m_max=6, n_max=8) — it replaces one possibly lucky draw
-    with an honest estimate of the fit's Monte-Carlo scatter (± 1-2 % at
-    n_ensemble=5).  `sigma_map`/plots use the ensemble-averaged coefficients;
-    all other diagnostics come from the first draw.
+    Fit PRE/POST coefficients on the same field points; with n_ensemble > 1,
+    repeat on independent field-point draws and average the coefficients.  The
+    std of ΔM over those draws (res['dM_ens_std']) is FIELD-SAMPLING scatter.
+    Separately, assign OD uncertainty with GLOBAL's od_sigma (on ΔCS by default,
+    see coefficient_difference_covariance) and propagate Σ_ΔCS to mass and
+    density.  Call covariance_mc(res, res['cov']) to draw coefficient
+    realizations; field points and gravity are not redrawn in that Monte Carlo.
+    Neither number includes terrain or thin-sheet model bias.
 
     On α and n_max: k_mn = j_{m,n}/(α R*) — α only sets where the fictitious
     Dirichlet boundary sits, n_max sets the highest wavenumber (resolution)
     reachable at that α.  Raising α without raising n_max shrinks k_max
-    proportionally and silently destroys resolution (validated: α=100 with
-    n_max=8 gives a shortest representable wavelength of ~340 m against a ~16 m
-    crater, and a wrong ΔM rather than merely a noisier one).  `n_max="auto"`
-    derives n_max from α so that k_max·R* ≥ `k_target_R` holds automatically
-    (see `required_n_max`); with an explicit int, an under-resolved combination
-    raises instead of silently returning garbage.
+    proportionally (α=100, m_max=6, n_max=8, R*=8 m gives λ_min≈158 m).
+    `n_max="auto"` derives n_max from α so that k_max·R* ≥ `k_target_R` holds
+    (see `required_n_max`); an explicit int below that heuristic target raises.
+    Passing the bandlimit check does not guarantee mass accuracy.  The tuned
+    explicit defaults and the bandlimit-only "auto" option serve different aims.
     """
     if verbose:
         print(SEP)
@@ -1476,14 +1642,13 @@ def run_bennu_tag(
             n_needed = required_n_max(alpha, R_star, m_max, k_target_R)
             raise ValueError(
                 f"α={alpha}, m_max={m_max}, n_max={n_max} gives k_max·R* = "
-                f"{k_max_R:.2f}, below the {k_target_R} needed to resolve "
-                f"this crater (~{R_star:.0f} {_U['len']} radius) — the fit would "
-                f"alias, not just get noisier (validated failure mode: "
-                f"ΔM comes out with the wrong sign/magnitude, not merely "
-                f"attenuated). Raising α increases the required n_max "
-                f"roughly linearly: use n_max='auto', or set n_max ≥ "
-                f"{n_needed} explicitly (cost grows with m_max·n_max)."
+                f"{k_max_R:.2f}, below the configured bandlimit target "
+                f"{k_target_R}. Use n_max='auto', set n_max ≥ {n_needed}, or "
+                f"explicitly lower k_target_R when testing a coarser basis. "
+                f"This guard checks included wavelengths, not mass accuracy."
             )
+
+    scales = basis_spectral_scales(R_star, alpha, m_max, n_max)
 
     # geometric ground truth (what the inversion should recover)
     dV_foot = float(dh[foot].sum() * dA)
@@ -1492,6 +1657,16 @@ def run_bennu_tag(
     if verbose:
         print(f"\n[2] TAG site (auto): ({cx:+.2f}, {cy:+.2f}) m")
         print(f"    cylinder R* = {R_star} m, H = {H} m, α = {alpha}, n_max = {n_max}")
+        print(f"    fit: unweighted LS, m_max={m_max}, n_max={n_max}, cond={cond}")
+        print(
+            f"    included k range: {scales['k_min']:.4f}–{scales['k_max']:.4f} {_U['k']}"
+        )
+        print(
+            f"    included λ range: {scales['lambda_min']:.3f}–{scales['lambda_max']:.3f} {_U['len']}"
+        )
+        print(
+            f"    shortest m=0 wavelength (mass): {scales['lambda_min_zonal']:.3f} {_U['len']}"
+        )
         print(f"    sheet plane z0 = {z_sheet:.2f} m")
         print(f"    GROUND TRUTH  ΔV(ρ<R*) = {dV_foot:+.2f} {_U['len']}³")
         print(
@@ -1499,9 +1674,7 @@ def run_bennu_tag(
         )
         print(f"                  ΔV(patch) = {dV_total:+.2f} {_U['len']}³")
 
-    # ── 3./4./5. FIELD POINTS, GRAVITY, LS FIT — repeated per ensemble ─
-    # GravityEvaluable depends only on the mesh, not the field points, so
-    # it's built once and reused across the ensemble.
+    # ── 3./4./5. FIELD POINTS, GRAVITY, NOMINAL COEFFICIENT FIT ──────────
     if verbose:
         print(f"\n[3] Building GravityEvaluable objects …", end=" ", flush=True)
     t0 = time.time()
@@ -1511,54 +1684,40 @@ def run_bennu_tag(
         print(f"done ({time.time()-t0:.1f}s)")
 
     h_itp = RegularGridInterpolator((gx, gy), h_env)
-    n_ens = max(1, n_ensemble)
-    dcoeffs_draws, rel_delta_draws = [], []
-
     if verbose:
-        print(
-            f"\n[4] Field points + gravity + LS fit "
-            f"({n_ens} draw{'s' if n_ens > 1 else ''} × {N_field} pts) …"
-        )
+        print(f"\n[4] Nominal field points + gravity + CS fit ({N_field} pts) …")
     t0 = time.time()
-    for i in range(n_ens):
-        rp_i, pp_i, zp_i, pts_i = make_cylinder_field_points(
-            (cx, cy),
-            z_sheet,
-            R_star,
-            H,
-            h_itp,
-            clearance=clearance,
-            N=N_field,
-            seed=seed + i,
-        )
-        h_under = h_itp(pts_i[:, :2])
-        assert (pts_i[:, 2] > h_under).all(), "field points intersect terrain"
+    rp, pp, zp, pts_cart = make_cylinder_field_points(
+        (cx, cy),
+        z_sheet,
+        R_star,
+        H,
+        h_itp,
+        clearance=clearance,
+        N=N_field,
+        seed=seed,
+    )
+    h_under = h_itp(pts_cart[:, :2])
+    assert (pts_cart[:, 2] > h_under).all(), "field points intersect terrain"
 
-        U0, gx0, gy0, gz0 = eval_gravity(ev_pre, pts_i)
-        U1, gx1, gy1, gz1 = eval_gravity(ev_post, pts_i)
-        gr0, gp0 = cart_to_cyl_g(gx0, gy0, pp_i)
-        gr1, gp1 = cart_to_cyl_g(gx1, gy1, pp_i)
-
-        A_i, zd_i = build_design_matrix(rp_i, pp_i, zp_i, R_alpha, m_max, n_max)
-        # difference-field weights → ΔM independent of unmeshed rest-of-Bennu
-        W_i = make_weights(U0, gr0, gp0, gz0, U1, gr1, gp1, gz1)
-        c0, rms0, rel0 = fit_coefficients(A_i, U0, gr0, gp0, gz0, W_i, cond=cond)
-        c1, rms1, rel1 = fit_coefficients(A_i, U1, gr1, gp1, gz1, W_i, cond=cond)
-        dc_i = c1 - c0
-        db_i = assemble_obs_vector(U1 - U0, gr1 - gr0, gp1 - gp0, gz1 - gz0) * W_i
-        rel_delta_draws.append(
-            np.linalg.norm((A_i * W_i[:, None]) @ dc_i - db_i)
-            / (np.linalg.norm(db_i) + 1e-30)
-        )
-        dcoeffs_draws.append(dc_i)
-
-        if i == 0:  # keep first draw for diagnostics / plotting
-            rp, pp, zp, pts_cart = rp_i, pp_i, zp_i, pts_i
-            U_pre, gz_pre, U_post, gz_post = U0, gz0, U1, gz1
-            gr_pre, gphi_pre, gr_post, gphi_post = gr0, gp0, gr1, gp1
-            c_pre, c_post = c0, c1
-            rms_pre, rms_post, rel_pre, rel_post = rms0, rms1, rel0, rel1
-            A_des, zeros_dict, W_des = A_i, zd_i, W_i
+    U_pre, gx_pre, gy_pre, gz_pre = eval_gravity(ev_pre, pts_cart)
+    U_post, gx_post, gy_post, gz_post = eval_gravity(ev_post, pts_cart)
+    gr_pre, gphi_pre = cart_to_cyl_g(gx_pre, gy_pre, pp)
+    gr_post, gphi_post = cart_to_cyl_g(gx_post, gy_post, pp)
+    A_des, zeros_dict = build_design_matrix(rp, pp, zp, R_alpha, m_max, n_max)
+    c_pre, rms_pre, rel_pre = fit_coefficients(
+        A_des, U_pre, gr_pre, gphi_pre, gz_pre, cond=cond
+    )
+    c_post, rms_post, rel_post = fit_coefficients(
+        A_des, U_post, gr_post, gphi_post, gz_post, cond=cond
+    )
+    d_coeffs = c_post - c_pre
+    db = assemble_obs_vector(
+        U_post - U_pre, gr_post - gr_pre, gphi_post - gphi_pre, gz_post - gz_pre
+    )
+    rel_delta = float(
+        np.linalg.norm(A_des @ d_coeffs - db) / (np.linalg.norm(db) + 1e-30)
+    )
 
     if verbose:
         print(f"    done ({time.time()-t0:.1f}s)")
@@ -1572,29 +1731,37 @@ def run_bennu_tag(
         print(f"    U_pre ∈ [{U_pre.min():.3e}, {U_pre.max():.3e}] {_U['pot']}")
         print(f"    gz_pre ∈ [{gz_pre.min():.3e}, {gz_pre.max():.3e}] {_U['accraw']}")
         print(f"    rel RMS  pre = {rel_pre:.3e},  post = {rel_post:.3e}")
-        rel_delta = float(np.mean(rel_delta_draws))
-        print(f"    rel RMS  Δ-field fit = {rel_delta:.3e}   <-- quality metric")
-    else:
-        rel_delta = float(np.mean(rel_delta_draws))
+        print(f"    rel RMS  Δ-field fit (raw stacked U/g) = {rel_delta:.3e}")
 
-    # ΔM is a LINEAR functional of the m=0 coefficients, so averaging the
-    # coefficient vectors first and inverting once is exactly equivalent
-    # to averaging ΔM over the ensemble — but also gives one clean Δσ map.
-    # TODO: MC drwas should be wrt CS coefficients draws od-aware.... not like this
-    d_coeffs = np.mean(dcoeffs_draws, axis=0)
-    dM_draws = np.array(
-        [
-            wahr_invert(dc, R_star, alpha, m_max, n_max, zeros_dict, n_rho=2, n_phi=2)[
-                0
-            ]
-            for dc in dcoeffs_draws
-        ]
-    )
-    dM_ens_std = float(dM_draws.std()) if n_ens > 1 else 0.0
+    # ── 5b. FIELD-SAMPLING ENSEMBLE ────────────────────────────────────
+    # Refit on independent point draws (seeds seed+1 …) and average the
+    # coefficients; draw 0 above stays the diagnostic draw (design matrix,
+    # residuals, plots).  The ΔM std over draws is sampling scatter of the
+    # field-point geometry — NOT the OD noise propagated in 6b.
+    n_ens = max(1, int(n_ensemble))
+    c_pre_draws, c_post_draws = [c_pre], [c_post]
+    for i in range(1, n_ens):
+        rp_i, pp_i, zp_i, pts_i = make_cylinder_field_points(
+            (cx, cy), z_sheet, R_star, H, h_itp,
+            clearance=clearance, N=N_field, seed=seed + i,
+        )
+        assert (pts_i[:, 2] > h_itp(pts_i[:, :2])).all(), "field points intersect terrain"
+        A_i, _ = build_design_matrix(rp_i, pp_i, zp_i, R_alpha, m_max, n_max)
+        for ev, draws in ((ev_pre, c_pre_draws), (ev_post, c_post_draws)):
+            U_i, gx_i, gy_i, gz_i = eval_gravity(ev, pts_i)
+            gr_i, gphi_i = cart_to_cyl_g(gx_i, gy_i, pp_i)
+            draws.append(fit_coefficients(A_i, U_i, gr_i, gphi_i, gz_i, cond=cond)[0])
+    c_pre, c_post = np.mean(c_pre_draws, axis=0), np.mean(c_post_draws, axis=0)
+    d_coeffs = c_post - c_pre
+    dM_draws = mass_functional(R_star, alpha, m_max, n_max, zeros_dict) @ (
+        np.array(c_post_draws) - np.array(c_pre_draws)
+    ).T
+    dM_ens_std = float(dM_draws.std(ddof=1)) if n_ens > 1 else 0.0
     if verbose and n_ens > 1:
         print(
-            f"    ensemble ΔM: mean={dM_draws.mean():+.4e} {_U['mass']}, "
-            f"std={dM_ens_std:.2e} {_U['mass']} ({100*dM_ens_std/abs(dM_draws.mean()):.1f}%)"
+            f"    field-sampling ensemble: {n_ens} draws (seeds {seed}..{seed+n_ens-1}), "
+            f"ΔM std = {dM_ens_std:.3e} {_U['mass']} "
+            f"({100*dM_ens_std/abs(dM_draws.mean()):.2f} %)"
         )
 
     # ── 6. WAHR INVERSION ──────────────────────────────────────────────
@@ -1603,16 +1770,21 @@ def run_bennu_tag(
     )
 
     # ── 6b. COVARIANCE PROPAGATION (Section 4b) ────────────────────────
-    # Σ_ΔCS = M Σ_Δy Mᵀ with M the very projection the fit applied, then the two
-    # quadratic forms.  Uses the first draw's geometry (Ψ, W): the covariance is
-    # a property of the measurement design, not of a particular noise draw.
+    # Assume the fitted CS and their OD uncertainties are the available data.
+    # Form Σ_ΔCS (route: see coefficient_difference_covariance), then propagate.
     cov = None
     if do_covariance:
-        y_pre_v = assemble_obs_vector(U_pre, gr_pre, gphi_pre, gz_pre)
-        y_post_v = assemble_obs_vector(U_post, gr_post, gphi_post, gz_post)
+        od = coefficient_difference_covariance(
+            c_pre,
+            c_post,
+            eps=coeff_rel,
+            floor_frac=coeff_floor_frac,
+            od_alpha=od_alpha,
+            rho_epoch=rho_epoch,
+            route=cov_route,
+        )
         cov = propagate_covariance(
-            A_des,
-            W_des,
+            od["Sigma_cs"],
             R_star,
             alpha,
             m_max,
@@ -1620,18 +1792,8 @@ def run_bennu_tag(
             zeros_dict,
             RHO,
             PHI,
-            cond=cond,
-            meas_rel=meas_rel,
-            y_pre=y_pre_v,
-            y_post=y_post_v,
-            epoch_rel=epoch_rel,
-            rho_epoch=rho_epoch,
         )
-        # M must reproduce the fit it stands for, on the actual pre-TAG samples
-        e_fit = np.max(np.abs(cov["M"] @ y_pre_v - c_pre)) / (
-            np.max(np.abs(c_pre)) + 1e-30
-        )
-        assert e_fit < 1e-8, f"projection matrix != fit_coefficients ({e_fit:.1e})"
+        cov.update({k: v for k, v in od.items() if k != "Sigma_cs"})
 
     # ── 7. DERIVED QUANTITIES & TRUTH COMPARISON ───────────────────────
     # true surface-density change on the same polar grid
@@ -1643,12 +1805,10 @@ def run_bennu_tag(
     ).reshape(RHO.shape)
 
     # ── central-peak recovery diagnostic ──────────────────────────────
-    # The recovered Δσ is BANDLIMITED: gravity measured at height z above
-    # the surface is a low-pass filter (upward continuation), so a sharp
-    # central spike is smoothed and its PEAK amplitude is underestimated,
-    # even though the INTEGRAL (ΔM) is preserved.  Quantify this at the
-    # centre so it is transparent rather than mistaken for a bug.  The
-    # effective resolution ≈ the field-point altitude above the sources.
+    # The recovered Δσ is bandlimited: upward continuation suppresses short
+    # modes and the inversion can smooth a sharp central peak.  Quantify it
+    # separately from mass recovery; the finite-footprint integral is not
+    # guaranteed to be preserved by truncation or the thin-sheet model.
     core = RHO[:, 0] < 1.0
     sigma_peak_rec = float(sigma_map[core].mean())
     sigma_peak_true = float(sigma_true[core].mean())
@@ -1662,9 +1822,8 @@ def run_bennu_tag(
             f"{sigma_peak_true_pix:+.0f})"
         )
         print(
-            f"    → the {1-sigma_peak_rec/sigma_peak_true:.0%} peak deficit is the "
-            f"gravity low-pass at z≳{max(z_resolution,0.3):.1f} m, not an error; "
-            f"ΔM (the integral) is unaffected"
+            f"    → peak deficit {1-sigma_peak_rec/sigma_peak_true:.0%}; "
+            f"check ΔM separately below. Peak and integral accuracy can differ."
         )
 
     V_cyl = np.pi * R_star**2 * H
@@ -1678,13 +1837,12 @@ def run_bennu_tag(
 
     if verbose:
         print(f"\n{DASH}\n  RESULTS (SI)\n{DASH}")
+        print(f"  ΔM  gravimetric       = {dM_est:+.4e} {_U['mass']}")
         if n_ens > 1:
             print(
-                f"  ΔM  gravimetric       = {dM_est:+.4e} ± {dM_ens_std:.1e} {_U['mass']}  "
-                f"(n_ensemble={n_ens})"
+                f"      ± {dM_ens_std:.2e} {_U['mass']} field-sampling scatter "
+                f"(1σ over n_ensemble={n_ens} draws; OD noise: see covariance)"
             )
-        else:
-            print(f"  ΔM  gravimetric       = {dM_est:+.4e} {_U['mass']}")
         print(
             f"  ΔM  geometric truth   = {dM_true:+.4e} {_U['mass']}   (ρ·∫Δh dA, ρ<R*)"
         )
@@ -1719,11 +1877,17 @@ def run_bennu_tag(
         m_max=m_max,
         n_max=n_max,
         R_alpha=R_alpha,
-        # field points
+        # field points (draw 0) and the sampling settings calibration_sweep reuses
         rp=rp,
         pp=pp,
         zp=zp,
         pts_cart=pts_cart,
+        clearance=clearance,
+        N_field=N_field,
+        seed=seed,
+        n_ensemble=n_ens,
+        dM_draws=dM_draws,  # per-draw ΔM; dM_est is their mean
+        dM_ens_std=dM_ens_std,  # field-sampling scatter, not OD noise
         # gravity
         U_pre=U_pre,
         U_post=U_post,
@@ -1736,8 +1900,10 @@ def run_bennu_tag(
         dU=dU,
         dgz=dgz,
         # fit
-        design_matrix=A_des,  # first-draw design matrix (introspection only)
-        weights=W_des,  # first-draw LS weights — re-propagate covariance with these
+        design_matrix=A_des,  # nominal coefficient-fit diagnostics only
+        fit_objective="unweighted",
+        basis_scales=scales,
+        cond=cond,
         zeros_dict=zeros_dict,
         c_pre=c_pre,
         c_post=c_post,
@@ -1747,10 +1913,6 @@ def run_bennu_tag(
         rel_pre=rel_pre,
         rel_post=rel_post,
         rel_delta=rel_delta,
-        # ensemble (n_ensemble=1 → dM_ens_std=0, dM_draws is a 1-element array)
-        n_ensemble=n_ens,
-        dM_draws=dM_draws,
-        dM_ens_std=dM_ens_std,
         # inversion + truth
         dM_est=dM_est,
         dM_true=dM_true,
@@ -1781,6 +1943,218 @@ def run_bennu_tag(
         covariance_report(cov, res, verbose=verbose)  # reads cov["selftest"]
 
     return res
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SECTION 5b — SVD-CUTOFF CALIBRATION  (truth-free choice of cond)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def calibration_sweep(
+    res,
+    seeds=range(1, 9),
+    clearances=(0.25, 0.5),  # [m]
+    conds=np.logspace(-6, -1, 61),
+    kappa=2.0,
+    half_window=0.15,
+    band_tol=1.25,
+    eps=0.02,
+    floor_frac=0.1,
+    od_alpha=0.10,
+    cond_ref=None,
+    verbose=True,
+):
+    """
+    Sweep the truncated-SVD cutoff `cond` and choose it WITHOUT the true ΔM.
+
+    The fit is linear, so one SVD per field-point draw gives the solution at
+    every cutoff:  x(c) = Σ_{s_i > c·s_0} v_i (u_iᵀ Δb)/s_i.  Only Δb = b_post -
+    b_pre is needed: the static background cancels, exactly as in the pipeline.
+    Draws are `seeds` × `clearances` at res's site, basis and N_field.
+
+    Truth-free rule (the geometric ΔM only VALIDATES it, printed separately):
+      1. Admissible: CV(c) ≤ kappa·min_c CV(c) at every clearance.  CV is the
+         held-out misfit: the draw-j solution predicts the Δ-field at the other
+         draws' points (same clearance), relative misfit averaged over j.  It
+         penalizes cutting real signal.  The data are noise-free, so CV has no
+         minimum at small c — alone it would keep every mode.
+      2. Instability I(c): relative std of ΔM pooled over all draws, all
+         clearances, and cutoffs within ±half_window decades.  It penalizes a
+         cutoff next to a rank step (one singular vector can move ΔM by ~20 %)
+         and modes the sampling cannot pin down.
+      3. c* = argmin I over the admissible cutoffs.  The stable band is the
+         contiguous admissible run around c* with I ≤ band_tol·I(c*).
+    ΔM is a staircase in c, so quote it over the band, not at a single cutoff.
+    sig_delta is the delta-route OD σ_ΔM/|ΔM| (coefficient_difference_covariance)
+    — not a selection input, shown for the resolution/noise trade-off.
+    cond_ref (default res['cond']) is evaluated alongside for comparison.
+    """
+    conds = np.sort(np.asarray(conds, float))
+    seeds, clearances = list(seeds), list(clearances)
+    cond_ref = res["cond"] if cond_ref is None else float(cond_ref)
+    c_all = np.append(conds, cond_ref)  # last column: the reference cutoff
+    R, a, mm, nn = res["R_star"], res["alpha"], res["m_max"], res["n_max"]
+    f = mass_functional(R, a, mm, nn, res["zeros_dict"])
+    ev_pre = make_evaluable(res["mesh_pre"], res["density"])
+    ev_post = make_evaluable(res["mesh_post"], res["density"])
+    h_itp = RegularGridInterpolator(
+        (res["gx"], res["gy"]), np.maximum(res["h_pre"], res["h_post"])
+    )
+
+    shape = (len(clearances), len(seeds), c_all.size)
+    dM, rank, cv, sig, step = (np.empty(shape) for _ in range(5))
+    q_rel = []  # s/s_0 of every draw, for the distance of c to a rank step
+    t0 = time.time()
+    for ic, cl in enumerate(clearances):
+        draws = []
+        for sd in seeds:
+            rp, pp, zp, pts = make_cylinder_field_points(
+                (res["cx"], res["cy"]), res["z_sheet"], R, res["H"], h_itp,
+                clearance=cl / L_REF, N=res["N_field"], seed=sd,
+            )
+            assert (pts[:, 2] > h_itp(pts[:, :2])).all(), "field points intersect terrain"
+            U0, gx0, gy0, gz0 = eval_gravity(ev_pre, pts)
+            U1, gx1, gy1, gz1 = eval_gravity(ev_post, pts)
+            gr0, gp0 = cart_to_cyl_g(gx0, gy0, pp)
+            gr1, gp1 = cart_to_cyl_g(gx1, gy1, pp)
+            A, _ = build_design_matrix(rp, pp, zp, res["R_alpha"], mm, nn)
+            db = assemble_obs_vector(U1 - U0, gr1 - gr0, gp1 - gp0, gz1 - gz0)
+            Us, s, Vt = np.linalg.svd(A, full_matrices=False)
+            keep = s[None, :] > c_all[:, None] * s[0]  # lstsq's rule, per cutoff
+            beta = np.divide(Us.T @ db, s, out=np.zeros_like(s), where=s > 0)
+            X = Vt.T @ (keep * beta).T  # (n_coeff, n_cutoffs)
+            draws.append((A, db, X))
+            q_rel.append(s[s > 0] / s[0])
+            j = len(draws) - 1
+            dM[ic, j] = f @ X
+            k = keep.sum(axis=1)
+            rank[ic, j] = k
+            # each singular vector's share of ΔM; a one-rank change at c adds
+            # the first dropped share or removes the last kept one
+            t = np.abs((Vt @ f) * beta)
+            step[ic, j] = (np.maximum(t[np.minimum(k, t.size - 1)], t[np.maximum(k - 1, 0)])
+                           / np.abs(dM[ic, j]))
+            for i in range(c_all.size):
+                sd_i = f * od_sigma(X[:, i], eps, floor_frac=floor_frac, alpha=od_alpha)
+                sig[ic, j, i] = np.sqrt(np.sum(sd_i**2)) / abs(dM[ic, j, i])
+        for j, (_, _, X) in enumerate(draws):
+            cv[ic, j] = np.mean(
+                [np.linalg.norm(Ao @ X - dbo[:, None], axis=0) / np.linalg.norm(dbo)
+                 for o, (Ao, dbo, _) in enumerate(draws) if o != j],
+                axis=0,
+            )
+        if verbose:
+            print(f"    clearance {cl} {_U['len']}: {len(seeds)} draws "
+                  f"({time.time() - t0:.0f}s)", flush=True)
+
+    # the reference cutoff rides along in the last column; the rule sees the grid
+    dM_ref, rank_ref, sig_ref = dM[..., -1], rank[..., -1], sig[..., -1]
+    step_ref = step[..., -1]
+    dM, rank, cv, sig = dM[..., :-1], rank[..., :-1], cv[..., :-1], sig[..., :-1]
+    step = step[..., :-1]
+    ratio, ratio_ref = dM / res["dM_true"], dM_ref / res["dM_true"]  # validation only
+
+    cv_med = np.median(cv, axis=1)  # (n_clearance, n_cond)
+    cv_norm = cv_med / cv_med.min(axis=1, keepdims=True)
+    admissible = cv_norm.max(axis=0) <= kappa
+    if not admissible.any():
+        raise RuntimeError("no cutoff passes the CV admissibility test; raise kappa")
+    lc = np.log10(conds)
+    instab = np.empty(conds.size)
+    for i in range(conds.size):
+        pool = dM[..., np.abs(lc - lc[i]) <= half_window + 1e-9].ravel()
+        instab[i] = pool.std(ddof=1) / abs(pool.mean())
+    idx = np.flatnonzero(admissible)
+    i_star = int(idx[np.argmin(instab[idx])])
+    ok = admissible & (instab <= band_tol * instab[i_star])
+    lo = hi = i_star
+    while lo > 0 and ok[lo - 1]:
+        lo -= 1
+    while hi < conds.size - 1 and ok[hi + 1]:
+        hi += 1
+    band = np.zeros(conds.size, bool)
+    band[lo : hi + 1] = True
+
+    def step_gap(c):
+        """Worst-draw distance (in ln s) from c·s_0 to the nearest singular value."""
+        return min(np.min(np.abs(np.log(q / c))) for q in q_rel)
+
+    sw = dict(
+        conds=conds, clearances=clearances, seeds=seeds, dM=dM, ratio=ratio,
+        rank=rank, cv=cv, cv_norm=cv_norm, sig_delta=sig, instab=instab,
+        admissible=admissible, band=band, i_star=i_star, cond_star=float(conds[i_star]),
+        band_range=(float(conds[lo]), float(conds[hi])), kappa=kappa,
+        half_window=half_window, band_tol=band_tol, cond_ref=cond_ref,
+        dM_ref=dM_ref, ratio_ref=ratio_ref, rank_ref=rank_ref, sig_ref=sig_ref,
+        gap_star=step_gap(conds[i_star]), gap_ref=step_gap(cond_ref),
+        step=step, step_star=float(step[..., i_star].max()),
+        step_ref=float(step_ref.max()), dM_true=res["dM_true"],
+    )
+    if verbose:
+        calibration_report(sw)
+    return sw
+
+
+def calibration_report(sw):
+    """Print the sweep table, the truth-free choice, and its validation."""
+    c, i_s, band = sw["conds"], sw["i_star"], sw["band"]
+    dM, ratio, rank = sw["dM"], sw["ratio"], sw["rank"]
+    print(f"\n{DASH}\n  SVD-CUTOFF CALIBRATION  (truth-free choice; truth only validates)\n{DASH}")
+    print(
+        f"    draws: seeds {sw['seeds'][0]}..{sw['seeds'][-1]} × clearances "
+        f"{', '.join(f'{x:g}' for x in sw['clearances'])} {_U['len']}; "
+        f"{c.size} cutoffs {c[0]:.0e}..{c[-1]:.0e}"
+    )
+    print(
+        f"    rule : CV ≤ {sw['kappa']:g}·min CV at every clearance, then minimize ΔM "
+        f"instability pooled over ±{sw['half_window']:g} decade"
+    )
+    print(
+        f"    {'cond':>9} {'rank':>7} {'CV/min':>7} {'I(c) %':>7} "
+        f"{'ΔM median':>11} {'σ_OD %':>7} | {'ratio':>6}  (ratio = validation)"
+    )
+    for i in range(c.size):
+        tag = "c*" if i == i_s else ("band" if band[i] else
+                                     ("" if sw["admissible"][i] else "rejected"))
+        print(
+            f"    {c[i]:9.2e} {int(rank[..., i].min()):3d}-{int(rank[..., i].max()):<3d} "
+            f"{sw['cv_norm'][:, i].max():7.2f} {100*sw['instab'][i]:7.2f} "
+            f"{np.median(dM[..., i]):+11.4e} {100*np.median(sw['sig_delta'][..., i]):7.2f} "
+            f"| {np.median(ratio[..., i]):6.3f}  {tag}"
+        )
+    lo, hi = sw["band_range"]
+    b_dM = dM[..., band].ravel()
+    print(
+        f"\n    c*   = {sw['cond_star']:.3e}  (rank {int(rank[..., i_s].min())}–"
+        f"{int(rank[..., i_s].max())}; nearest singular value "
+        f"{100*sw['gap_star']:.1f} % away, one rank step moves ΔM ≤ "
+        f"{100*sw['step_star']:.1f} %, worst draw)"
+    )
+    print(f"    band = [{lo:.3e}, {hi:.3e}]  (admissible, I ≤ {sw['band_tol']:g}·I(c*))")
+    print(
+        f"    ΔM over the band (truth-free): median {np.median(b_dM):+.4e} "
+        f"{_U['mass']}, spread {100*b_dM.std(ddof=1)/abs(b_dM.mean()):.2f} % "
+        f"(all draws, clearances, cutoffs)"
+    )
+    print(
+        f"    OD σ_ΔM at c* (delta route): median "
+        f"{100*np.median(sw['sig_delta'][..., i_s]):.2f} % of ΔM"
+    )
+
+    def val(r):
+        r = np.ravel(r)
+        return (f"median {np.median(r):.3f}  [{r.min():.3f}, {r.max():.3f}]  "
+                f"RMSE {100*np.sqrt(np.mean((r - 1) ** 2)):.1f} %")
+
+    print("    validation against the geometric truth (NOT used above):")
+    print(f"      at c*               : {val(ratio[..., i_s])}")
+    print(f"      over the band       : {val(ratio[..., band])}")
+    print(
+        f"      at cond_ref {sw['cond_ref']:.2e}: {val(sw['ratio_ref'])}  (rank "
+        f"{int(sw['rank_ref'].min())}–{int(sw['rank_ref'].max())}, nearest singular "
+        f"value {100*sw['gap_ref']:.1f} % away, one rank step moves ΔM ≤ "
+        f"{100*sw['step_ref']:.1f} %)"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2102,7 +2476,6 @@ def plot_results(res, outdir=None):
         vmin=-verr,
         vmax=verr,
     )
-    # TODO: 40 percent of error cause maybe you use
     fig3C.colorbar(ce, ax=ax3C, **CBAR).set_label(
         r"$(\widehat{\Delta\sigma}-\Delta\sigma)\,/\,\max|\Delta\sigma|$  "
         + (r"[\%]" if USE_TEX else "[%]")
@@ -2118,40 +2491,122 @@ def plot_results(res, outdir=None):
     return [fig1, fig2a, fig2b, fig2c] + figs3 + [fig3C]
 
 
+def plot_calibration_sweep(sw, outdir=None):
+    """
+    The cutoff sweep of `calibration_sweep`, as two standalone panels:
+      fig6_calibration_ratio    — recovered/true ΔM per draw (validation view)
+      fig6_calibration_criteria — the truth-free criteria and the retained rank
+    Both mark the rejected cutoffs (grey), the stable band (shaded), c* (solid)
+    and the reference cutoff (dotted).  Numbers go to calibration_report.
+    """
+    c = sw["conds"]
+    n_cl = len(sw["clearances"])
+    names = (["Lower clearance", "Higher clearance"] if n_cl == 2
+             else [f"Clearance {k + 1}" for k in range(n_cl)])
+    cols = [COLOR[0], COLOR[2], COLOR[3], COLOR[4]]
+    edges = np.concatenate([[c[0]], np.sqrt(c[1:] * c[:-1]), [c[-1]]])
+    rej = np.diff(np.concatenate([[0], (~sw["admissible"]).astype(int), [0]]))
+    rej_runs = list(zip(np.flatnonzero(rej == 1), np.flatnonzero(rej == -1)))
+    lo, hi = sw["band_range"]
+
+    def frame(ax):
+        for k, (i0, i1) in enumerate(rej_runs):
+            ax.axvspan(edges[i0], edges[i1], color="0.87", lw=0, zorder=0,
+                       label="Rejected: held-out misfit" if k == 0 else None)
+        ax.axvspan(lo, hi, color=ACCENT, alpha=0.14, lw=0, zorder=0.5,
+                   label="Stable band")
+        ax.axvline(sw["cond_star"], color=ACCENT, lw=1.8, zorder=3,
+                   label=r"Selected cutoff $c^\ast$")
+        ax.axvline(sw["cond_ref"], color="k", ls=":", lw=1.3, zorder=3,
+                   label="Reference cutoff")
+        ax.set_xscale("log")
+        ax.set_xlim(c[0], c[-1])
+        ax.set_xlabel(r"SVD cutoff $c$, relative to $s_{\max}$  [-]")
+        ax.set_axisbelow(True)
+
+    # (a) recovered/true mass for every draw: the staircase in c
+    fig_r, ax = plt.subplots(figsize=FS)
+    frame(ax)
+    for k in range(n_cl):
+        for j in range(sw["ratio"].shape[1]):
+            ax.plot(c, sw["ratio"][k, j], color=cols[k], lw=0.6, alpha=0.35, zorder=1.5)
+        ax.plot(c, np.median(sw["ratio"][k], axis=0), color=cols[k], lw=2.4, zorder=4,
+                label=f"{names[k]}, median of draws")
+    ax.axhline(1.0, color="k", lw=0.9, zorder=2)
+    ax.set_ylabel(r"$\Delta M / \Delta M_{\mathrm{true}}$  [-]")
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8 * FONT_SCALE, loc="lower left")
+    _save(fig_r, outdir, "fig6_calibration_ratio.pdf")
+
+    # (b) what the rule sees — no truth anywhere on this panel
+    fig_c, ax = plt.subplots(figsize=FS)
+    frame(ax)
+    ax.plot(c, sw["instab"], color=COLOR[0], lw=2.2, zorder=4,
+            label=r"Instability $I(c)$")
+    ax.plot(c, sw["cv_norm"].max(axis=0), color=COLOR[2], lw=2.2, zorder=4,
+            label=r"Held-out misfit $\mathrm{CV}/\mathrm{CV}_{\min}$")
+    ax.axhline(sw["kappa"], color=COLOR[2], lw=1.0, ls="--", zorder=2,
+               label=r"Admissibility threshold $\kappa$")
+    ax.plot(c, np.median(sw["sig_delta"], axis=(0, 1)), color=COLOR[3], lw=1.6,
+            ls="-.", zorder=4, label=r"OD $\sigma_{\Delta M}/|\Delta M|$")
+    ax.set_yscale("log")
+    ax.set_ylabel("Criterion  [-]")
+    ax.tick_params(axis="y", which="both", right=False)
+    ax.grid(True, alpha=0.3)
+    ax2 = ax.twinx()  # drawn above ax, so the grey spans do not hide the rank
+    ax2.step(c, np.median(sw["rank"], axis=(0, 1)), where="mid", color="0.35", lw=1.1)
+    ax2.set_ylabel("Retained singular values  [-]", color="0.35")
+    ax2.tick_params(axis="y", which="both", colors="0.35")
+    ax.legend(fontsize=8 * FONT_SCALE, loc="upper center",
+              bbox_to_anchor=(0.5, -0.15), ncol=2)
+    _save(fig_c, outdir, "fig6_calibration_criteria.pdf")
+    return [fig_r, fig_c]
+
+
 if __name__ == "__main__":
 
-    result = run_bennu_tag(
+    setup = dict(
         path_pre="3dmeshes/Bennu_preTag.obj",
         path_post="3dmeshes/Bennu_afterTag.obj",
         density=RHO_BULK,  # [kg/m³]
         grid_res=0.30 / L_REF,
         site_center=None,  # auto-detect TAG crater from Δh
-        # R_star controls PEAK resolution (k ∝ 1/R*): a smaller cylinder
-        # concentrates the basis on the crater and recovers the sharp
-        # central Δσ, at a cost in mass completeness.  Peak recovery of the
-        # true ρΔh centre, re-measured with the uniform sampler (3 draws):
-        #   R*=16 → 0.59×  (over-smoothed;  ΔM ratio 1.100 ± 0.065)
-        #   R*=8  → 0.79×  (best mass/peak balance; ΔM 1.012 ± 0.012)
-        #   R*=6  → 0.94×  (best peak, but ΔM 0.800 ± 0.012 — 20% low)
-        R_star=R_STAR_SI / L_REF,  # use 6 m to prioritise the peak, 12+ for mass
+        # The cutoff sweep holds this footprint and cylinder height fixed.
+        # Changing either alters the inversion; the sweep below re-runs anyway.
+        R_star=R_STAR_SI / L_REF,
         H=16.0 / L_REF,
         clearance=0.25 / L_REF,  # points hug the surface: local terrain + this
-        alpha=2.0,  # boundary placement only; n_max scales with α ("auto")
-        m_max=6,
-        n_max="auto",  # → 8 at α=2 (see required_n_max)
+        alpha=CH_ALPHA,  # 3.0: fictitious radial boundary at 24 m
+        m_max=CH_M_MAX,  # 5: azimuthal orders 0..4
+        n_max=CH_N_MAX,  # 10 radial modes per azimuthal order
         N_field=2000,
-        cond=1e-4,  # truncated-SVD regularisation
+    )
+
+    # 1. Choose the SVD cutoff without the true ΔM (Section 5b).  The quick
+    #    run only supplies the site, meshes and basis; its cutoff is unused.
+    site = run_bennu_tag(**setup, do_covariance=False, verbose=False)
+    sweep = calibration_sweep(site, cond_ref=3.1e-3)  # earlier truth-tuned cutoff
+    figs = plot_calibration_sweep(sweep, outdir="Images")
+
+    # 2. Full run at the selected cutoff.
+    result = run_bennu_tag(
+        **setup,
+        cond=sweep["cond_star"],
+        n_ensemble=5,  # field draws averaged; their ΔM spread is reported
+        cov_route="delta",  # OD σ on the recovered change ΔCS, not per epoch
+        coeff_rel=0.02,  # od_sigma eps on ΔCS
+        coeff_floor_frac=0.1,
+        od_alpha=0.10,  # index-based growth from GLOBAL.od_sigma; 0 disables it
         verbose=True,
     )
 
-    # The MC numbers are needed by the tables, which print before any figure,
-    # but the MC FIGURE closes the set — so compute once here and hand the
-    # result to the plot, rather than drawing it early just to get the numbers.
+    # Draw coefficients with the assumed OD covariance; reuse the same Monte
+    # Carlo for the tables and figures.  No field samples are redrawn.
     result["cov"]["mc"] = covariance_mc(result, result["cov"])
 
     latex_tables(result, result.get("cov"))
 
-    figs = plot_results(result, outdir="Images")
+    figs += plot_results(result, outdir="Images")
     figs += plot_covariance_mc(
         result, result["cov"], outdir="Images", mc=result["cov"]["mc"]
     )[0]
