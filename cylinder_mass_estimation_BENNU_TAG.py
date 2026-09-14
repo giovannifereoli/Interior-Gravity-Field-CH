@@ -41,9 +41,7 @@ Pipeline
     U_post.  The weights are likewise built from the DIFFERENCE field, not the
     absolute pre field: the absolute field is set by the unchanged background
     (Bennu's gradient across the site dwarfs the TAG signal) and would leak a
-    few-% background-dependent bias into ΔM (verified: absolute-field weights
-    drift ΔM ~7 % as the modelled bulk deepens 0→500 m; difference-field
-    weights give an identical ΔM at every depth).  Regularised by truncated SVD
+    few-% background-dependent bias into ΔM.  Regularised by truncated SVD
     (`cond`).  Caveat: the cancellation assumes the local Δh map captures ALL
     the mass that moved — ejecta beyond the meshed patch, or mass moved to
     ρ > R*, is not counted.
@@ -186,17 +184,12 @@ else:
     )
 
 # Okabe-Ito, the colour-vision-deficiency-safe palette used by the GLOBAL
-# scripts, in the same role order.  The previous set opened with #d7191c and
-# carried #1a9641 at index 3 — red against green, the pair deuteranopes and
-# protanopes cannot separate.
+# scripts, in the same role order.
 COLOR = ["#D55E00", "#E69F00", "#0072B2", "#009E73", "#CC79A7", "#56B4E9"]
 ACCENT = "#882255"  # structural elements (the analysis cylinder), as in GLOBAL
 
 # Truncated-SVD cutoff of the weighted least squares, the same value the
-# GLOBAL scripts use as CH_RCOND.  It was previously a bare 1e-4 at the
-# pipeline entry with THREE inner functions defaulting to 1e-3 — calling any of
-# them directly (as the covariance path nearly did) silently truncated ten times
-# more loosely than the fit it was meant to describe.
+# GLOBAL scripts use as CH_RCOND.
 CH_COND = 1e-4
 
 USE_TEX = False  # os.environ.get("GLOBAL_NO_TEX", "") == ""
@@ -205,13 +198,6 @@ USE_TEX = False  # os.environ.get("GLOBAL_NO_TEX", "") == ""
 # ── font scale ──────────────────────────────────────────────────────────────
 # ONE knob for every text size in this file: the rcParams below and every
 # explicit `fontsize=` / `labelsize=` are written as (base * FONT_SCALE).
-# Why it is needed: a 7.2 in wide figure dropped into a two-column paper at
-# \linewidth (~3.4 in) is scaled by ~0.47, so 12 pt is drawn on the page at
-# ~6 pt.  Raising this raises everything together and keeps the relative
-# hierarchy (axis labels > ticks > legends > inset labels) intact.
-#   1.00  on-screen sizes, correct if the figure is placed at its natural size
-#   1.35  legible at ~0.7 x reduction (single-column, 6.5 in text width)
-#   1.60  legible at ~0.5 x reduction (two-column journal)
 FONT_SCALE = 1.35
 
 mpl.rcParams.update(
@@ -546,27 +532,36 @@ def cart_to_cyl_g(gx, gy, phi_pts):
 # SECTION 3 — DESIGN MATRIX & WEIGHTED LEAST SQUARES
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Validated bandlimit target: k_max·R* for the (α=2, m_max=6, n_max=8) config
-# checked against geometric ground truth (ΔM ratio ≈ 0.96, module docstring).
-# k_mn = j_{m,n}/(α R*) — α only sets WHERE the fictitious Dirichlet boundary
-# sits; n_max sets the highest wavenumber (resolution) reachable at that α.
-# Raising α without raising n_max shrinks k_max proportionally and the basis
-# loses the ability to represent the crater at all (empirically: α=100 with
-# n_max=8 gives k_max·R* ≈ 0.3, a shortest representable wavelength of ~340 m
-# against a ~16 m crater — the fit aliases noise into a wrong answer, ΔM ratio
-# ≈ +1.25, not merely "worse").  This is NOT a bug but the Bessel-series
-# analogue of a Nyquist limit: a large α "because physics wants the boundary far
-# away" requires n_max to grow ~linearly with α to hold the resolution.
+# TODO: understand this and find fix? if it exists!
+# Basis wavenumbers and characteristic radial wavelengths:
+#   k_mn = j_{m,n} / (α R*)             [1 / working length unit]
+#   λ_mn = 2π / k_mn                   [working length unit]
+# Included indices: m = 0..m_max-1, n = 1..n_max.  Hence:
+#   k_max = j_{m_max-1,n_max} / (α R*)
+#   λ_min = 2π / k_max = 2π α R* / j_{m_max-1,n_max}
+# In Python (jn_zeros returns the first n_max positive zeros):
+#   k_max = jn_zeros(m_max - 1, n_max)[-1] / (alpha * R_star)
+#   lambda_min = 2.0 * np.pi / k_max
+# Example: R*=8 m, α=2, m_max=6, n_max=8 gives j_{5,8}=31.8117,
+#   k_max=1.9882 m^-1, k_max*R*=15.9059, λ_min=3.160 m.
+# With α=100 and the same R*, m_max and n_max, λ_min becomes 158.009 m.
+# Increasing α stretches the radial modes; increasing n_max approximately
+# proportionally preserves k_max at large n.  α R* is the artificial boundary
+# where the radial basis functions vanish.
+# These are characteristic scales of the INCLUDED basis, before SVD filtering;
+# they do not establish the spatial resolution supported by the observations.
+# The heuristic target below requires k_max*R* >= 12, equivalently
+# λ_min <= 2π R*/12 (4.189 m for R*=8 m); it does not guarantee mass accuracy.
+# propagate_covariance() already computes this wavelength as `lam_min`.
 KR_TARGET_DEFAULT = 12.0
 
 
+# TODO: what's going on here? is formula correct?
 def required_n_max(alpha, R_star, m_max, k_target_R=KR_TARGET_DEFAULT, margin=2):
     """
     Smallest n_max such that the highest retained mode (m = m_max−1) still
     reaches k_max·R* ≥ k_target_R at the given α — i.e. the n_max needed
-    to preserve spatial resolution when α is increased.  Uses the McMahon
-    large-n asymptotic j_{m,n} ≈ (n + m/2 − 1/4)π to guess, then verifies
-    exactly with `jn_zeros` (cheap: a handful of extra evaluations).
+    to preserve spatial resolution when α is increased.
     """
     m = m_max - 1
     target_j = k_target_R * alpha
@@ -619,7 +614,8 @@ def assemble_obs_vector(U, gr, gphi, gz):
     b[0::4], b[1::4], b[2::4], b[3::4] = U, gr, gphi, gz
     return b
 
-
+# TODO: does this make sense? i'm od-aware guving uncertainty in same fashion too?
+# TODO; change it being like no weigts to LS fit cylindrical_acc_pot_SHORT_fitting_both_mov, only to cov prop later on
 def make_weights(U, gr, gphi, gz, U2=None, gr2=None, gphi2=None, gz2=None):
     """
     Per-observable weights w = 1/RMS for the mixed-unit LS problem (U is
@@ -669,7 +665,7 @@ def fit_coefficients(A_des, U, gr, gphi, gz, W, cond=CH_COND):
 # SECTION 4 — WAHR-LIKE THIN-SHEET INVERSION  (ΔM [kg], Δσ [kg/m²])
 # ═══════════════════════════════════════════════════════════════════════════
 
-
+# TODO: check with claude
 def wahr_invert(
     delta_coeffs, R_star, alpha, m_max, n_max, zeros_dict, n_rho=80, n_phi=120
 ):
@@ -752,7 +748,7 @@ def projection_matrix(A_des, W, cond=CH_COND):
     M = (Vt.T * Sp) @ Us.T * W[None, :]
     return M, int(keep.sum()), float(S[keep][-1] / S[0])
 
-
+# TODO; start from here!
 def diff_field_variance(
     W, meas_rel=0.02, y_pre=None, y_post=None, epoch_rel=None, rho_epoch=0.0
 ):
@@ -838,7 +834,7 @@ def mass_functional(R_star, alpha, m_max, n_max, zeros_dict):
         )
     return f
 
-
+# TODO: what is this returning? I want input to be coefficient covariance...
 def propagate_covariance(
     A_des,
     W,
@@ -1584,6 +1580,7 @@ def run_bennu_tag(
     # ΔM is a LINEAR functional of the m=0 coefficients, so averaging the
     # coefficient vectors first and inverting once is exactly equivalent
     # to averaging ΔM over the ensemble — but also gives one clean Δσ map.
+    # TODO: MC drwas should be wrt CS coefficients draws od-aware.... not like this
     d_coeffs = np.mean(dcoeffs_draws, axis=0)
     dM_draws = np.array(
         [
