@@ -1893,12 +1893,12 @@ def plot_covariance_mc(res, cov, outdir="Images", n_mc=200000, n_map=20000, mc=N
         (
             axs4[0],
             an,
-            rf"Analytic $\sigma_{{\Delta\rho}}$  [{_UL['sd']}]",
+            rf"Analytic $\sigma_{{\Delta\sigma}}$  [{_UL['sd']}]",
         ),
         (
             axs4[1],
             nu,
-            rf"Monte-Carlo $\sigma_{{\Delta\rho}}$  [{_UL['sd']}]",
+            rf"Monte-Carlo $\sigma_{{\Delta\sigma}}$  [{_UL['sd']}]",
         ),
     ):
         # one-signed uncertainty map: GLOBAL's viridis_r, no zero contour
@@ -1909,9 +1909,9 @@ def plot_covariance_mc(res, cov, outdir="Images", n_mc=200000, n_map=20000, mc=N
     ve = 400.0 * tol  # +-4 sigma of the Monte-Carlo scatter itself, in percent
     cr = _map(axs4[2], Xw, Yw, _wrap(rel), "RdBu_r", -ve, ve, bold=0.0)
     fig4.colorbar(cr, ax=axs4[2], **CBAR).set_label(
-        r"$(\sigma_{\Delta\rho,\mathrm{MC}}"
-        r"-\sigma_{\Delta\rho,\mathrm{Analytic}})"
-        r"/\sigma_{\Delta\rho,\mathrm{Analytic}}$  " + (r"[\%]" if USE_TEX else "[%]")
+        r"$(\sigma_{\Delta\sigma,\mathrm{MC}}"
+        r"-\sigma_{\Delta\sigma,\mathrm{Analytic}})"
+        r"/\sigma_{\Delta\sigma,\mathrm{Analytic}}$  " + (r"[\%]" if USE_TEX else "[%]")
     )
     _decor(axs4[2])
     _save(fig4, outdir, "fig4_covariance_map.pdf")
@@ -3672,8 +3672,8 @@ def plot_results(res, outdir=None):
         for ax, (fld, lab) in zip(
             axs[:2],
             [
-                (mp, rf"Estimated $\widehat{{\Delta\rho}}$, {stage}  [{_UL['sd']}]"),
-                (st, rf"True $\Delta\rho$  [{_UL['sd']}]"),
+                (mp, rf"Estimated $\widehat{{\Delta\sigma}}$, {stage}  [{_UL['sd']}]"),
+                (st, rf"True $\Delta\sigma$  [{_UL['sd']}]"),
             ],
         ):
             c = _map(ax, Xw, Yw, _wrap(fld), "RdBu_r", -vmax, vmax)
@@ -3681,7 +3681,7 @@ def plot_results(res, outdir=None):
             fig.colorbar(c, ax=ax, **CBAR).set_label(lab)
         ce = _map(axs[2], Xw, Yw, _wrap(err), "RdBu_r", -verr, verr)
         fig.colorbar(ce, ax=axs[2], **CBAR).set_label(
-            r"$(\widehat{\Delta\rho}-\Delta\rho)/\max|\Delta\rho|$  " + _epct
+            r"$(\widehat{\Delta\sigma}-\Delta\sigma)/\max|\Delta\sigma|$  " + _epct
         )
         _decor3(axs[2])
         # (the old Summary text panel was a fourth cell of this figure; every
@@ -3754,7 +3754,7 @@ def plot_refinement(res, outdir=None):
     ax.plot(p[-1], rmse[-1], marker="o", ms=8, color=CH_VIOLET, zorder=5)
     ax.legend(frameon=False, loc="upper right", fontsize=10 * FONT_SCALE)
     ax.set_xlabel("Iteration [-]")
-    ax.set_ylabel(rf"Map RMSE  [{pct} of $\max|\Delta\rho|$]")
+    ax.set_ylabel(rf"Map RMSE  [{pct} of $\max|\Delta\sigma|$]")
     ax.set_xlim(p[0], p[-1])
     ax.set_ylim(0.0, rmse[0] * 1.22)
     ax.set_xticks(p[:: max(1, int(len(p) // 9))])
