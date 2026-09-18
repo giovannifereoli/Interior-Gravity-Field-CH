@@ -2977,7 +2977,9 @@ def basis_sweep(
     coefficients as run_bennu_tag does.  `error_percent` converts that ratio
     to the signed percentage error 100*(estimate - true)/true.  The std across
     draws is sampling scatter, not OD uncertainty or a standard error of the
-    mean.
+    mean.  `map_rmse_percent` scores the same cells on the Delta-sigma MAP --
+    RMS(sigma_est - sigma_true) as a percentage of peak |sigma_true|, on the
+    main run's own (RHO, PHI) grid -- so one sweep feeds both fig7 panels.
 
     Only the basis changes.  Reuse exactly the same points and difference
     fields for all cells; no per-cell cutoff selection or truth-based tuning.
@@ -3087,12 +3089,68 @@ def basis_sweep(
     active = (packed >= 2 * max_n) | (packed % 2 == 0)
     order = (packed // (2 * max_n))[active]
     radial = ((packed // 2) % max_n + 1)[active]
+    is_cos = (packed % 2 == 0)[active]
+
+    # Delta-sigma map error, the companion of the mass error.  Scored on the
+    # SAME (RHO, PHI) grid and with the SAME normalisation run_bennu_tag uses
+    # for its map diagnostic -- RMS of (sigma_est - sigma_true) as a percentage
+    # of peak |sigma_true| -- so a sweep cell and the main-run header are the
+    # same number.  sigma_true enters only as the yardstick AFTER each fit; no
+    # cell sees it while solving, exactly as for the mass.  Unweighted over grid
+    # nodes, matching run_bennu_tag; the grid is uniform in rho, so outer annuli
+    # are not area-weighted up.  This is the FLAT thin-sheet map: terrain
+    # refinement is a post-process on one basis, not part of the ablation.
+    sigma_true = res.get("sigma_true")
+    RHO_map, PHI_map = res.get("RHO"), res.get("PHI")
+    map_ok = sigma_true is not None and RHO_map is not None and PHI_map is not None
+    map_peak = np.nan
+    if map_ok:
+        sigma_true = np.asarray(sigma_true, float)
+        map_peak = float(np.max(np.abs(sigma_true)))
+        map_ok = bool(np.isfinite(map_peak) and map_peak > 0)
+    if map_ok:
+        st_flat = sigma_true.ravel()
+        n_map = st_flat.size
+        sts = float(st_flat @ st_flat)
+        rho_flat = np.asarray(RHO_map, float).ravel()
+        phi_flat = np.asarray(PHI_map, float).ravel()
+    map_rmse = np.full(shape + (len(seeds),), np.nan)
+    map_rmse_mean_coeff = np.full(shape, np.nan)
 
     # Independent alpha panels run concurrently. The worker cap keeps QR and
     # eigendecompositions concurrent without allowing BLAS to oversubscribe.
     def solve_alpha(item):
         ia, alpha = item
         zeros = {m: jn_zeros(m, max_n) for m in range(max_m)}
+
+        # One map basis per alpha, in the packing of the LARGEST basis: the
+        # modes do not depend on m_max or n_max, so every sub-basis is a column
+        # subset and reuses this matrix.  Only the normal equations of the map
+        # are kept -- G'G, G'sigma_true, sigma_true'sigma_true -- which turns
+        # each cell's RMSE into a small quadratic form instead of a full map
+        # reconstruction at every grid node.
+        if map_ok:
+            R_alpha = alpha * R
+            pref = 1.0 / (2.0 * np.pi * G_W * R_alpha)
+            Gmap = np.empty((n_map, order.size))
+            rad_cache = {}
+            for icol in range(order.size):
+                m, n = int(order[icol]), int(radial[icol])
+                rad = rad_cache.get((m, n))
+                if rad is None:
+                    jmn = zeros[m][n - 1]
+                    rad = pref * jmn * BesselJ(m, (jmn / R_alpha) * rho_flat)
+                    rad_cache[(m, n)] = rad
+                ang = np.cos(m * phi_flat) if is_cos[icol] else np.sin(m * phi_flat)
+                Gmap[:, icol] = rad * ang
+            GtG = Gmap.T @ Gmap
+            Gts = Gmap.T @ st_flat
+            del Gmap, rad_cache
+
+            def map_rmse_of(x):
+                mse = (float(x @ (GtG @ x)) - 2.0 * float(x @ Gts) + sts) / n_map
+                return 100.0 * np.sqrt(max(mse, 0.0)) / map_peak
+
         cases = []
         local_spectral = {key: np.empty((len(ms), len(ns))) for key in spectral}
         for im, mm in enumerate(ms):
@@ -3107,6 +3165,11 @@ def basis_sweep(
                     local_spectral[key][im, jn] = scales[key]
         local_masses = np.empty((len(ms), len(ns), len(seeds)))
         local_ranks = np.empty_like(local_masses, dtype=int)
+        local_map = np.full(local_masses.shape, np.nan)
+        local_map_mean = np.full((len(ms), len(ns)), np.nan)
+        # Running coefficient sum per cell: the mass panel inverts the mean over
+        # draws, so the plotted map error is the map of the mean coefficients.
+        coeff_sum = np.zeros((len(ms), len(ns), order.size)) if map_ok else None
         for idraw, (rp, pp, zp, db) in enumerate(draws):
             A, _ = build_design_matrix(rp, pp, zp, alpha * R, max_m, max_n)
             Q, R_des = qr(A[:, active], mode="economic")
@@ -3126,15 +3189,39 @@ def basis_sweep(
                 else:
                     local_masses[im, jn, idraw] = 0.0
                 local_ranks[im, jn, idraw] = int(keep.sum())
-        return ia, local_masses, local_ranks, local_spectral
+                if map_ok:
+                    x = np.zeros(order.size)
+                    if keep.any():
+                        x[cols] = vk @ ((vk.T @ rhs) / eig[keep])
+                    coeff_sum[im, jn] += x
+                    local_map[im, jn, idraw] = map_rmse_of(x)
+        if map_ok:
+            for im in range(len(ms)):
+                for jn in range(len(ns)):
+                    local_map_mean[im, jn] = map_rmse_of(coeff_sum[im, jn] / len(draws))
+        return (
+            ia,
+            local_masses,
+            local_ranks,
+            local_spectral,
+            local_map,
+            local_map_mean,
+        )
 
     worker_count = max(1, min(int(BASIS_SWEEP_WORKERS), len(alphas)))
     with ThreadPoolExecutor(max_workers=worker_count) as pool:
-        for ia, local_masses, local_ranks, local_spectral in pool.map(
-            solve_alpha, enumerate(alphas)
-        ):
+        for (
+            ia,
+            local_masses,
+            local_ranks,
+            local_spectral,
+            local_map,
+            local_map_mean,
+        ) in pool.map(solve_alpha, enumerate(alphas)):
             masses[ia] = local_masses
             ranks[ia] = local_ranks
+            map_rmse[ia] = local_map
+            map_rmse_mean_coeff[ia] = local_map_mean
             for key in spectral:
                 spectral[key][ia] = local_spectral[key]
             if verbose:
@@ -3159,6 +3246,17 @@ def basis_sweep(
         ratio_std=mass_std / abs(truth),
         error_percent=relative_error_percent(mass_mean, truth),
         error_std_percent=100.0 * mass_std / abs(truth),
+        # Delta-sigma map error, percent of peak |sigma_true|.  `map_rmse_percent`
+        # is the plotted one (map of the mean coefficients, the mass panel's
+        # convention); `map_rmse_draw_mean` is the typical SINGLE-epoch map error
+        # and `map_rmse_std_percent` its sampling scatter, not an OD uncertainty.
+        map_rmse_percent=map_rmse_mean_coeff,
+        map_rmse_draws=map_rmse,
+        map_rmse_draw_mean=map_rmse.mean(axis=-1),
+        map_rmse_std_percent=(
+            map_rmse.std(axis=-1, ddof=1) if len(seeds) > 1 else np.full(shape, np.nan)
+        ),
+        map_peak=map_peak,
         rank=ranks,
         reference=np.array([res["alpha"], res["m_max"], res["n_max"]]),
         N_field=res["N_field"],
@@ -3179,6 +3277,12 @@ def basis_sweep(
             f"    ensemble mass-error range: {sw['error_percent'].min():+.1f} .. "
             f"{sw['error_percent'].max():+.1f} %"
         )
+        if map_ok:
+            mr = sw["map_rmse_percent"]
+            print(
+                f"    Δσ map RMSE range: {mr.min():.1f} .. {mr.max():.1f} % of "
+                f"peak |Δσ| ({map_peak:.0f} {_U['sd']})"
+            )
         print(
             "    Reference basis is marked in the plots; no defaults are selected from truth."
         )
@@ -3874,6 +3978,265 @@ def plot_basis_sweep(sw, outdir=None, error_limits=(-100.0, 100.0), band=5.0):
     return [fig]
 
 
+def plot_basis_sweep_map(sw, outdir=None, rmse_limits=None, bands=(15.0,)):
+    """The fig7 cube again, scored on the Delta-sigma MAP instead of the mass.
+
+    Companion to `plot_basis_sweep`, same layout and the same cells: only the
+    quantity changes.  Each cell is
+
+        100 * RMS(sigma_est - sigma_true) / max|sigma_true|   [%]
+
+    over the whole (RHO, PHI) disc, for the map of the mean coefficients at the
+    main run's FIXED cutoff -- the same statistic and the same normalisation
+    run_bennu_tag prints as "RMSE" in its map-error line.  The reference cell
+    reproduces that header number when the main run used refine_map=False;
+    with refinement on, the header is the refined map and the cell is the flat
+    thin-sheet one, because refinement is a post-process on a single basis and
+    is deliberately outside the ablation.  sigma_true is never seen by a fit;
+    it is only the yardstick each cell is scored against afterwards.
+
+    Two things make this panel read differently from the mass one.  The
+    quantity is non-negative, so the scale is sequential and logarithmic rather
+    than diverging about zero -- there is no sign to cancel, and a basis that
+    misses the map by ten peak-amplitudes is a decade away from one that misses
+    it by one.  And 100 % is a real line, not just a round number: a map whose
+    RMS error equals the true peak has no skill left.  So the default scale
+    tops out there and the colorbar arrow carries everything beyond -- above
+    no-skill there is nothing left to tell apart, and a handful of degenerate
+    cells at the smallest alpha would otherwise compress the whole informative
+    10..40 % range into one shade.  `bands` are the levels contoured on the
+    collapsed panel, and they have to sit where the cube actually varies: 97 %
+    of it already beats 50 %, so a no-skill contour only ever outlines the
+    degenerate alpha=1 row and says nothing about the plateau one would pick a
+    basis from.  The default is the single 15 % line around that plateau's best
+    corner, which is the only threshold a reader chooses a basis against.
+    Where the mass panel shows large cells of
+    near-exact recovery, the same cells can sit far above 100 % here: the mass
+    is one integral of the map, and cancellation in that integral is invisible
+    to it.  That contrast is the point of the figure.
+
+    Falls back to the per-draw mean when a sweep saved before the
+    mean-coefficient map error was added is passed.  The input dict retains
+    every value.  Returns a list holding the one figure.
+    """
+    from contextlib import nullcontext
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    rmse = sw.get("map_rmse_percent")
+    if rmse is None:
+        rmse = sw.get("map_rmse_draw_mean")
+    if rmse is None:
+        raise ValueError(
+            "this sweep carries no Delta-sigma map error; rerun basis_sweep on a "
+            "result that includes sigma_true, RHO and PHI"
+        )
+    rmse = np.asarray(rmse, float)
+    if not np.isfinite(rmse).any():
+        raise ValueError("the Delta-sigma map error is all non-finite")
+
+    ms, ns, alphas = sw["m_max_values"], sw["n_max_values"], sw["alphas"]
+    ref = sw["reference"]
+    has_reference = np.any(np.isclose(alphas, ref[0])) and ref[1] in ms and ref[2] in ns
+    pct = r"\%" if USE_TEX else "%"
+
+    # Same collapse as the mass figure: the median over m_max of every
+    # (alpha, n_max) column.  It is the same population of cells, so the
+    # degeneracy `basis_sweep` reports for the mass carries over.
+    collapsed = np.median(rmse, axis=1)
+    ia = int(np.argmin(np.abs(alphas - ref[0]))) if has_reference else 0
+
+    finite = rmse[np.isfinite(rmse)]
+    if rmse_limits is None:
+        vmin = float(np.min(finite[finite > 0]))
+        vmax = max(min(100.0, float(np.max(finite))), 2.0 * vmin)
+    else:
+        vmin, vmax = rmse_limits
+    if not np.isfinite([vmin, vmax]).all() or not 0 < vmin < vmax:
+        raise ValueError("rmse_limits must be finite and positive with vmin < vmax")
+    norm = mpl.colors.LogNorm(vmin=vmin, vmax=vmax)
+    lower, upper = np.any(finite < vmin), np.any(finite > vmax)
+    extend = (
+        "both" if lower and upper else "min" if lower else "max" if upper else "neither"
+    )
+
+    def ticks(values):
+        step = max(1, int(np.ceil(len(values) / 6)))
+        positions = np.unique(np.r_[np.arange(0, len(values), step), len(values) - 1])
+        return positions, values[positions]
+
+    def frame(ax, xs, ys, xlabel, ylabel, rx, ry):
+        xt, xl = ticks(xs)
+        yt, yl = ticks(ys)
+        ax.set_xticks(xt, labels=[f"{v:g}" for v in xl])
+        ax.set_yticks(yt, labels=[f"{v:g}" for v in yl])
+        ax.minorticks_off()
+        ax.tick_params(labelsize=8.5 * FONT_SCALE)
+        ax.set_xlabel(xlabel, fontsize=10 * FONT_SCALE)
+        ax.set_ylabel(ylabel, fontsize=10 * FONT_SCALE)
+        if has_reference:
+            ax.plot(
+                np.flatnonzero(np.isclose(xs, rx))[0],
+                np.flatnonzero(np.isclose(ys, ry))[0],
+                marker="*",
+                ms=14,
+                color="w",
+                mec="k",
+                mew=0.8,
+                ls="none",
+                zorder=5,
+            )
+
+    def lambda_max_axis(ax):
+        # alpha alone sets the largest included wavelength, 2*pi/k_min.
+        lam = sw["lambda_max"][:, 0, 0]
+        index = np.arange(len(alphas))
+        sec = ax.secondary_yaxis(
+            "right",
+            functions=(
+                lambda i: np.interp(i, index, lam),
+                lambda v: np.interp(v, lam, index),
+            ),
+        )
+        at, _ = ticks(alphas)
+        sec.set_yticks(lam[at], labels=[f"{v:.0f}" for v in lam[at]])
+        sec.set_ylabel(rf"$\lambda_{{\max}}$  [{_UL['len']}]", fontsize=9 * FONT_SCALE)
+        sec.tick_params(labelsize=8 * FONT_SCALE)
+
+    fig, axs = plt.subplots(1, 2, figsize=(9.6, 4.6), layout="constrained")
+
+    # 1. Every alpha and n_max, m_max collapsed by the median.
+    im = axs[0].imshow(
+        collapsed,
+        origin="lower",
+        aspect="auto",
+        interpolation="nearest",
+        cmap="magma_r",
+        norm=norm,
+    )
+    lo, hi = np.nanmin(collapsed), np.nanmax(collapsed)
+    levels = [float(b) for b in np.atleast_1d(bands) if lo < b < hi]
+    styles = ["--", "-", ":"]
+    for i, lev in enumerate(levels):
+        axs[0].contour(
+            collapsed,
+            levels=[lev],
+            colors="k",
+            linewidths=1.0,
+            linestyles=styles[i % len(styles)],
+        )
+    frame(
+        axs[0],
+        ns,
+        alphas,
+        r"Radial Count $n_{\max}$  [-]",
+        r"Boundary Ratio $\alpha$  [-]",
+        ref[2],
+        ref[0],
+    )
+    lambda_max_axis(axs[0])
+
+    # 2. One uncollapsed plane, at the alpha the main run uses.  The lambda_min
+    #    contours are the included resolution: it is n_max that sets it.
+    axs[1].imshow(
+        rmse[ia],
+        origin="lower",
+        aspect="auto",
+        interpolation="nearest",
+        cmap="magma_r",
+        norm=norm,
+    )
+    cs = axs[1].contour(
+        sw["lambda_min"][ia], levels=[5, 10, 20, 50], colors="0.25", linewidths=0.9
+    )
+    axs[1].clabel(
+        cs,
+        fmt=lambda v: rf"$\lambda_{{\min}}={v:g}$ {_UL['len']}",
+        fontsize=7.5 * FONT_SCALE,
+        inline_spacing=2,
+    )
+    frame(
+        axs[1],
+        ns,
+        ms,
+        r"Radial Count $n_{\max}$  [-]",
+        r"Azimuthal Count $m_{\max}$  [-]",
+        ref[2],
+        ref[1],
+    )
+    axs[1].set_title(rf"$\alpha={alphas[ia]:g}$", fontsize=10 * FONT_SCALE)
+    cb = fig.colorbar(
+        im,
+        ax=list(axs),
+        fraction=0.045,
+        pad=0.02,
+        extend=extend,
+        location="bottom",
+        aspect=45,
+    )
+    cb.set_label(
+        r"RMS$(\widehat{\Delta\sigma}-\Delta\sigma_{\rm true})\,/\,"
+        r"\max|\Delta\sigma_{\rm true}|$  " f"[{pct}]",
+        fontsize=10 * FONT_SCALE,
+    )
+    # Plain numbers on a sub-decade log bar: 10^1/10^2 alone would label almost
+    # nothing across the 10..100 % range the cells actually occupy.
+    cb.ax.xaxis.set_major_locator(mpl.ticker.LogLocator(subs=(1.0, 2.0, 5.0)))
+    cb.ax.xaxis.set_major_formatter(mpl.ticker.FuncFormatter(lambda v, _: f"{v:g}"))
+    cb.ax.xaxis.set_minor_formatter(mpl.ticker.NullFormatter())
+    cb.ax.tick_params(labelsize=8.5 * FONT_SCALE)
+
+    handles = []
+    if has_reference:
+        handles.append(
+            plt.Line2D(
+                [],
+                [],
+                marker="*",
+                color="w",
+                mec="k",
+                mew=0.8,
+                ms=14,
+                ls="none",
+                label="Main-run Basis",
+            )
+        )
+    for i, lev in enumerate(levels):
+        handles.append(
+            plt.Line2D(
+                [],
+                [],
+                color="k",
+                ls=styles[i % len(styles)],
+                lw=1.0,
+                label=(
+                    rf"Median RMSE $={lev:g}$ {pct}"
+                    + (" (no skill)" if lev == 100.0 else "")
+                ),
+            )
+        )
+    if handles:
+        fig.legend(
+            handles=handles,
+            loc="outside upper center",
+            ncols=len(handles),
+            fontsize=9 * FONT_SCALE,
+            frameon=False,
+        )
+
+    if outdir:
+        os.makedirs(outdir, exist_ok=True)
+    buf = io.BytesIO()  # rendered in memory, written once (see _write_bytes)
+    destination = PdfPages(buf) if outdir else nullcontext()
+    with destination as pdf:
+        if pdf is not None:
+            pdf.savefig(fig, bbox_inches="tight")
+    if outdir:
+        _write_bytes(
+            os.path.join(outdir, PREFIX + "fig7b_basis_map_rmse.pdf"), buf.getvalue()
+        )
+    return [fig]
+
+
 # Everything the calibration depends on besides `setup` and the grid: the
 # sheet-plane rule and the selection rule.  Bump this string when either
 # changes; every cached calibration is then recomputed.
@@ -4015,6 +4378,10 @@ if __name__ == "__main__":
     # regenerates the rest, so its cell-to-cell spread is sampling scatter.
     basis_study = basis_sweep(result)
     figs = plot_basis_sweep(basis_study, outdir="Images")
+    # Same cube, scored on the Delta-sigma map instead of the mass: the two
+    # figures disagree wherever cancellation inside the mass integral hides a
+    # map the basis cannot represent.
+    figs += plot_basis_sweep_map(basis_study, outdir="Images")
 
     # Draw coefficients with the assumed OD covariance; reuse the same Monte
     # Carlo for the tables and figures.  No field samples are redrawn.
