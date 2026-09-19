@@ -94,7 +94,7 @@ Constant-density bulk, unit mass:
 """
 
 from __future__ import annotations
-import os, math
+import os, math, io, time, warnings
 from dataclasses import dataclass
 import numpy as np
 import matplotlib as mpl
@@ -1869,7 +1869,9 @@ def truth_mc_masses(
     )
     rep = {}
     for i, b in enumerate(betas):
-        s_sh = od_sigma(sh_coefficients_total(b, P, bulk, SH_LMIN, Lmax, Rref), eps, Lmin=SH_LMIN)
+        s_sh = od_sigma(
+            sh_coefficients_total(b, P, bulk, SH_LMIN, Lmax, Rref), eps, Lmin=SH_LMIN
+        )
         s_ch = od_sigma(ch_coefficients_total(b, P, bulk, obs, pinvPhi), eps)
         blocks = case_blocks(A_sh, s_sh, A_ch, s_ch)
         for k in CASES:
@@ -1948,7 +1950,11 @@ def truth_mc_position(
     for i, p0 in enumerate(pts):
         Pi = P.copy()
         Pi[0] = p0
-        s_sh = od_sigma(sh_coefficients_total(beta_true, Pi, bulk, SH_LMIN, Lmax, Rref), eps, Lmin=SH_LMIN)
+        s_sh = od_sigma(
+            sh_coefficients_total(beta_true, Pi, bulk, SH_LMIN, Lmax, Rref),
+            eps,
+            Lmin=SH_LMIN,
+        )
         s_ch = od_sigma(ch_coefficients_total(beta_true, Pi, bulk, obs, pinvPhi), eps)
         v = p0 - cyl.center
         d_ax[i] = np.linalg.norm(v - np.dot(v, axis) * axis)
@@ -3006,7 +3012,7 @@ def _save3d(fig, outdir, name, right=0.92, left=0.02, bottom=0.04, top=0.97):
     """
     fig.subplots_adjust(left=left, bottom=bottom, right=right, top=top)
     with mpl.rc_context({"savefig.bbox": None}):
-        fig.savefig(os.path.join(outdir, name))
+        _savefig(fig, os.path.join(outdir, name))
 
 
 def _save(fig, outdir, name, pad=None):
@@ -3018,7 +3024,40 @@ def _save(fig, outdir, name, pad=None):
     """
     fig.tight_layout()
     kw = {"pad_inches": pad} if pad is not None else {}
-    fig.savefig(os.path.join(outdir, name), bbox_inches="tight", **kw)
+    _savefig(fig, os.path.join(outdir, name), bbox_inches="tight", **kw)
+
+
+def _savefig(fig, path, **kw):
+    """`fig.savefig(path, **kw)` rendered in memory and written in one call.
+
+    Streaming savefig straight into this OneDrive (CloudStorage) folder can die
+    with TimeoutError [Errno 60] on the file's close() while the file provider
+    is busy — fig1_geometry.pdf, a large compressed path stream, is the usual
+    victim — leaving a corrupt PDF and killing the run before the tables print.
+    Same remedy as `cylinder_mass_estimation_BENNU_TAG._write_bytes`: render to
+    bytes first, so the only filesystem call is a single write.
+    """
+    buf = io.BytesIO()
+    fmt = os.path.splitext(path)[1][1:] or "pdf"
+    fig.savefig(buf, format=fmt, **kw)
+    _write_bytes(path, buf.getvalue())
+
+
+def _write_bytes(path, data, retries=3):
+    """Write `data` to `path.part` and rename; retry a busy provider, and on
+    a final failure only warn so the remaining figures and tables still come."""
+    tmp = path + ".part"
+    for attempt in range(retries):
+        try:
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.replace(tmp, path)
+            return
+        except OSError as err:
+            if attempt == retries - 1:
+                warnings.warn(f"could not save {path}: {err}")
+                return
+            time.sleep(2.0 * (attempt + 1))
 
 
 def hist_legend(ax):
@@ -4401,7 +4440,9 @@ def sweep_lmax_sh(res, L_values=None, alphas=(0.10,), ch_alpha=None, verbose=Tru
             # from a top-degree sigma: the noise floor is a fraction of the RMS
             # of what was actually measured, and a solution that stops at L
             # never saw the degrees above it.
-            sig_sh = od_sigma(cs_top[:nk] + A_sh @ beta_true, eps, alpha=a, Lmin=SH_LMIN)
+            sig_sh = od_sigma(
+                cs_top[:nk] + A_sh @ beta_true, eps, alpha=a, Lmin=SH_LMIN
+            )
             blk = case_blocks(A_sh, sig_sh, A_ch, sig_ch)
             # EVERY anomaly's position, each with the others held — TABLE 2's
             # linearization, applied beyond the target — seeded with

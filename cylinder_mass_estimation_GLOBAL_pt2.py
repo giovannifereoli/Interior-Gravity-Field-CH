@@ -1525,7 +1525,7 @@ def make_plots(res, outdir="Images"):
             bbox_to_anchor=(0.5, 0.005),
         )
         fig.tight_layout(rect=[0, 0.10, 1, 1])
-        fig.savefig(os.path.join(outdir, fname), bbox_inches="tight")
+        G._savefig(fig, os.path.join(outdir, fname), bbox_inches="tight")
 
     # FIG 2 — MASS FRACTIONS
     real, pred = {}, {}
@@ -1673,7 +1673,8 @@ def make_plots(res, outdir="Images"):
         fig.colorbar(
             im, ax=ax, fraction=0.046, pad=0.04, label="posterior correlation  [-]"
         )
-        fig.savefig(
+        G._savefig(
+            fig,
             os.path.join(outdir, f"global_pt2_fig4_separability_{tag}.pdf"),
             bbox_inches="tight",
         )
@@ -1775,7 +1776,8 @@ def make_plots(res, outdir="Images"):
             frameon=False,
             bbox_to_anchor=(0.5, 0.012),
         )
-        fig.savefig(
+        G._savefig(
+            fig,
             os.path.join(outdir, f"global_pt2_fig5_coefficients_{key}.pdf"),
             bbox_inches="tight",
         )
@@ -2253,7 +2255,7 @@ def make_sweep_plots(sw, outdir="Images"):
                 rf"Cross: Prior-Dominated ($R \geq {sw['prior_ratio_threshold']:.2f}$)"
             )
         _centred_legend(fig, handles, labels, 3)
-        fig.savefig(os.path.join(outdir, fname), bbox_inches="tight")
+        G._savefig(fig, os.path.join(outdir, fname), bbox_inches="tight")
 
     # EVERY degree is drawn, the prior-bound ones included, and tagged
     _mass_prior_g = lambda d, k, j: d["mass_prior"][k][:, j]
