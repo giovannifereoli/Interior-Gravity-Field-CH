@@ -80,6 +80,19 @@ CASE_COLORS = (COLOR[2], G.CH_VIOLET, "#44AA99", "#999933", COLOR[0])
 
 SEP = "=" * 72
 
+# ── CH truncation: which version of the results ────────────────────────────
+# "old"  reproduces the earlier network tables/figures: (6,6) modes, rcond 1e-4.
+# "new"  fits the anomaly field (see G.CH_RCOND): (12,12) modes, rcond 1e-6.
+# The cutoff lives in GLOBAL, so this switch sets it there for every Φ⁺ built
+# through G; pt1's own CH_VERSION is not consulted.
+CH_VERSION = "old"
+CH_PRESETS = {
+    "old": dict(ch_modes=(6, 6), rcond=1e-4),
+    "new": dict(ch_modes=(12, 12), rcond=1e-6),
+}
+CH_MODES = CH_PRESETS[CH_VERSION]["ch_modes"]
+G.CH_RCOND = CH_PRESETS[CH_VERSION]["rcond"]
+
 # ═══════════════════════════════════════════════════════════════════════════
 # NETWORK OF CH CYLINDERS
 # ═══════════════════════════════════════════════════════════════════════════
@@ -725,7 +738,7 @@ def reach_position_joint(reach, P, beta, pre, sig_sh, sig_ch, Lmax, Rref):
 def run(
     Lmax_sh=6,
     eps=0.02,
-    ch_modes=(6, 6),
+    ch_modes=CH_MODES,
     n_cyl=6,
     # ── truth-mass draws (experiment A) ────────────────────────────────────
     n_truth_m=400,
@@ -773,6 +786,24 @@ def run(
             print(
                 f"    C{i_c} {_axis_label(c['dir']):>3s}  surface="
                 f"{np.round(c['surf'], 3)}  |r|={np.linalg.norm(c['surf']):.2f}" + tag
+            )
+        # Per site: does the truncated Bessel-Fourier fit represent the field it
+        # is handed?  Bulk field and the nominal-truth discrepancy ΔF.
+        for i_c, c in enumerate(net):
+            f_bulk = bulk.field(c["obs"])
+            dF = (
+                G.field_samples_total(beta_true, P, bulk, c["obs"]) - beta_bulk * f_bulk
+            )
+            pinv = G.ch_pinv_for(c["cyl"], c["obs"], ch_modes)
+            n_kept, n_cols, fit = G.ch_fit_report(
+                c["cyl"], c["obs"], ch_modes, pinv, {"bulk": f_bulk, "ΔF": dF}
+            )
+            print(
+                f"    C{i_c} CH fit {n_kept}/{n_cols} kept | rel. residual "
+                + " | ".join(
+                    f"{k} {v[0]:.1e} [" + " ".join(f"{b:.1e}" for b in v[1]) + "]"
+                    for k, v in fit.items()
+                )
             )
 
     # ── EXPERIMENT A — MASS FRACTIONS over TRUTH INTERIORS ──────────────────
@@ -2305,7 +2336,7 @@ if __name__ == "__main__":
     res = run(
         Lmax_sh=6,
         eps=0.02,
-        ch_modes=(6, 6),
+        ch_modes=CH_MODES,
         n_cyl=6,
         # equal counts on purpose: the log-normal KS test in TABLE 2b gains
         # power with n, so mass and position must be judged on the same n

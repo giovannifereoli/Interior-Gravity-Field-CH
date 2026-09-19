@@ -119,6 +119,18 @@ except Exception:
     _HAVE_PG = False
 
 
+# ── CH truncation: which version of the results ────────────────────────────
+# "old"  reproduces the earlier tables/figures: (8,8) modes, rcond 1e-4.
+# "new"  fits the anomaly field (see CH_RCOND): (12,12) modes, rcond 1e-6.
+# One switch; `run_experiment`, `__main__` and CH_RCOND all read it.
+CH_VERSION = "old"
+CH_PRESETS = {
+    "old": dict(ch_modes=(8, 8), rcond=1e-4),
+    "new": dict(ch_modes=(12, 12), rcond=1e-6),
+}
+CH_MODES = CH_PRESETS[CH_VERSION]["ch_modes"]
+
+
 # ── plotting ────────────────────────────────────────────────────────────────
 # Okabe-Ito, the standard colour-vision-deficiency-safe qualitative palette.
 # The previous set paired #E6001A with #1a9641 — red against green, which is
@@ -455,16 +467,31 @@ def cyl_basis(cyl: Cylinder, obs, n_m, n_n):
 
 
 # Truncated-SVD cutoff for every CH pseudo-inverse.  This matters more than it
-# looks.  Over a patch the Bessel-Fourier columns are nearly linearly dependent
-# (cond(Phi) ~ 1e16), and `np.linalg.pinv`'s DEFAULT cutoff is machine-epsilon
-# based — max(M,N)*eps*s_max, ~9e-12 relative — so it keeps directions whose
-# singular value is ~1e-13 of the largest.  Their coefficients come out as
-# (projection)/sigma, i.e. enormous, and cancel again when multiplied back by
-# Phi. Truncating is not cosmetic: the discarded directions carry noise, not signal,
-# so counting them as information inflates what the CH block appears to know.
-# `cylinder_mass_estimation_BENNU_TAG.fit_coefficients` has always passed an
-# explicit cond for this reason.
-CH_RCOND = 1e-4
+# looks, and it pulls two ways.  Over a patch the Bessel-Fourier columns are
+# nearly linearly dependent (cond(Phi) ~ 1e19): with the interior extension
+# alpha = 100 every k_mn is tiny, J_m(k_mn rho) ~ (k_mn rho/2)^m / m!, and the
+# n_n radial modes of one order m differ only at O((k_mn rho)^2).  The
+# directions that tell them apart have singular values 1e-5..1e-10 of s_max.
+#   * They are SIGNAL for what sits under the patch: they carry the radial
+#     structure of the anomaly field, and dropping them leaves part of the
+#     discrepancy field DF unrepresented (Eros, alpha=100, R=0.12, 200 pts,
+#     modes (12,12): rcond 1e-4 keeps 22/288 columns and misses ~33% of DF
+#     over the pole; 1e-6 keeps 36 and misses ~17%; 1e-8 keeps 53, ~12%).
+#   * But every retained direction enters each coefficient amplified by
+#     1/s_k, so with a looser cutoff ALL coefficients are dominated by the
+#     small-s content, and under the per-coefficient relative noise rule
+#     (`od_sigma`) the smooth part of the field — what a distant anomaly
+#     looks like from the patch — is swamped: CH-alone sigma on the far lobes
+#     of pt1 grows from 6e-3 at 1e-4 to 1e-1 at 1e-10 while the anomaly under
+#     the patch improves 3x.  `np.linalg.pinv`'s DEFAULT cutoff (~9e-12
+#     relative) is the extreme of this: coefficients that are (projection)/s
+#     noise, cancelling again when multiplied back by Phi.
+# 1e-6 is where the fit gains most of what it can before the far-field
+# sensitivity goes (pt2's side network: DF residual 12% -> 3%).  The kept
+# count and residual are printed by `run_experiment` / pt2 so neither is
+# assumed.  `cylinder_mass_estimation_BENNU_TAG.fit_coefficients` has always
+# passed an explicit cond for the same reason.
+CH_RCOND = CH_PRESETS[CH_VERSION]["rcond"]
 
 
 def ch_pinv(Phi, rcond=None):
@@ -492,6 +519,48 @@ def ch_projector(Phi, rcond=None):
     the coefficient designs agree on what "representable" means.
     """
     return Phi @ ch_pinv(Phi, rcond=rcond)
+
+
+def ch_fit_report(cyl, obs, ch_modes, pinv, fields, rcond=None):
+    """
+    How much of each sampled field the truncated CH fit actually represents.
+
+    `fields` maps a label to a stacked [U; ax; ay; az] sample vector (one
+    column) or matrix (one column per source).  For each, the relative
+    reconstruction residual ‖Φ Φ⁺ y − y‖ / ‖y‖, total and per block, is
+    returned with the number of singular directions `pinv` kept.  Nothing
+    downstream depends on it — the estimator is unbiased for any truncation
+    because y_ch = A_ch β holds through the same Φ⁺ — but the CH observable is
+    only as informative as the part of the field it can see, so the number is
+    printed next to the SH-vs-CH comparison rather than assumed.
+    """
+    Phi = cyl_basis(cyl, obs, *ch_modes)
+    sv = np.linalg.svd(Phi, compute_uv=False)
+    n_kept = int((sv > (CH_RCOND if rcond is None else rcond) * sv[0]).sum())
+    n = len(obs)
+    out = {}
+    for name, y in fields.items():
+        r = Phi @ (pinv @ y) - y
+        blk = [
+            np.linalg.norm(r[i * n : (i + 1) * n])
+            / max(np.linalg.norm(y[i * n : (i + 1) * n]), 1e-300)
+            for i in range(4)
+        ]
+        out[name] = (np.linalg.norm(r) / np.linalg.norm(y), blk)
+    return n_kept, Phi.shape[1], out
+
+
+def print_ch_fit(n_kept, n_cols, fit, indent="  "):
+    print(
+        f"{indent}CH fit: {n_kept}/{n_cols} cols kept (rcond {CH_RCOND:.0e}); "
+        "rel. residual ‖Φc−y‖/‖y‖ total [U ax ay az]:"
+    )
+    for name, (tot, blk) in fit.items():
+        print(
+            f"{indent}  {name:<14s} {tot:.1e}  ["
+            + " ".join(f"{b:.1e}" for b in blk)
+            + "]"
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2345,7 +2414,7 @@ def results_report(res, tex=True):
 def run_experiment(
     Lmax_sh=6,
     eps=0.02,
-    ch_modes=(4, 4),
+    ch_modes=CH_MODES,
     n_cyl_pts=1000,  # field samples in the cylinder -- geometry, NOT an MC size
     detail=False,  # verbose narrative; the tables at the end carry the numbers
     # Every Monte-Carlo size below reads n_<role>_<experiment>:
@@ -2463,6 +2532,15 @@ def run_experiment(
             f"  weights: OD-like σ_i = {eps}·|coeff_i| (floor 10% of RMS)  →  "
             f"σ_SH ∈ [{sig_sh.min():.2e}, {sig_sh.max():.2e}], "
             f"σ_CH ∈ [{sig_ch.min():.2e}, {sig_ch.max():.2e}]"
+        )
+        # Is the CH observable seeing the field it is supposed to?  Bulk field
+        # and the anomaly discrepancy ΔF = F_tot − β̃ F_CD, the thing estimated.
+        f_bulk = bulk.field(obs)
+        dF = field_samples_total(beta_true, P, bulk, obs) - beta_bulk * f_bulk
+        print_ch_fit(
+            *ch_fit_report(
+                cyl, obs, ch_modes, pinvPhi, {"bulk field": f_bulk, "anomaly ΔF": dF}
+            )
         )
 
     # ── PART 1 — mass fractions ────────────────────────────────────────────
@@ -4753,7 +4831,7 @@ if __name__ == "__main__":
     res = run_experiment(
         Lmax_sh=6,  # observable spherical-harmonic degree (tracking limit)
         eps=0.02,  # relative measurement precision (same on SH & field)
-        ch_modes=(8, 8),  # (n_m, n_n) cylindrical-harmonic truncation
+        ch_modes=CH_MODES,  # (n_m, n_n) CH truncation — see CH_VERSION
         n_cyl_pts=200,
         n_sweep=1000,  # detection-sweep noise draws per grid point
         outdir="Images",
