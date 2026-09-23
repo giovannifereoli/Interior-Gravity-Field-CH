@@ -66,8 +66,14 @@ Two observables (both fitted as DISCREPANCIES from the constant-density model)
 Weights (see `od_sigma`)
 ------------------------
 Estimation is in COEFFICIENT space, weighted per coefficient by
-σ_i = eps·max(|coeff_i|, floor) — OD-like, "each coefficient known to a fixed
-fraction of itself above a noise floor".  The Phi-to-field fit that manufactures
+σ_i from `od_sigma` — OD-like, "the lowest index of the block is known to `eps`
+(0.1%, a realistic figure for a well-tracked small body) and the precision
+degrades smoothly and monotonically from there, one decade across the block".
+The grading is a shaped, jittered rate, not a straight line on the log axis, so
+the curve reads like a real OD sigma; its TOTAL rise is fixed whatever the draw.
+Both bases share one `eps`, which is what makes the SH-vs-CH comparison fair:
+equal RELATIVE precision at the anchor, so the contest is geometry, not units.
+The Phi-to-field fit that manufactures
 the CH coefficients from field samples is deliberately unweighted.  The analytic
 covariance and the Monte-Carlo fits are fed the SAME (A, σ) blocks, so they
 describe one estimator.
@@ -99,6 +105,8 @@ from dataclasses import dataclass
 import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+from mpl_toolkits.mplot3d import proj3d
 from scipy.special import jv as BesselJ, jvp as BesselJp, jn_zeros
 from scipy.optimize import least_squares
 
@@ -1239,42 +1247,221 @@ def od_sigma2(cs, eps, floor_frac=0.1):
     return eps * np.maximum(np.abs(cs), floor)
 
 
-def od_sigma(cs, eps, floor_frac=0.1, alpha=0.10, Lmin=2):
+# --- OD grading rates -------------------------------------------------------
+# `od_sigma` used to anchor each coefficient's sigma on its OWN amplitude,
+# eps*max(|c|, floor).  That made sigma inherit the truth spectrum wiggle for
+# wiggle: the per-index RMS of sigma wandered 0.25-0.77 decades off its own
+# log-linear trend (GLOBAL CH 0.77, GLOBAL SH 0.39, BENNU_TAG CH 0.25), so the
+# band in the coefficient figures HUMPED mid-spectrum instead of rising, and no
+# grading rate removed the hump because the hump was the spectrum, not the
+# grading.  Anchoring on the per-index floor does not help either: the floor is
+# booked from that same wiggly spectrum.  The rule was also self-referential —
+# sigma IS the simulated measurement noise (see `run_case`), and measurement
+# noise should not know the answer.
+#
+# Sigma is now anchored ONCE per block, on the RMS power of the lowest index the
+# block actually carries, and graded from there:
+#
+#     sigma(i) = eps * RMS|c|(first) * exp(rate * (i - first))
+#
+# a straight line in log space BY CONSTRUCTION: strictly monotone, no hump
+# possible, and flat in every index other than the angular one.  `rate` is not
+# hand-tuned — it is fixed by the rise below, so sigma starts a factor eps under
+# the field's power at the first index and climbs OD_RISE_DEC decades across the
+# retained band, crossing the field's own spectrum near the top.  That is the
+# statement the coefficient figures should make: the highest retained index is
+# where OD stops seeing the field.  Being self-calibrating, it needs no separate
+# SH and CH constants — the two blocks differ only in how wide their band is.
+OD_RISE_DEC = 1.0
+
+# ...but a pure exponential plots as a RULED LINE, which is a tell that sigma
+# was drawn rather than computed: a real OD covariance spectrum curves, and no
+# two neighbouring indices are ever determined equally well.  So the rate is
+# shaped instead of held constant.  Writing u_i for the fractional position of
+# index i across the block (0 at the first index, 1 at the last), the rate is
+#
+#     q_i = (1 + TILT*(2*u_i - 1)) * (1 + JITTER*z_i),   z_i uniform in [-1, 1]
+#
+# and sigma is its running sum, rescaled so the block spans OD_RISE_DEC:
+#
+#     sigma_i = eps * anchor * 10**(OD_RISE_DEC * cumsum(q)_i / sum(q))
+#
+# Shaping the SLOPE and accumulating it, rather than shaping sigma itself,
+# is what makes this safe.  The total rise is EXACTLY OD_RISE_DEC decades
+# whatever the draw, because the sum is normalised out; and sigma is monotone
+# if and only if every q_i > 0, which -- since the two factors are separately
+# positive -- is just |TILT| < 1 and |JITTER| < 1, asserted below.  No hump
+# can sneak back in, whatever the random numbers do.
+#
+#   TILT    the sensitivity loss ACCELERATES towards the resolution limit, as
+#           it does in a real solution: low indices are held by a long arc and
+#           many observations, the highest ones only barely resolved.  +0.55
+#           runs the mean rate from 0.45x at the first index to 1.55x at the
+#           last, a visible knee without a cliff.
+#   JITTER  the index-to-index roughness every measured spectrum has -- uneven
+#           ground-track coverage, resonances, an observation geometry that
+#           favours some orders over others.  This is a STAND-IN for that
+#           structure, not a covariance computed from any particular orbit.
+#           It is drawn from a FIXED seed, so a run is reproducible, and it is
+#           drawn independently of the coefficients, which is the property the
+#           old max(|c|, floor) rule lacked: that rule read its shape off the
+#           truth it was supposed to be blind to, and inherited the truth's
+#           bump along with it.
+#
+# For a study that needs the real thing rather than a plausible stand-in,
+# BENNU_TAG's propagate_covariance() already accepts a supplied Sigma_CS and
+# will take an actual OD covariance in place of all of this.
+OD_RISE_TILT = 0.55
+OD_JITTER = 0.60
+# Fixed so a run is reproducible, and chosen so the draw stays evenly ragged
+# -- no single step dominating -- at every block length these scripts use.
+OD_JITTER_SEED = 2530
+assert (
+    abs(OD_RISE_TILT) < 1.0 and abs(OD_JITTER) < 1.0
+), "OD rate q must stay positive or sigma stops being monotone"
+
+
+def od_shape(n_index, tilt=None, jitter=None, seed=None):
     """
-    Degree-dependent OD-like 1σ uncertainties.
+    Fraction of the block's total rise completed at each of n_index indices.
 
-    Keeps the original interface, but lets uncertainty grow with spherical-
-    harmonic degree to mimic the loss of sensitivity to shorter-wavelength
-    gravity structure at high degree.
+    Returns an array of length n_index rising from 0 to 1, the normalised
+    running sum of the shaped rate q described at OD_RISE_DEC.  Strictly
+    increasing for any draw, because every q is positive.
+    """
+    tilt = OD_RISE_TILT if tilt is None else tilt
+    jitter = OD_JITTER if jitter is None else jitter
+    seed = OD_JITTER_SEED if seed is None else seed
+    n = int(n_index)
+    if n <= 1:
+        return np.zeros(n)
+    u = np.arange(n - 1) / (n - 1.0)  # rate of the step INTO index i+1
+    z = np.random.default_rng(seed).uniform(-1.0, 1.0, n - 1)
+    q = (1.0 + tilt * (2.0 * u - 1.0)) * (1.0 + jitter * z)
+    return np.concatenate([[0.0], np.cumsum(q) / q.sum()])
 
-    `Lmin` is the first degree in the packing (SH blocks pass `SH_LMIN`; the
-    CH vectors keep the default).  Degree 1 is treated as a frame quantity,
-    not field power: it is left out of the floor RMS and degrades no faster
-    than degree 2, so adding it never changes the σ of any degree ≥ 2 entry.
+
+def _od_index(cs, kind="sh", Lmin=SH_LMIN, n_max=None, m_min=0):
+    """
+    The ANGULAR index of every coefficient in a packed block: SH degree n, or
+    CH azimuthal order m.  `od_sigma` grades on it, reading the packing from
+    here rather than rederiving it at the point of use.
     """
     cs = np.asarray(cs, float)
+    kind = str(kind).lower()
 
-    # Infer degree from packing:
-    # [C_n0,S_n0,C_n1,S_n1,...], starting at n=Lmin.
-    degrees = []
-    n = Lmin
-    while len(degrees) < len(cs):
-        degrees.extend([n] * (2 * (n + 1)))
-        n += 1
-    degrees = np.asarray(degrees[: len(cs)])
+    if kind == "sh":
+        # Infer degree from packing:
+        # [C_n0,S_n0,C_n1,S_n1,...], starting at n=Lmin.
+        index = []
+        n = Lmin
+        while len(index) < len(cs):
+            index.extend([n] * (2 * (n + 1)))
+            n += 1
+        return np.asarray(index[: len(cs)])
+    if kind == "ch":
+        if n_max is None or int(n_max) < 1:
+            raise ValueError(
+                "kind='ch' needs n_max, the radial count of the CH packing"
+            )
+        n_max = int(n_max)
+        if len(cs) % (2 * n_max):
+            raise ValueError("CH coefficient count is not a multiple of 2*n_max")
+        # [A_mn,B_mn] with column 2*(m*n_max + (n-1))  ->  m = idx // (2*n_max)
+        return int(m_min) + np.arange(len(cs)) // (2 * n_max)
+    raise ValueError("kind must be 'sh' (degree n) or 'ch' (order m)")
 
-    # Global absolute noise floor, from the field power (degree ≥ 2).
-    field = degrees >= 2
-    scale = float(np.sqrt(np.mean(cs[field] ** 2 if field.any() else cs**2)))
-    floor = floor_frac * scale
 
-    # Baseline coefficient uncertainty.
-    sigma = eps * np.maximum(np.abs(cs), floor)
+def od_sigma(
+    cs, eps, floor_frac=0.1, alpha=None, Lmin=SH_LMIN, kind="sh", n_max=None, m_min=0
+):
+    """
+    Index-dependent OD-like 1σ uncertainties.
 
-    # OD sensitivity degrades with degree, anchored at degree 2.
-    sigma *= np.exp(alpha * np.maximum(degrees - 2, 0))
+    Keeps the original interface, but lets uncertainty grow with the ANGULAR
+    index of each coefficient, to mimic the loss of sensitivity to shorter-
+    wavelength gravity structure.  Which index that is depends on the block:
+
+      kind="sh"  spherical-harmonic DEGREE n, inferred from the packing
+                 [C_n0,S_n0,C_n1,S_n1,...] with the first degree `Lmin`
+                 (SH blocks pass `SH_LMIN`).
+      kind="ch"  cylindrical-harmonic azimuthal ORDER m, inferred from the
+                 packing [A_mn,B_mn] with m outer (m_min..m_min+m_max-1) and
+                 n inner (1..n_max), so `n_max` (the radial count,
+                 `ch_modes[1]`) must be given; `m_min` is the first order the
+                 block carries, exactly as `Lmin` is for SH.  The radial index
+                 n is NOT a wavelength on its own — the order is what the
+                 field sees far from the cylinder — so σ is flat in n within
+                 one order.
+
+    Both blocks are treated the same way: the growth is anchored at the FIRST
+    index actually present in the block — `Lmin` (default `SH_LMIN`, the lowest
+    degree this module solves for) for SH, `m_min` (default 0) for CH — taken
+    from the index array itself rather than from a fixed constant.  No
+    coefficient is skipped: every degree/order carries its own factor, the
+    lowest one included.
+
+    σ does NOT depend on the individual coefficient any more, only on its
+    index: one anchor per block, taken from the power at the first index, then
+    graded.  See OD_RISE_DEC for why.  `floor_frac` survives only as a guard on
+    that anchor, for a block whose first index happens to carry nothing.
+    """
+    cs = np.asarray(cs, float)
+    index = _od_index(cs, kind, Lmin, n_max, m_min)
+
+    # Anchor on the lowest index the block actually carries (SH: Lmin,
+    # CH: m_min), so neither block assumes an index it does not contain.
+    first = int(index.min()) if len(index) else 0
+
+    # ONE anchor for the whole block: the RMS power of the coefficients at the
+    # first index.  Exact zeros are structural rather than measured — the B_0n
+    # sine columns of a CH block are identically zero — so they stay out of the
+    # reference power instead of diluting it.  `floor_frac` guards the case
+    # where that first index happens to carry almost nothing, by holding the
+    # anchor up to a fraction of the block's own RMS; it can no longer bind per
+    # coefficient, because sigma no longer looks at individual coefficients.
+    nz = cs[cs != 0.0]
+    block = float(np.sqrt(np.mean(nz**2))) if nz.size else 0.0
+    ref = cs[index == first]
+    ref = ref[ref != 0.0]
+    anchor = float(np.sqrt(np.mean(ref**2))) if ref.size else 0.0
+    anchor = max(anchor, floor_frac * block)
+
+    # Grade from the first index on.  `alpha=None` runs the shaped rule: sigma
+    # covers OD_RISE_DEC decades across the block along the curve `od_shape`
+    # draws.  An explicit alpha still wins and still means a PURE exponential
+    # at that rate, so the sweeps' alpha = 0 stress test keeps meaning exactly
+    # what it always meant (every index known to the same relative precision).
+    # A block holding a single index has nothing to grade across, so it is flat.
+    span = int(index.max() - first)
+    if alpha is not None:
+        sigma = eps * anchor * np.exp(float(alpha) * (index - first))
+    elif span > 0:
+        # od_shape is drawn once per index, then broadcast to the coefficients
+        # of that index, so every coefficient sharing an index shares a sigma.
+        shape = od_shape(span + 1)
+        sigma = eps * anchor * 10.0 ** (OD_RISE_DEC * shape[index - first])
+    else:
+        sigma = np.full(len(cs), eps * anchor)
 
     return sigma
+
+
+def od_rule_label(a):
+    """
+    How a sweep's noise rule reads in a table header: the rate if one was
+    forced, the rule itself when `od_sigma` calibrated its own.  `None` is a
+    sentinel, so it must never reach the page as the word "None".
+    """
+    if a is None:
+        dec = f"{OD_RISE_DEC:g} decade" + ("" if OD_RISE_DEC == 1 else "s")
+        return (
+            "self-calibrated",
+            f"sigma climbs {dec} across each block, the main experiment's rule",
+        )
+    if a == 0.0:
+        return f"{a}", "flat relative precision, the BEST CASE FOR SH"
+    return f"{a}", f"sigma ~ exp({a}*(n-2))"
 
 
 def _col(sig):
@@ -1344,7 +1531,7 @@ def posterior_rms(C):
 # β_j > 0 an over-dense concentration, β_j < 0 a mass deficit.  Index 0 is the
 # shallow anomaly (the CH target); 1 and 2 sit deep in the two lobes.
 MASCONS = [
-    ("Near-surface Anomaly", np.array([0.00, 0.00, 0.22]), 0.03),
+    ("Near-Surface Anomaly", np.array([0.00, 0.00, 0.22]), 0.03),
     ("+x Lobe Excess", np.array([0.42, 0.00, 0.00]), 0.05),
     ("-x Lobe Deficit", np.array([-0.45, 0.00, 0.00]), -0.04),
 ]
@@ -1354,9 +1541,12 @@ MASCONS = [
 # reproduces its `position_covariance` 1σ (to <1%, grid interpolation), and
 # inside pt2's |β| range (0.015-0.05).  The levels are
 # the maps' contours and the reach tables' thresholds, so figure and table agree.
+# Both maps scale exactly with `eps`, so the levels are tied to it: these are the
+# 1e-3/3e-3/1e-2 and 1e-3/1e-2/1e-1 of the eps=2% runs, carried down by the same
+# factor 20 to eps=0.1%.  Left unscaled they would read 100% in every cell.
 REACH_BETA = abs(MASCONS[0][2])
-REACH_LEVELS_MASS = (1e-3, 3e-3, 1e-2)  # σ_β  [-]
-REACH_LEVELS_POS = (1e-3, 1e-2, 1e-1)  # position 1σ  [LU]
+REACH_LEVELS_MASS = (5e-5, 2e-4, 5e-4)  # σ_β  [-]
+REACH_LEVELS_POS = (5e-5, 5e-4, 5e-3)  # position 1σ  [LU]
 
 
 # ── vocabulary ──────────────────────────────────────────────────────────────
@@ -1941,7 +2131,12 @@ def truth_mc_masses(
         s_sh = od_sigma(
             sh_coefficients_total(b, P, bulk, SH_LMIN, Lmax, Rref), eps, Lmin=SH_LMIN
         )
-        s_ch = od_sigma(ch_coefficients_total(b, P, bulk, obs, pinvPhi), eps)
+        s_ch = od_sigma(
+            ch_coefficients_total(b, P, bulk, obs, pinvPhi),
+            eps,
+            kind="ch",
+            n_max=ch_modes[1],
+        )
         blocks = case_blocks(A_sh, s_sh, A_ch, s_ch)
         for k in CASES:
             # PREDICTED: the mass fit is LINEAR, so its posterior covariance is
@@ -2024,7 +2219,12 @@ def truth_mc_position(
             eps,
             Lmin=SH_LMIN,
         )
-        s_ch = od_sigma(ch_coefficients_total(beta_true, Pi, bulk, obs, pinvPhi), eps)
+        s_ch = od_sigma(
+            ch_coefficients_total(beta_true, Pi, bulk, obs, pinvPhi),
+            eps,
+            kind="ch",
+            n_max=ch_modes[1],
+        )
         v = p0 - cyl.center
         d_ax[i] = np.linalg.norm(v - np.dot(v, axis) * axis)
         dep[i] = zmax - p0[2]
@@ -2413,7 +2613,7 @@ def results_report(res, tex=True):
 
 def run_experiment(
     Lmax_sh=6,
-    eps=0.02,
+    eps=0.001,
     ch_modes=CH_MODES,
     n_cyl_pts=1000,  # field samples in the cylinder -- geometry, NOT an MC size
     detail=False,  # verbose narrative; the tables at the end carry the numbers
@@ -2452,7 +2652,7 @@ def run_experiment(
 ):
     """
     `eps` is the RELATIVE measurement precision applied EQUALLY to both
-    observables, PER COEFFICIENT: σ_i = eps·|coefficient_i| with a noise floor
+    observables, PER COEFFICIENT: σ_i from `od_sigma`: eps at the block anchor, graded up with index
     (see `od_sigma`), on the FULL measured coefficients (bulk included — what an
     OD solution actually delivers).  Same fractional data quality on the global
     Stokes and the local CH coefficients, so the comparison reflects geometry,
@@ -2516,7 +2716,7 @@ def run_experiment(
     y_sh_tot = sh_coefficients_total(beta_true, P, bulk, SH_LMIN, Lmax_sh, Rref)
     y_ch_tot = ch_coefficients_total(beta_true, P, bulk, obs, pinvPhi)
     sig_sh = od_sigma(y_sh_tot, eps, Lmin=SH_LMIN)
-    sig_ch = od_sigma(y_ch_tot, eps)
+    sig_ch = od_sigma(y_ch_tot, eps, kind="ch", n_max=ch_modes[1])
     blocks = case_blocks(A_sh, sig_sh, A_ch, sig_ch)
     if verbose:
         print(
@@ -2529,7 +2729,9 @@ def run_experiment(
             f"  [no Σβ=1 row — the mass budget is structural]"
         )
         print(
-            f"  weights: OD-like σ_i = {eps}·|coeff_i| (floor 10% of RMS)  →  "
+            f"  weights: OD-like σ, {eps:.1%} of the block anchor (SH deg "
+            f"{SH_LMIN}, CH m=0), graded up {OD_RISE_DEC:.0f} decade(s) across "
+            f"the block  →  "
             f"σ_SH ∈ [{sig_sh.min():.2e}, {sig_sh.max():.2e}], "
             f"σ_CH ∈ [{sig_ch.min():.2e}, {sig_ch.max():.2e}]"
         )
@@ -2845,6 +3047,220 @@ def set_axes_true_shape(ax, pts, pad=0.04):
         axis.set_major_locator(mpl.ticker.MaxNLocator(nbins=max(3, round(5 * f))))
 
 
+# ── 3-D rendering: one light for the whole scene ────────────────────────────
+# mplot3d has no renderer.  `Poly3DCollection` is not lit at all, `plot_surface`
+# lights itself from a direction of its own choosing, and a `scatter` marker is a
+# flat disc that is the same size wherever in the scene it sits.  The geometry
+# panels are the one place in these modules where the content IS a shape, so
+# they are shaded by hand: the helpers below run a Blinn-Phong model over
+# normals we compute, off ONE light shared by the body, the cylinders and the
+# anomalies, so the highlights agree and the panel reads as a single scene
+# rather than a pile of primitives.
+#
+# The light sits just above and to the left of mplot3d's default camera
+# (elev 30, azim -60) — near enough to the eye that the lit face of everything
+# turns toward the reader, far enough off it that the terminator still gives the
+# curvature away.  Both vectors are in DATA coordinates, which is honest here
+# because `set_axes_true_shape` gives the box the data's own proportions, so a
+# data direction and a screen direction differ only by the projection.
+LIGHT_DIR = np.array([0.32, -0.78, 0.54])
+LIGHT_DIR = LIGHT_DIR / np.linalg.norm(LIGHT_DIR)
+VIEW_DIR = np.array([0.43, -0.75, 0.50])
+VIEW_DIR = VIEW_DIR / np.linalg.norm(VIEW_DIR)
+
+
+# Screen-right in DATA coordinates, for mplot3d's default camera: the page's
+# horizontal axis is (-sin azim, cos azim, 0), independent of elevation.  A
+# label pushed along it clears the ball it names on whichever side the reader
+# sees as "beside", which leading spaces in the string cannot do — those are
+# measured in points and the balls are measured in LU.
+DEFAULT_AZIM = -60.0
+SCREEN_RIGHT = np.array(
+    [-math.sin(math.radians(DEFAULT_AZIM)), math.cos(math.radians(DEFAULT_AZIM)), 0.0]
+)
+
+# Screen-UP, the third leg of the same camera frame (`VIEW_DIR` x `SCREEN_RIGHT`
+# is perpendicular to both by construction, so the rounding in `VIEW_DIR` costs
+# nothing here).  With both legs in hand, two anomalies can be compared by the
+# ROW of the page they share as well as by how far apart they are across it,
+# which is what `place_labels` needs to decide where a name will fit.
+SCREEN_UP = np.cross(VIEW_DIR, SCREEN_RIGHT)
+SCREEN_UP = SCREEN_UP / np.linalg.norm(SCREEN_UP)
+
+
+def phong_rgba(
+    color,
+    normals,
+    alpha=1.0,
+    ambient=0.40,
+    diffuse=0.60,
+    specular=0.55,
+    shine=26.0,
+    two_sided=False,
+):
+    """
+    One RGBA per normal: Blinn-Phong lighting of `color` under `LIGHT_DIR`.
+
+    ambient + diffuse·(n·l) is the body of the shading and the (n·h)^shine term
+    is the highlight, added in WHITE so a glossy patch goes toward the paper
+    rather than toward a lighter tint of the base — that white catchlight is
+    what makes a disc read as a ball.
+
+    `two_sided` lights a face by |n·l| instead of max(n·l, 0).  Closed meshes do
+    not guarantee an outward winding, and a translucent shell shows its far side
+    anyway, so for the body a face is lit by how it is ORIENTED and not by which
+    way it happens to point; without it half of Eros comes out black.  An opaque
+    sphere wants the one-sided form, whose dark half IS the terminator.
+    """
+    base = np.asarray(mpl.colors.to_rgb(color), float)
+    n = np.asarray(normals, float)
+    n = n / np.maximum(np.linalg.norm(n, axis=-1, keepdims=True), 1e-12)
+    h = LIGHT_DIR + VIEW_DIR
+    h = h / np.linalg.norm(h)
+    d, s = n @ LIGHT_DIR, n @ h
+    d, s = (
+        (np.abs(d), np.abs(s))
+        if two_sided
+        else (np.clip(d, 0, None), np.clip(s, 0, None))
+    )
+    rgb = base * (ambient + diffuse * d)[..., None] + specular * (s**shine)[..., None]
+    out = np.empty(rgb.shape[:-1] + (4,), float)
+    out[..., :3] = np.clip(rgb, 0.0, 1.0)
+    out[..., 3] = alpha
+    return out
+
+
+def _seal_seams(coll, lw=0.35):
+    """
+    Stroke every polygon of `coll` in its OWN face colour.
+
+    A vector PDF draws each quad as a separate filled path with no stroke, and
+    adjacent paths do not quite meet: the viewer leaves a hairline of white page
+    between them, so a shaded ball comes out with a grid of light seams across
+    it and the body picks up a crumpled texture that is not in the mesh.
+    Stroking each polygon with its own colour closes the gap and changes nothing
+    else — the outline and the fill are the same colour by construction.
+
+    Only for OPAQUE surfaces.  Over a translucent one the stroke lands on top of
+    its own fill, and the doubled coverage draws the wireframe back in darker
+    than the hairlines it was meant to hide, so the body and the cylinders skip
+    it and live with the seams (which at their alpha barely show).
+    """
+    # the 2-D base-class getter: `Poly3DCollection.get_facecolor` would force a
+    # projection, and the collection may not be on an axes yet
+    coll.set_edgecolor(mpl.collections.PolyCollection.get_facecolor(coll))
+    coll.set_linewidth(lw)
+
+
+def glossy_sphere(
+    ax,
+    center,
+    radius,
+    color,
+    alpha=1.0,
+    n_th=48,
+    n_ph=25,
+    zorder=4,
+    ambient=0.30,
+    diffuse=0.70,
+    specular=0.85,
+    shine=32.0,
+    **kw,
+):
+    """
+    An anomaly drawn as a lit BALL rather than a flat scatter disc.
+
+    A `scatter` marker is drawn in points, so it keeps its size wherever it is
+    put: two anomalies at opposite ends of a 1.6 LU body come out identical and
+    the panel loses the depth the rest of the drawing works to establish.  A
+    surface of the same radius is drawn in DATA units, so it shrinks with
+    distance, is occluded correctly by whatever is in front of it, and carries a
+    highlight that says which way the light — and therefore the scene — faces.
+    """
+    th = np.linspace(0.0, 2.0 * np.pi, n_th)
+    ph = np.linspace(0.0, np.pi, n_ph)
+    TH, PH = np.meshgrid(th, ph)
+    nrm = np.stack(
+        [np.sin(PH) * np.cos(TH), np.sin(PH) * np.sin(TH), np.cos(PH)], axis=-1
+    )
+    fc = phong_rgba(
+        color,
+        nrm,
+        alpha=alpha,
+        ambient=ambient,
+        diffuse=diffuse,
+        specular=specular,
+        shine=shine,
+        **kw,
+    )
+    surf = ax.plot_surface(
+        center[0] + radius * nrm[..., 0],
+        center[1] + radius * nrm[..., 1],
+        center[2] + radius * nrm[..., 2],
+        facecolors=fc,
+        rstride=1,
+        cstride=1,
+        linewidth=0,
+        antialiased=False,
+        shade=False,
+        zorder=zorder,
+    )
+    if alpha >= 1.0:  # see `_seal_seams`
+        _seal_seams(surf)
+    return surf
+
+
+def shaded_body(
+    ax,
+    V,
+    F,
+    color="#9ecae1",
+    alpha=0.20,
+    lw=0.0,
+    zorder=1,
+    ambient=0.62,
+    diffuse=0.38,
+    specular=0.12,
+    shine=10.0,
+    **kw,
+):
+    """
+    The shape as a LIT translucent shell, added to `ax` and returned.
+
+    The flat-facecolour version of this collection needed its triangle edges
+    stroked to read as a surface at all, which at 8000 faces is a grey haze that
+    competes with everything drawn inside it.  Lighting the faces instead gives
+    the silhouette its curvature back, so the edges can go and the interior —
+    the anomalies, which are the content — comes through a clean shell.
+
+    Deliberately AMBIENT-heavy, unlike the anomalies: a translucent shell shows
+    its own far wall, so every pixel is two faces deep and a strongly directional
+    light turns the mesh into speckle.  A shallow gradient plus the silhouette is
+    all the shape needs here; the volume in this panel is carried by the balls.
+
+    `_seal_seams` is NOT used: at alpha 0.2 a stroke lands on top of its own
+    fill, and 8000 doubled edges draw the wireframe back in darker than before.
+    """
+    tri = V[F]
+    nrm = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    fc = phong_rgba(
+        color,
+        nrm,
+        alpha=alpha,
+        ambient=ambient,
+        diffuse=diffuse,
+        specular=specular,
+        shine=shine,
+        two_sided=True,
+        **kw,
+    )
+    pc = Poly3DCollection(
+        tri, facecolors=fc, edgecolor="none", linewidths=lw, zorder=zorder
+    )
+    ax.add_collection3d(pc)
+    return pc
+
+
 def draw_cylinder(ax, cyl, color=ACCENT, alpha=0.20, n_th=48, lw=0.9, label=None):
     """
     Draw a `Cylinder` AS a cylinder — translucent lateral surface plus the two
@@ -2857,13 +3273,31 @@ def draw_cylinder(ax, cyl, color=ACCENT, alpha=0.20, n_th=48, lw=0.9, label=None
     TH, ZZ = np.meshgrid(th, zz)
     loc = np.stack([cyl.radius * np.cos(TH), cyl.radius * np.sin(TH), ZZ], axis=-1)
     g = loc @ cyl.rot().T + cyl.center
+    # Lit like everything else in the scene (see `phong_rgba`).  A flat-colour
+    # tube is a rectangle with two ellipses stuck on it; the shading down its
+    # length is the only thing that says the near side is near.  Two-sided,
+    # because a translucent tube shows its own far wall, and glossier than the
+    # body: the patch is an instrument, and it should read as one.
+    nrm = np.stack([np.cos(TH), np.sin(TH), np.zeros_like(TH)], axis=-1) @ cyl.rot().T
     ax.plot_surface(
         g[..., 0],
         g[..., 1],
         g[..., 2],
-        color=color,
-        alpha=alpha,
+        facecolors=phong_rgba(
+            color,
+            nrm,
+            alpha=alpha,
+            ambient=0.55,
+            diffuse=0.45,
+            specular=0.30,
+            shine=14.0,
+            two_sided=True,
+        ),
+        rstride=1,
+        cstride=1,
         linewidth=0,
+        edgecolor="none",
+        antialiased=False,
         shade=False,
         zorder=2,
     )
@@ -2883,6 +3317,132 @@ def draw_cylinder(ax, cyl, color=ACCENT, alpha=0.20, n_th=48, lw=0.9, label=None
             zorder=3,
             label=label if z0 == 0.0 else None,
         )
+
+
+# Radius of a drawn anomaly, as a fraction of the body's longest extent.  Big
+# enough that the highlight and the terminator are both visible — below ~0.025
+# a ball is just a dot again — and small enough that six of them do not hide the
+# shape they sit in.  It is what a ball WANTS to be; `mascon_radii` may give it
+# less where the surface is close.
+MASCON_BALL = 0.033
+
+
+def mascon_radii(V, F, P, r_want, fill=0.95):
+    """
+    Per-anomaly DRAWING radius, capped so that no ball breaks through the shell.
+
+    The anomalies are point masses, so the radius drawn for one is a legibility
+    choice, not a measurement — but a ball that pokes out of the surface makes a
+    claim the model does not make, that some of the anomaly is OUTSIDE the body.
+    The shallowest one in the pt1 interior sits 0.037 LU under the skin and was
+    drawn at 0.077, half of it in vacuum.  So each ball is clipped to `fill` of
+    its own burial depth: the deep ones are unaffected and keep the common size,
+    and a shallow one shrinks until it just clears the surface, which reads as
+    what it is — near-surface — rather than as an error.
+
+    `fill` just short of 1 leaves the ball nested under the shell with a sliver
+    of it showing through, which is the intended picture.  Falls back to the
+    nearest VERTEX (an over-estimate of the clearance, by up to one edge length)
+    when trimesh is missing, since then there is no exact distance to be had.
+    """
+    P = np.atleast_2d(np.asarray(P, float))
+    if _HAVE_TRIMESH:
+        d = trimesh.Trimesh(V, np.asarray(F, int), process=False).nearest.on_surface(P)[
+            1
+        ]
+    else:
+        d = np.sqrt(((P[:, None, :] - np.asarray(V, float)[None]) ** 2).sum(-1)).min(1)
+    return np.minimum(np.broadcast_to(np.asarray(r_want, float), d.shape), fill * d)
+
+
+# The axes box `_save3d` writes.  A constant rather than four defaults, because
+# `place_labels` has to measure text against the geometry the FILE will have:
+# mplot3d needs the margin reserved inside the figure (see `_save3d`), and a
+# name measured before that is measured against an axes ~10% too wide.
+SAVE3D_BOX = dict(left=0.02, bottom=0.04, right=0.92, top=0.97)
+
+
+def place_labels(
+    fig, ax, labels, anchors, radii, gap=1.4, avoid=(), margin=5.0, passes=3
+):
+    """
+    Move each anomaly name to the side of its ball where it collides least.
+
+    A name set beside a ball in DATA units cannot know how wide it is: the text
+    is measured in points, the scene in LU, and the two are related only once
+    the axes have their final size on the page.  Guessing that ratio with a
+    constant is what left "West Lobe II" running into the "Deep Interior" ball
+    and "Upper Face" wedged against "East Lobe".  So the names are laid out on
+    the PAGE instead: draw once, read every name's real bounding box and every
+    ball's real radius in pixels, and give each name the side — right of its
+    ball or left of it — on which it overlaps least, counting the balls, the
+    other names and whatever `avoid` adds (the C-tags, in the six-cylinder
+    network).  Several passes, since moving one name changes what its neighbours
+    cost; the sweep order is fixed, so the outcome is deterministic.
+
+    `labels` are Text3D artists already placed at `anchors`, `radii` are the
+    balls' data radii, and `gap` is the ball-to-name clearance in ball radii.
+    `margin` (points) is breathing room: a name that merely GRAZES a ball is
+    already too crowded to read, so each name is tested with its box grown by
+    that much and moves if the grown box touches anything.  Returns the chosen
+    side per label (+1 right, -1 left).
+    """
+    fig.subplots_adjust(**SAVE3D_BOX)  # the geometry `_save3d` will write
+    fig.canvas.draw()
+    rend = fig.canvas.get_renderer()
+
+    a = np.atleast_2d(np.asarray(anchors, float))
+    rad = np.asarray(radii, float)
+
+    def to_pix(q):
+        xs, ys, _ = proj3d.proj_transform(q[:, 0], q[:, 1], q[:, 2], ax.get_proj())
+        return ax.transData.transform(np.column_stack([xs, ys]))
+
+    # the balls, and the label offset, as the reader sees them: pixels
+    c = to_pix(a)
+    span = lambda f: np.abs(
+        to_pix(a + (f * rad)[:, None] * SCREEN_RIGHT)[:, 0] - c[:, 0]
+    )
+    rp, off = span(1.0), span(gap)
+    ext = [t.get_window_extent(rend) for t in labels]
+    w = np.array([b.width for b in ext])
+    h = np.array([b.height for b in ext])
+
+    fixed = [
+        mpl.transforms.Bbox([[x - r, y - r], [x + r, y + r]])
+        for (x, y), r in zip(c, rp)
+    ] + [t.get_window_extent(rend) for t in avoid]
+
+    m = margin * fig.dpi / 72.0
+
+    def box(i, sd, grow=0.0):
+        x0 = c[i, 0] + off[i] if sd > 0 else c[i, 0] - off[i] - w[i]
+        return mpl.transforms.Bbox(
+            [
+                [x0 - grow, c[i, 1] - h[i] / 2 - grow],
+                [x0 + w[i] + grow, c[i, 1] + h[i] / 2 + grow],
+            ]
+        )
+
+    def cost(b, others):
+        out = 0.0
+        for o in others:
+            x = mpl.transforms.Bbox.intersection(b, o)
+            if x is not None:
+                out += x.width * x.height
+        return out
+
+    side = np.ones(len(a))
+    for _ in range(passes):
+        for i in range(len(a)):
+            others = fixed + [box(k, side[k]) for k in range(len(a)) if k != i]
+            cl, cr = cost(box(i, -1, m), others), cost(box(i, 1, m), others)
+            side[i] = -1.0 if cl < cr else 1.0
+
+    for i, t in enumerate(labels):
+        t.set_position_3d(tuple(a[i] + side[i] * gap * rad[i] * SCREEN_RIGHT))
+        t.set_ha("left" if side[i] > 0 else "right")
+    return side
 
 
 def draw_cylinder_2d(ax, cyl, i=0, j=2, color=ACCENT, lw=1.4, ls="-", label=None):
@@ -3074,7 +3634,7 @@ FS_WIDE = (8.4, 5.0)  # equal-aspect panel with a wide footprint (silhouette)
 LPAD3D = 10 * FONT_SCALE
 
 
-def _save3d(fig, outdir, name, right=0.92, left=0.02, bottom=0.04, top=0.97):
+def _save3d(fig, outdir, name, **box):
     """
     Save a 3-D panel WITHOUT the tight crop.
 
@@ -3088,7 +3648,7 @@ def _save3d(fig, outdir, name, right=0.92, left=0.02, bottom=0.04, top=0.97):
     need this: the bar sits outboard of the z label and pulls the tight bbox out
     past it on its own.)
     """
-    fig.subplots_adjust(left=left, bottom=bottom, right=right, top=top)
+    fig.subplots_adjust(**{**SAVE3D_BOX, **box})
     with mpl.rc_context({"savefig.bbox": None}):
         _savefig(fig, os.path.join(outdir, name))
 
@@ -3345,7 +3905,7 @@ def bouguer_map(
             mew=2.0,
             ms=13,
             ls="none",
-            label="CH cylinder",
+            label="CH Cylinder",
         )
     # plate carree: one degree of longitude the same length as one of latitude,
     # so the anomaly footprints keep their true relative shape
@@ -3534,7 +4094,6 @@ def reach_panels(
 
 def make_plots(res, outdir="Images"):
     os.makedirs(outdir, exist_ok=True)
-    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
     V, F, P = res["V"], res["F"], res["P"]
     cyl, names = res["cyl"], res["names"]
@@ -3546,51 +4105,54 @@ def make_plots(res, outdir="Images"):
     fig = plt.figure(figsize=(8.6, 7.2))
     ax = fig.add_subplot(111, projection="3d")
     step = max(1, len(F) // 8000)
-    pc = Poly3DCollection(
-        V[F[::step]], alpha=0.18, facecolor="#9ecae1", edgecolor="0.55", linewidths=0.1
-    )
-    ax.add_collection3d(pc)
+    shaded_body(ax, V, F[::step])
     draw_cylinder(ax, cyl, label="CH Cylinder")
+    # Anomaly radius in DATA units, off the body's own size so it survives a
+    # change of shape file.  It is a DRAWING size, not the physical extent of
+    # the mascons — those are point masses, and their admissible radii are in
+    # the admissibility table — so every ball would be the same, were the
+    # near-surface one not shallow enough to break the skin at that size.
+    r_want = MASCON_BALL * np.ptp(V, axis=0).max()
+    rb = mascon_radii(V, F, P, r_want)
+    tx = []
     for i_a, (nm, p_a) in enumerate(zip(names, P)):
-        mk = "*" if i_a == tgt else "o"
-        sz = 240 if i_a == tgt else 120
         # colour by SIGN so an excess and a deficit are never confused
-        ax.scatter(
-            *p_a,
-            c=COLOR[0] if ft[i_a] > 0 else COLOR[2],
-            s=sz,
-            marker=mk,
-            edgecolor="k",
-            depthshade=False,
-        )
-        # short name (first word); leading spaces nudge it right of the marker,
-        # and the target sits lower so its label clears the cylinder above it
-        dz = -0.05 if i_a == tgt else 0.0
-        ax.text(
-            p_a[0],
-            p_a[1],
-            p_a[2] + dz,
-            f"    {nm.split()[0]}",
-            fontsize=9.5 * FONT_SCALE,
+        glossy_sphere(ax, p_a, rb[i_a], COLOR[0] if ft[i_a] > 0 else COLOR[2], zorder=4)
+        # short name (first word), on a white patch so the shell behind it
+        # cannot grey it out.  It is born ON its ball: `place_labels` moves it
+        # off, once the axes are final and a name's width is knowable.
+        tx.append(
+            ax.text(
+                p_a[0],
+                p_a[1],
+                p_a[2],
+                nm.split()[0],
+                fontsize=9.5 * FONT_SCALE,
+                va="center",
+                bbox=dict(fc="white", ec="none", alpha=0.72, pad=1.4),
+            )
         )
     ax.set_xlabel("x [LU]", labelpad=LPAD3D)
     ax.set_ylabel("y [LU]", labelpad=LPAD3D)
     ax.set_zlabel("z [LU]", labelpad=LPAD3D)
     set_axes_true_shape(ax, np.vstack([V, cylinder_hull(cyl)]))
-    ax.scatter([], [], color=COLOR[0], label=r"Anomaly $\beta_j>0$")
-    ax.scatter([], [], color=COLOR[2], label=r"Anomaly $\beta_j<0$")
-    # the target is drawn as a star rather than a dot; nothing said so.  Same
-    # colour as the marker itself, which is set by the SIGN of its own beta.
+    ax.scatter([], [], color=COLOR[0], s=70, label=r"Anomaly $\beta_j>0$")
+    ax.scatter([], [], color=COLOR[2], s=70, label=r"Anomaly $\beta_j<0$")
+    # The target used to be a star among dots, then the BIG ball — which it can
+    # no longer be, since it is also the shallowest anomaly and `mascon_radii`
+    # has to shrink it to keep it inside the body.  Nothing in the scene singles
+    # it out any more, so the key names it: the balls are named in the panel, and
+    # this row says which of those names is the target.
     ax.scatter(
         [],
         [],
         color=COLOR[0] if ft[tgt] > 0 else COLOR[2],
-        marker="*",
-        s=130,
-        edgecolor="k",
-        label=f"{names[tgt].split()[0]} (CH target)",
+        s=70,
+        label=f"{names[tgt].split()[0]} (CH Target)",
     )
     ax.legend(loc="upper left", fontsize=8 * FONT_SCALE)
+    # last, and after the limits: the names are placed on the page, not in LU
+    place_labels(fig, ax, tx, P, rb)
 
     _save3d(fig, outdir, PREFIX + "fig1_geometry.pdf")
 
@@ -3648,9 +4210,9 @@ def make_plots(res, outdir="Images"):
             lw=0.35,
             alpha=0.8,
             zorder=3,
-            label="Truth draws" if k == 0 else None,
+            label="Truth Draws" if k == 0 else None,
         )
-    ax.plot(range(len(ft)), ft, "k*", ms=17, zorder=6, label="Nominal truth")
+    ax.plot(range(len(ft)), ft, "k*", ms=17, zorder=6, label="Nominal Truth")
     ax.plot(
         range(len(ft)),
         tmc["m_rep_beta"],
@@ -3658,7 +4220,7 @@ def make_plots(res, outdir="Images"):
         color=ACCENT,
         ms=11,
         zorder=5,
-        label="Interior used for the ellipses",
+        label="Interior Used for the Ellipses",
     )
     ax.axhline(0.0, color="k", lw=0.8)
     ax.set_xticks(range(len(names)))
@@ -3976,7 +4538,7 @@ def make_plots(res, outdir="Images"):
     # NOT "true anomaly": that is the orbital element (the angle from
     # periapsis), and this is a mass fraction — the collision would be
     # actively misleading in an asteroid-gravity paper.
-    ax.set_xlabel(r"Anomaly Mass Fraction $\beta_0$ (truth)  [-]")
+    ax.set_xlabel(r"Anomaly Mass Fraction $\beta_0$ (Truth)  [-]")
     ax.set_ylabel(r"MC RMS Error / $\beta_0$  " + (r"[$\%$]" if USE_TEX else "[%]"))
     ax.grid(True, which="both", ls=":", alpha=0.45)
     ax.set_axisbelow(True)
@@ -4014,9 +4576,9 @@ def make_plots(res, outdir="Images"):
         lw=0.4,
         alpha=0.85,
         zorder=5,
-        label="Truth draws",
+        label="Truth Draws",
     )
-    ax.plot(P[tgt][0], P[tgt][2], "k*", ms=17, zorder=7, label="Nominal site")
+    ax.plot(P[tgt][0], P[tgt][2], "k*", ms=17, zorder=7, label="Nominal Site")
     ax.plot(
         cylc[0],
         cylc[2],
@@ -4024,7 +4586,7 @@ def make_plots(res, outdir="Images"):
         color=ACCENT,
         ms=12,
         zorder=6,
-        label="CH cylinder",
+        label="CH Cylinder",
     )
     ax.set_xlabel("x [LU]")
     ax.set_ylabel("z [LU]")
@@ -4209,7 +4771,7 @@ def make_plots(res, outdir="Images"):
                 for sp_ in azi.spines.values():
                     sp_.set_edgecolor(CASE_COLOR[small])
                 azi.set_title(
-                    f"{small} zoom  ({r_ / rz:.0f}" + r"$\times$)",
+                    f"{small} Zoom  ({r_ / rz:.0f}" + r"$\times$)",
                     fontsize=6.5 * FONT_SCALE,
                     color=CASE_COLOR[small],
                     pad=4,  # clears the inset's own top spine
@@ -4294,7 +4856,7 @@ def make_plots(res, outdir="Images"):
         os.path.join(outdir, PREFIX + "fig3b_reach_map_position.pdf"),
     )
 
-    # ---- FIG 4: residual power spectrum, before and after the fit ----------
+    # ---- FIG 4: residual amplitude spectrum, before and after the fit ------
     # Per-degree (SH) / per-radial-mode (CH) RMS of the WHITENED residual,
     #     PRE-fit  = measured − homogeneous model   (= the discrepancy + noise)
     #     POST-fit = measured − (homogeneous + A β̂)
@@ -4354,7 +4916,7 @@ def make_plots(res, outdir="Images"):
             mec="k",
             mew=0.7,
             zorder=5,
-            label=r"PRE-fit: measured $-$ homogeneous",
+            label=r"PRE-Fit: Measured $-$ Homogeneous",
         )
         ax.plot(
             xs,
@@ -4366,7 +4928,7 @@ def make_plots(res, outdir="Images"):
             mec="k",
             mew=0.7,
             zorder=6,
-            label=r"POST-fit: measured $-$ (homog. $+$ A$\hat\beta$)",
+            label=r"POST-Fit: Measured $-$ (Homog. $+$ A$\hat\beta$)",
         )
 
         ax.set_xticks(xs)
@@ -4374,8 +4936,11 @@ def make_plots(res, outdir="Images"):
         # NOT "residual": the pre-fit curve is the discrepancy between the
         # measured field and the homogeneous model, the bands are the noise, and
         # only the post-fit curve is a residual proper.  What the three share is
-        # that each is the RMS of a coefficient group — a power spectrum.
-        ax.set_ylabel("RMS Coefficient Power  [-]")
+        # that each is the RMS of a coefficient group — an AMPLITUDE spectrum,
+        # not a power one: it is the square ROOT of a mean square, so it carries
+        # the coefficients' own units and sits on the same scale as the sigma
+        # bands drawn with it.  Squaring it would give the power.
+        ax.set_ylabel("RMS Coefficient Amplitude  [-]")
         ax.set_yscale("log")
         # the bands reach down to zero, which a log axis cannot show, so the
         # floor still comes from the CURVES
@@ -4425,19 +4990,24 @@ def make_plots(res, outdir="Images"):
 # own, so the sweep reads as an extension of the tables rather than a separate
 # study run under its own conditions.
 #
-#   alpha = 0.10  `od_sigma`'s default: sigma grows as exp(alpha*(n - 2)), a
-#                 stand-in for that loss of short-wavelength sensitivity.  This
-#                 is the rule the main experiment runs on, so the sweep passes
-#                 through TABLE 4 at L = Lmax_sh.
+#   alpha = None  `od_sigma`'s own rule: sigma climbs OD_RISE_DEC decades
+#                 across whatever band the block spans — SH degree n on the SH
+#                 block, azimuthal order m on the CH block — along a shaped,
+#                 jittered curve rather than a straight line in log sigma, a
+#                 stand-in for that loss of short-wavelength sensitivity.  The
+#                 climb is spread over the block rather than set per kind, so a
+#                 sweep that shortens the SH block automatically regrades it
+#                 over the shorter band; see OD_RISE_DEC.  This is the rule
+#                 the main experiment runs on, so the sweep passes through
+#                 TABLE 4 at L = Lmax_sh.
 #
 # The rules are applied to BOTH observables, which is what `eps` means in
-# `run_experiment` ("the same relative precision on both").  CAVEAT: `od_sigma`
-# infers a degree from the SH packing, so on the CH vector it is reading a
-# degree that does not exist — the CH coefficients are indexed by (m, n) radial
-# modes, not by spherical-harmonic degree.  It still penalizes the CH block, but
-# through an ordering that carries no physical meaning.  `ch_alpha` is exposed
-# so that reading can be pinned independently; `ch_alpha=0` is the defensible
-# choice, and the sweep prints which convention is in force.
+# `run_experiment` ("the same relative precision on both").  Each block is
+# indexed by its OWN angular label: SH by degree n, CH by azimuthal order m
+# (`kind="ch"`), which is the CH index that sets the decay away from the
+# cylinder — the radial index n is flat within an order.  `ch_alpha` is still
+# exposed so the CH rule can be pinned independently of the SH sweep, and the
+# sweep prints which convention is in force.
 
 
 def _sh_count(L, Lmin=SH_LMIN):
@@ -4463,7 +5033,7 @@ def _first_reach(L_values, curve, level):
     return None
 
 
-def sweep_lmax_sh(res, L_values=None, alphas=(0.10,), ch_alpha=None, verbose=True):
+def sweep_lmax_sh(res, L_values=None, alphas=(None,), ch_alpha=None, verbose=True):
     """
     Mass-fraction and position 1-sigma for every case and EVERY anomaly as L_SH
     walks up, at each noise rule in `alphas`, with their posterior/prior ratios
@@ -4505,7 +5075,7 @@ def sweep_lmax_sh(res, L_values=None, alphas=(0.10,), ch_alpha=None, verbose=Tru
     out = {}
     for a in alphas:
         a_ch = a if ch_alpha is None else ch_alpha
-        sig_ch = od_sigma(y_ch_tot, eps, alpha=a_ch)
+        sig_ch = od_sigma(y_ch_tot, eps, alpha=a_ch, kind="ch", n_max=ch_modes[1])
         mass = {k: [] for k in CASES}
         mass_prior = {k: [] for k in CASES}
         pos = {k: [] for k in CASES}
@@ -4595,12 +5165,8 @@ def sweep_report(sw):
     )
     for a in sw["alphas"]:
         d = sw["by_alpha"][a]
-        rule = (
-            "flat relative precision, the BEST CASE FOR SH"
-            if a == 0.0
-            else f"sigma ~ exp({a}*(n-2)), the main experiment's rule"
-        )
-        print(f"\n  alpha = {a}  ({rule})")
+        lab, rule = od_rule_label(a)
+        print(f"\n  alpha = {lab}  ({rule})")
         if d["ch_alpha"] != a:
             print(f"    [CH block held at alpha = {d['ch_alpha']}]")
         print(
@@ -4658,7 +5224,7 @@ def sweep_report(sw):
     # show that it stays local however far the global expansion is pushed
     a0 = sw["alphas"][0]
     d0 = sw["by_alpha"][a0]
-    print(f"\n  per-anomaly mass gain (alpha = {a0}), SH / SH+CH")
+    print(f"\n  per-anomaly mass gain (alpha = {od_rule_label(a0)[0]}), SH / SH+CH")
     print(f"  {'anomaly':22s} {f'L={L[0]}':>9} {f'L={L[i_nom]}':>9} {f'L={L[-1]}':>9}")
     for j, nm in enumerate(names):
         g = d0["mass"][SH_ONLY][:, j] / d0["mass"][SH_CH][:, j]
@@ -4830,7 +5396,10 @@ def make_sweep_plots(sw, outdir="Images"):
 if __name__ == "__main__":
     res = run_experiment(
         Lmax_sh=6,  # observable spherical-harmonic degree (tracking limit)
-        eps=0.02,  # relative measurement precision (same on SH & field)
+        eps=0.001,  # relative precision at the ANCHOR index (SH degree 1, CH m=0):
+        #              0.1%, an OD-realistic figure for the lowest degrees of a
+        #              well-tracked small-body solution.  od_sigma grades UP from
+        #              here by OD_RISE_DEC decades across each block.
         ch_modes=CH_MODES,  # (n_m, n_n) CH truncation — see CH_VERSION
         n_cyl_pts=200,
         n_sweep=1000,  # detection-sweep noise draws per grid point

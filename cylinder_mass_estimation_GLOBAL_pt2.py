@@ -560,7 +560,12 @@ def truth_mc_masses_net(
             Lmin=G.SH_LMIN,
         )
         sig_ch = [
-            G.od_sigma(G.ch_coefficients_total(b, P, bulk, q["obs"], q["pinv"]), eps)
+            G.od_sigma(
+                G.ch_coefficients_total(b, P, bulk, q["obs"], q["pinv"]),
+                eps,
+                kind="ch",
+                n_max=ch_modes[1],
+            )
             for q in pre
         ]
         cases = case_blocks(pre, A_sh, sig_sh, sig_ch, n_cyl, c0, c1)
@@ -640,7 +645,10 @@ def truth_mc_position_net(
         )
         sig_ch = [
             G.od_sigma(
-                G.ch_coefficients_total(beta_true, Pi, bulk, q["obs"], q["pinv"]), eps
+                G.ch_coefficients_total(beta_true, Pi, bulk, q["obs"], q["pinv"]),
+                eps,
+                kind="ch",
+                n_max=ch_modes[1],
             )
             for q in pre
         ]
@@ -737,7 +745,7 @@ def reach_position_joint(reach, P, beta, pre, sig_sh, sig_ch, Lmax, Rref):
 
 def run(
     Lmax_sh=6,
-    eps=0.02,
+    eps=0.001,
     ch_modes=CH_MODES,
     n_cyl=6,
     # ── truth-mass draws (experiment A) ────────────────────────────────────
@@ -773,7 +781,8 @@ def run(
             " of M*"
         )
         print(
-            f"  weights: OD-like σ_i = {eps}·|coeff_i| (floor 10% of RMS); the "
+            f"  weights: OD-like σ, {eps:.1%} of the block anchor (SH deg "
+            f"{G.SH_LMIN}, CH m=0), graded up with index; the "
             "Φ-to-field fit is unweighted"
         )
         print("  CH cylinder sites (farthest-point order; all enter the joint fit):")
@@ -862,7 +871,10 @@ def run(
     sig_ch_n = np.concatenate(
         [
             G.od_sigma(
-                G.ch_coefficients_total(beta_true, P, bulk, q["obs"], q["pinv"]), eps
+                G.ch_coefficients_total(beta_true, P, bulk, q["obs"], q["pinv"]),
+                eps,
+                kind="ch",
+                n_max=ch_modes[1],
             )
             for q in pre_ch
         ]
@@ -888,7 +900,10 @@ def run(
     # CH information sums over the patches exactly as the joint fit does.
     sig_ch_nom = [
         G.od_sigma(
-            G.ch_coefficients_total(beta_true, P, bulk, q["obs"], q["pinv"]), eps
+            G.ch_coefficients_total(beta_true, P, bulk, q["obs"], q["pinv"]),
+            eps,
+            kind="ch",
+            n_max=ch_modes[1],
         )
         for q in pre_ch
     ]
@@ -1289,7 +1304,6 @@ def make_plots(res, outdir="Images"):
     so bar-vs-tick is a visible consistency check.
     """
     os.makedirs(outdir, exist_ok=True)
-    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
     V, F, P, net, names = res["V"], res["F"], res["P"], res["net"], res["names"]
     n_cyl, cases, tmm = res["n_cyl"], res["cases"], res["truth_mc"]
@@ -1304,47 +1318,59 @@ def make_plots(res, outdir="Images"):
     fig = plt.figure(figsize=(8.6, 7.2))
     ax = fig.add_subplot(1, 1, 1, projection="3d")
     step = max(1, len(F) // 9000)
-    ax.add_collection3d(
-        Poly3DCollection(
-            V[F[::step]],
-            alpha=0.10,
-            facecolor="#9ecae1",
-            edgecolor="0.6",
-            linewidths=0.1,
-        )
-    )
+    # Lit shell + lit balls, pt1's `shaded_body` / `glossy_sphere`: with six
+    # cylinders pointing six ways this panel is all depth, and flat markers
+    # inside a flat shell give the reader none of it.  Thinner shell than pt1's
+    # (alpha 0.10) because there are twice as many anomalies to see through it.
+    G.shaded_body(ax, V, F[::step], alpha=0.10)
+    ctag = []
     for i_c, c in enumerate(net):
         G.draw_cylinder(ax, c["cyl"])
         t = c["surf"] + 0.42 * c["dir"]  # past the far end, never on the tube
-        ax.text(
-            t[0],
-            t[1],
-            t[2],
-            f"C{i_c} ({_axis_label(c['dir'])})",
-            fontsize=8 * FONT_SCALE,
-            color=ACCENT,
-            ha="center",
-            bbox=dict(fc="white", ec="0.7", alpha=0.8, pad=1.2, lw=0.4),
+        ctag.append(
+            ax.text(
+                t[0],
+                t[1],
+                t[2],
+                f"C{i_c} ({_axis_label(c['dir'])})",
+                fontsize=8 * FONT_SCALE,
+                color=ACCENT,
+                ha="center",
+                bbox=dict(fc="white", ec="0.7", alpha=0.8, pad=1.2, lw=0.4),
+            )
         )
-    for nm, q, b in zip(names, P, ft):
-        ax.scatter(
-            q[0],
-            q[1],
-            q[2],
-            s=90,
-            depthshade=False,
-            edgecolor="k",
-            color=COLOR[0] if b > 0 else COLOR[2],
+    # 0.85 of pt1's ball: six of them, and full size they start to hide the
+    # shape they are meant to sit inside.  A DRAWING size, not a physical one,
+    # and `mascon_radii` still caps it per anomaly so none can break the skin.
+    rb = G.mascon_radii(V, F, P, 0.85 * G.MASCON_BALL * np.ptp(V, axis=0).max())
+    # Six full names in one shell crowd each other, the balls and the C-tags if
+    # they all sit on the same side — `place_labels` (called last, once the axes
+    # are final) puts each one where it fits, the C-tags included via `avoid`.
+    # The white patch does the rest: a name crossing a tube or the shell stays
+    # readable without a halo of its own.
+    tx = []
+    for nm, q, b, r in zip(names, P, ft, rb):
+        G.glossy_sphere(ax, q, r, COLOR[0] if b > 0 else COLOR[2], zorder=4)
+        tx.append(
+            ax.text(
+                q[0],
+                q[1],
+                q[2],
+                nm,
+                fontsize=8 * FONT_SCALE,
+                va="center",
+                bbox=dict(fc="white", ec="none", alpha=0.72, pad=1.4),
+            )
         )
-        ax.text(q[0], q[1], q[2], f"  {nm}", fontsize=8 * FONT_SCALE)
-    ax.plot([], [], color=ACCENT, lw=2, label="CH cylinders")
-    ax.scatter([], [], color=COLOR[0], label=r"Anomaly $\beta_j>0$")
-    ax.scatter([], [], color=COLOR[2], label=r"Anomaly $\beta_j<0$")
+    ax.plot([], [], color=ACCENT, lw=2, label="CH Cylinders")
+    ax.scatter([], [], color=COLOR[0], s=70, label=r"Anomaly $\beta_j>0$")
+    ax.scatter([], [], color=COLOR[2], s=70, label=r"Anomaly $\beta_j<0$")
     ax.set_xlabel("x [LU]", labelpad=G.LPAD3D)
     ax.set_ylabel("y [LU]", labelpad=G.LPAD3D)
     ax.set_zlabel("z [LU]", labelpad=G.LPAD3D)
     G.set_axes_true_shape(ax, np.vstack([V] + [G.cylinder_hull(c["cyl"]) for c in net]))
     ax.legend(fontsize=9 * FONT_SCALE, loc="upper left")
+    G.place_labels(fig, ax, tx, P, rb, avoid=ctag)
 
     G._save3d(fig, outdir, "global_pt2_fig1_geometry.pdf")
 
@@ -1503,7 +1529,7 @@ def make_plots(res, outdir="Images"):
                     ax, arrs[k][:, i], bins, "k", ls=ls_of[k]
                 )
                 ax.get_lines()[-1].set_label(
-                    f"Log-normal Fit, {short[k]}" if i == 0 else "_nolegend_"
+                    f"Log-Normal Fit, {short[k]}" if i == 0 else "_nolegend_"
                 )
                 ex = int(np.floor(np.log10(abs(med))))
                 txt.append(
@@ -1702,7 +1728,7 @@ def make_plots(res, outdir="Images"):
         ax.tick_params(which="minor", length=0)
         ax.set_xlabel(k, fontsize=10 * FONT_SCALE)
         fig.colorbar(
-            im, ax=ax, fraction=0.046, pad=0.04, label="posterior correlation  [-]"
+            im, ax=ax, fraction=0.046, pad=0.04, label="Posterior Correlation  [-]"
         )
         G._savefig(
             fig,
@@ -1768,7 +1794,7 @@ def make_plots(res, outdir="Images"):
             mec="k",
             mew=0.7,
             zorder=5,
-            label=r"PRE-fit: measured $-$ homogeneous",
+            label=r"PRE-Fit: Measured $-$ Homogeneous",
         )
         ax.plot(
             xs,
@@ -1780,13 +1806,13 @@ def make_plots(res, outdir="Images"):
             mec="k",
             mew=0.7,
             zorder=6,
-            label=r"POST-fit: measured $-$ (homog. $+$ A$\hat\beta$)",
+            label=r"POST-Fit: Measured $-$ (Homog. $+$ A$\hat\beta$)",
         )
         ax.set_xticks(xs)
         ax.set_xlabel(xlab)
-        # see the note in `G.make_plots`: this is a power spectrum, and only one
+        # see the note in `G.make_plots`: this is an amplitude spectrum, and one
         # of the three curves on it is a residual
-        ax.set_ylabel("RMS Coefficient Power  [-]")
+        ax.set_ylabel("RMS Coefficient Amplitude  [-]")
         ax.set_yscale("log")
         # the bands reach down to zero, which a log axis cannot show, so the
         # floor still comes from the CURVES
@@ -1903,7 +1929,7 @@ def position_sigma_net(
     return sigma, sigma / POS_PRIOR_SIGMA >= ratio_threshold
 
 
-def sweep_lmax_sh(res, L_values=None, alphas=(0.10,), ch_alpha=None):
+def sweep_lmax_sh(res, L_values=None, alphas=(None,), ch_alpha=None):
     """
     Mass-fraction and position 1-sigma for all four observation models as L_SH
     walks up, at each noise rule in `alphas`.  The position sigma is each
@@ -1948,6 +1974,8 @@ def sweep_lmax_sh(res, L_values=None, alphas=(0.10,), ch_alpha=None):
                 G.ch_coefficients_total(beta_true, P, bulk, q["obs"], q["pinv"]),
                 eps,
                 alpha=a_ch,
+                kind="ch",
+                n_max=ch_modes[1],
             )
             for q in pre
         ]
@@ -2040,12 +2068,8 @@ def sweep_report(sw):
     )
     for a in sw["alphas"]:
         d = sw["by_alpha"][a]
-        rule = (
-            "flat relative precision, the BEST CASE FOR SH"
-            if a == 0.0
-            else f"sigma ~ exp({a}*(n-2)), the main experiment's rule"
-        )
-        print(f"\n  alpha = {a}  ({rule})")
+        lab, rule = G.od_rule_label(a)
+        print(f"\n  alpha = {lab}  ({rule})")
         if d["ch_alpha"] != a:
             print(f"    [CH blocks held at alpha = {d['ch_alpha']}]")
         print(
@@ -2102,7 +2126,7 @@ def sweep_report(sw):
     # the whole point of a NETWORK: how the benefit is distributed over the body
     a0 = sw["alphas"][0]
     d0 = sw["by_alpha"][a0]
-    print(f"\n  per-anomaly mass gain (alpha = {a0}), SH-only / {net_k}")
+    print(f"\n  per-anomaly mass gain (alpha = {G.od_rule_label(a0)[0]}), SH-only / {net_k}")
     print(f"  {'anomaly':22s} {f'L={L[0]}':>9} {f'L={L[i_nom]}':>9} {f'L={L[-1]}':>9}")
     for j, nm in enumerate(names):
         g = d0["mass"][sh_k][:, j] / d0["mass"][net_k][:, j]
@@ -2335,7 +2359,7 @@ def make_sweep_plots(sw, outdir="Images"):
 if __name__ == "__main__":
     res = run(
         Lmax_sh=6,
-        eps=0.02,
+        eps=0.001,  # 0.1% at the anchor index; see GLOBAL.od_sigma
         ch_modes=CH_MODES,
         n_cyl=6,
         # equal counts on purpose: the log-normal KS test in TABLE 2b gains

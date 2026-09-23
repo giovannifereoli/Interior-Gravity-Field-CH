@@ -70,13 +70,14 @@ Pipeline
     (measured equivalence and the N_field choice: note in Section 5b).
 8.  Geometric ground truth: ΔM_true = ρ_bulk ∫∫ Δh dA over the footprint,
     Δσ_true = ρ_bulk Δh — a direct validation of the inversion.
-9.  Assumed OD uncertainty via GLOBAL.od_sigma, by default on the recovered
-    CHANGE ΔCS (route "delta"): a static background cancels in ΔCS, so it
-    must not set the error bar.  Route "epoch" books od_sigma on each epoch's
-    full CS with Σ_ΔCS = Σ_post + Σ_pre − Σ_post,pre − Σ_pre,post; it scales
-    with that background unless rho_epoch ≈ 1 (covariance_report prints the
-    sweep in rho and a point-mass background check).  Either Σ_ΔCS is
-    propagated exactly to ΔM and Δσ.
+9.  Assumed OD uncertainty via GLOBAL.od_sigma (CH mode: the growth factor
+    rides the azimuthal order m), booked on EACH epoch's full CS and
+    kept separate: Σ_ΔCS = diag(σ_pre² + σ_post² − 2k·σ_pre·σ_post), default
+    k = 0 (independent epochs).  od_sigma is relative and anchored per block,
+    so this σ responds to any field common to both epochs even though ΔM does
+    not; covariance_report prints the sweep in k and a point-mass background
+    check that measures the size of that response rather than assuming it.  Σ_ΔCS is propagated
+    exactly to ΔM and Δσ.
 10. Monte Carlo draws ΔCS from N(CS_post-CS_pre, Σ_ΔCS), with fixed geometry,
     and inverts those coefficient realizations.  It checks the propagated
     noise dispersion, not the terrain, truncation or thin-sheet model bias.
@@ -125,6 +126,7 @@ from concurrent.futures import ThreadPoolExecutor
 # Reuse the GLOBAL experiment's assumed per-coefficient OD uncertainty rule.
 # Import before this module's rcParams setup so its plotting defaults win here.
 from cylinder_mass_estimation_GLOBAL import od_sigma
+from cylinder_mass_estimation_GLOBAL import OD_RISE_DEC as G_OD_RISE_DEC
 
 # TODO: How much SH would do here? Is CH needed?
 # TODO: Justify a for od_sigma
@@ -278,7 +280,7 @@ CAL_N_MAX = tuple(range(2, 25))
 # alpha=1 places the Dirichlet boundary at the footprint edge for this ablation.
 BASIS_SWEEP_ALPHAS = tuple(range(1, 51))
 BASIS_SWEEP_M_MAX = tuple(range(1, 21))
-BASIS_SWEEP_N_MAX = tuple(range(1, 21))
+BASIS_SWEEP_N_MAX = tuple(range(1, 25))
 
 # Three common field draws expose sampling sensitivity while avoiding the
 # five-draw cost of the nominal result.  Alpha blocks are independent; use the
@@ -610,18 +612,12 @@ def build_slab_mesh(h, gx, gy) -> trimesh.Trimesh:
     return mesh
 
 
-def locate_tag_site(dh, GX, GY, margin=3.0 / L_REF):
+def locate_tag_site(dh, GX, GY):
     """
     TAG-site centre = |Δh|-weighted centroid of the excavated (Δh < 0)
-    region, excluding a border strip of `margin` [m] (edge noise).
+    region, over the whole common grid (no border strip is excluded).
     """
-    inner = (
-        (GX > GX.min() + margin)
-        & (GX < GX.max() - margin)
-        & (GY > GY.min() + margin)
-        & (GY < GY.max() - margin)
-    )
-    w = np.where(inner, np.clip(-dh, 0.0, None), 0.0)
+    w = np.clip(-dh, 0.0, None)
     cx = (GX * w).sum() / w.sum()
     cy = (GY * w).sum() / w.sum()
     return cx, cy
@@ -1231,45 +1227,57 @@ def terrain_refine_map(
 def coefficient_difference_covariance(
     c_pre,
     c_post,
+    n_max,
     eps=0.02,
     floor_frac=0.1,
-    od_alpha=0.10,
-    rho_epoch=0.0,
-    route="delta",
+    od_alpha=None,
+    k_epoch=1.0,
 ):
     """
-    Assumed diagonal OD covariance of ΔCS = CS_post - CS_pre.  Two routes:
+    Assumed diagonal OD covariance of ΔCS = CS_post - CS_pre.
 
-    route="delta" (default) books od_sigma on the recovered CHANGE itself,
-
-        sigma_delta = od_sigma(c_post - c_pre, eps, floor_frac, alpha=od_alpha),
-
-    i.e. eps is the precision of the differenced solution.  A static background
-    (the rest of Bennu, any mismodelled field common to both epochs) cancels in
-    ΔCS, so it cancels here too: σ_ΔM is a property of the TAG signal alone.
-
-    route="epoch" books it on each epoch's FULL coefficients and subtracts,
+    The two epochs keep their OWN uncertainty.  od_sigma is booked on each
+    epoch's full coefficients,
 
         sigma_pre  = od_sigma(c_pre,  eps, floor_frac, alpha=od_alpha)
         sigma_post = od_sigma(c_post, eps, floor_frac, alpha=od_alpha)
-        var(ΔCS_i) = sigma_pre_i² + sigma_post_i²
-                     - 2*rho_epoch*sigma_pre_i*sigma_post_i
 
-    Because od_sigma is RELATIVE, this σ scales with |CS|, i.e. with the static
-    background, even though ΔM does not.  It is meaningful only for rho_epoch
-    close to 1 (the common-mode error cancelling like the background does), or
-    with an absolute eps taken from a real OD covariance.  covariance_report()
-    prints the rho_epoch sweep and _selftest_covariance() the background check.
+    and the difference of two correlated quantities gives
 
-    Different coefficients are independent in both assumed models.  A supplied
+        var(ΔCS_i) = sigma_pre_i² + sigma_post_i² - 2·k·sigma_pre_i·sigma_post_i
+
+    with k the pre/post error correlation, default k = 1: the two OD solutions
+    share their error, a common-mode term that cancels in the difference
+    exactly as a static background does, leaving var(ΔCS_i) = (sigma_post_i −
+    sigma_pre_i)².  k = 0 is the opposite extreme (independent epochs, the two
+    solutions share nothing), conservative but dominated by the absolute field
+    because od_sigma is relative.
+
+    Because od_sigma is RELATIVE, this σ depends on the static background (the
+    rest of Bennu, any field common to both epochs) even though ΔM does not.
+    That is the price of not assuming the differenced solution is delivered to
+    eps.  Since od_sigma anchors a whole block on its m=0 power rather than on
+    each coefficient, what k=1 books here is the difference of the two epochs'
+    anchors, and a strong common field pushes those anchors together — so the
+    background REDUCES this σ rather than inflating it.  The direction is not
+    worth asserting from theory: covariance_report() prints the k sweep and
+    _selftest_covariance() measures the background factor outright, while
+    checking that ΔM itself stays background-free.
+
+    Different coefficients are independent in this assumed model.  A supplied
     OD covariance can instead go straight into propagate_covariance(), including
     off-diagonal coefficient correlations.
 
-    GLOBAL's od_sigma is reused unchanged: its degree labels are inferred from
-    SH-style array packing (Lmin=2 here).  On CH coefficients this exponential
-    factor is an index-based heuristic, not a function of k_mn.  od_alpha=0
-    gives the relative-precision-plus-floor rule without that factor.
-    od_alpha is distinct from the cylinder's Bessel extension alpha.
+    GLOBAL's od_sigma is called in CH mode (kind="ch", n_max), so the index that
+    drives the growth factor is the AZIMUTHAL ORDER m of each coefficient —
+    the index that sets how fast a mode decays away from the cylinder — and not
+    a spherical-harmonic degree read off SH-style packing.  σ is flat in the
+    radial index n within one order.  od_alpha=None selects od_sigma's shaped
+    rule (σ climbs GLOBAL.OD_RISE_DEC decades from m=0 to m_max along a curve
+    whose slope steepens and is jittered, rather than a straight line in log
+    σ), which is what the study runs on; a float means a pure exponential
+    exp(od_alpha·m), and od_alpha=0 makes σ flat in m.
+    Either way it is distinct from the cylinder's Bessel extension alpha.
     """
     c_pre, c_post = np.asarray(c_pre, float), np.asarray(c_post, float)
     if c_pre.ndim != 1 or c_pre.size == 0 or c_post.shape != c_pre.shape:
@@ -1278,23 +1286,25 @@ def coefficient_difference_covariance(
         )
     if not (np.isfinite(c_pre).all() and np.isfinite(c_post).all()):
         raise ValueError("coefficient vectors must be finite")
-    if not np.isfinite([eps, floor_frac, od_alpha, rho_epoch]).all():
+    if not np.isfinite([eps, floor_frac, k_epoch]).all():
         raise ValueError("OD uncertainty settings must be finite")
-    if eps < 0 or floor_frac < 0 or od_alpha < 0 or not -1 <= rho_epoch <= 1:
-        raise ValueError(
-            "eps, floor_frac and od_alpha must be nonnegative; |rho_epoch| <= 1"
-        )
-    if route not in ("delta", "epoch"):
-        raise ValueError("route must be 'delta' or 'epoch'")
-    sig_pre = od_sigma(c_pre, eps, floor_frac=floor_frac, alpha=od_alpha)
-    sig_post = od_sigma(c_post, eps, floor_frac=floor_frac, alpha=od_alpha)
-    if route == "delta":
-        var_delta = (
-            od_sigma(c_post - c_pre, eps, floor_frac=floor_frac, alpha=od_alpha) ** 2
-        )
-    else:
-        # Equivalent to the subtraction formula, stable when rho_epoch is near 1.
-        var_delta = (sig_post - sig_pre) ** 2 + 2 * (1 - rho_epoch) * sig_pre * sig_post
+    if eps < 0 or floor_frac < 0 or not -1 <= k_epoch <= 1:
+        raise ValueError("eps and floor_frac must be nonnegative; |k_epoch| <= 1")
+    # od_alpha stays None all the way into od_sigma: None is not shorthand for
+    # some equivalent rate that could be resolved here, it selects od_sigma's
+    # SHAPED rule, whose slope varies across the block.  Collapsing it to one
+    # exponential rate first — which an earlier version did, so that the number
+    # could be reported like any other — silently swapped the shaped spectrum
+    # for a straight line.  A float still means a pure exponential in m.
+    if od_alpha is not None:
+        if not np.isfinite(od_alpha) or od_alpha < 0:
+            raise ValueError("od_alpha must be a nonnegative float, or None")
+    kw = dict(floor_frac=floor_frac, alpha=od_alpha, kind="ch", n_max=n_max)
+    sig_pre = od_sigma(c_pre, eps, **kw)
+    sig_post = od_sigma(c_post, eps, **kw)
+    # Written as (post - pre)² + 2(1-k)·pre·post: same value as the plain
+    # subtraction, but with no cancellation when k is close to 1.
+    var_delta = (sig_post - sig_pre) ** 2 + 2 * (1 - k_epoch) * sig_pre * sig_post
     return dict(
         Sigma_cs=np.diag(var_delta),
         sigma_pre=sig_pre,
@@ -1303,8 +1313,7 @@ def coefficient_difference_covariance(
         coeff_rel=eps,
         coeff_floor_frac=floor_frac,
         od_alpha=od_alpha,
-        rho_epoch=rho_epoch,
-        route=route,
+        k_epoch=k_epoch,
     )
 
 
@@ -1487,19 +1496,25 @@ def covariance_report(cov, res, verbose=True):
         f"\n{DASH}\n  COVARIANCE ANALYSIS  (formal 1σ — dispersion, not accuracy)\n{DASH}"
     )
     if "coeff_rel" in cov:
-        if cov.get("route", "epoch") == "delta":
-            where = "od_sigma on the recovered change ΔCS (background-free)"
-        else:
-            where = (
-                f"od_sigma on each epoch's full CS, "
-                f"epoch correlation ρ={cov['rho_epoch']:.3f}"
-            )
-        print(f"    noise model     : {where}")
+        print(
+            f"    noise model     : od_sigma on each epoch's full CS, "
+            f"σ_pre² + σ_post² − 2k·σ_pre·σ_post, k={cov['k_epoch']:.3f}"
+        )
+        a = cov["od_alpha"]
         print(
             f"                      eps={cov['coeff_rel']:.1%}, "
-            f"floor_frac={cov['coeff_floor_frac']:.2f}, od_alpha={cov['od_alpha']:.2f}"
+            f"floor_frac={cov['coeff_floor_frac']:.2f}, "
+            f"od_alpha={'shaped' if a is None else format(a, '.2f')}"
         )
-        print("    CH degree factor: GLOBAL's SH-packing index heuristic (not k_mn)")
+        print(
+            "    CH order factor : "
+            + (
+                f"{G_OD_RISE_DEC:g} decade(s) across m, shaped slope"
+                if a is None
+                else "exp(od_alpha·m)"
+            )
+            + ", azimuthal order m (not k_mn)"
+        )
     else:
         print("    noise model     : supplied covariance of ΔCS")
     print("    propagation     : Σ_ΔCS → fᵀ Σ_ΔCS f and diag(F Σ_ΔCS Fᵀ)")
@@ -1515,32 +1530,25 @@ def covariance_report(cov, res, verbose=True):
             f"      √Σ_ΔM scales linearly with eps: "
             f"{sd/(100*scale):.2e} {_U['mass']} per 1% coefficient precision."
         )
-        # Why the default books eps on ΔCS: the per-epoch rule vs epoch correlation.
+        # How much of √Σ_ΔM is the assumption that the epochs share no error:
+        # the same eps, read across the whole range of the epoch correlation k.
         kw = dict(
-            eps=scale, floor_frac=cov["coeff_floor_frac"], od_alpha=cov["od_alpha"]
+            eps=scale,
+            floor_frac=cov["coeff_floor_frac"],
+            od_alpha=cov["od_alpha"],
         )
         f = cov["f_dM"]
-        s_d = np.sqrt(
-            f
-            @ coefficient_difference_covariance(
-                res["c_pre"], res["c_post"], route="delta", **kw
-            )["Sigma_cs"]
-            @ f
-        )
-        print(
-            f"    per-epoch rule vs ρ (same eps; delta route gives "
-            f"{100*s_d/abs(dM):.2f} % of ΔM):"
-        )
-        for rho in (0.0, 0.9, 0.99, 0.999, 1.0):
+        print(f"    per-epoch rule vs k (same eps; the run uses k={cov['k_epoch']:g}):")
+        for k in (0.0, 0.9, 0.99, 0.999, 1.0):
             s_e = np.sqrt(
                 f
                 @ coefficient_difference_covariance(
-                    res["c_pre"], res["c_post"], route="epoch", rho_epoch=rho, **kw
+                    res["c_pre"], res["c_post"], n_max, k_epoch=k, **kw
                 )["Sigma_cs"]
                 @ f
             )
             print(
-                f"      ρ = {rho:5.3f}: √Σ_ΔM = {s_e:.3e} {_U['mass']} "
+                f"      k = {k:5.3f}: √Σ_ΔM = {s_e:.3e} {_U['mass']} "
                 f"({100*s_e/abs(dM):9.2f} % of ΔM)"
             )
     sm = cov["sigma_map_1sig"]
@@ -1606,13 +1614,13 @@ def covariance_report(cov, res, verbose=True):
             f"f_ΔMᵀ·ΔCS to {st['e_dM']:.1e};\n      equal-variance modes give an "
             f"azimuth-independent σ map to {st['aniso']:.1e} (isotropy test)."
         )
-        if "bg_delta" in st:
+        if "bg_epoch" in st:
             print(
                 f"      static background (Bennu-mass point {st['bg_depth']:.0f} "
                 f"{_U['len']} below the sheet) added to both epochs:\n"
-                f"      ΔM changes by {st['bg_dM']:.1e} (rel.), delta-route √Σ_ΔM by "
-                f"{st['bg_delta']:.1e}, per-epoch (ρ={cov['rho_epoch']:.3f}) √Σ_ΔM "
-                f"×{st['bg_epoch']:.1e}."
+                f"      ΔM changes by {st['bg_dM']:.1e} (rel.), √Σ_ΔM "
+                f"×{st['bg_epoch']:.1e} at the run's k={st['bg_k']:.3f}, "
+                f"×{st['bg_common']:.1e} at k=1."
             )
     print(
         "    NOTE: formal covariance only.  Bandlimit truncation, mass moved past "
@@ -1682,7 +1690,7 @@ def latex_tables(res, cov=None):
         ("Relative mass error", mass_error, "\\%"),
         ("Equivalent $\\Delta V$", res["dM_est"] / res["density"], "m$^3$"),
         ("Mean $\\Delta h$", res["dh_equiv"], "m"),
-        ("Effective $\\Delta\\rho$", res["delta_rho"], "kg\\,m$^{-3}$"),
+        ("Effective $\\Delta\\varrho$", res["delta_rho"], "kg\\,m$^{-3}$"),
         ("Relative signal $\\Delta U/U$", res["sig_ratio"], "--"),
     ]:
         print(rf"  {lab} & ${_tex(v, 3)}$ & {u} \\")
@@ -1691,28 +1699,16 @@ def latex_tables(res, cov=None):
         return
     sd, dM = cov["sigma_dM"], res["dM_est"]
     rel = cov.get("coeff_rel", float("nan"))
-    epoch = cov.get("route") == "epoch"
     rows = [
-        (
-            (
-                "Assumed per-epoch coefficient precision"
-                if epoch
-                else "Assumed precision of the coefficient change"
-            ),
-            100 * rel,
-            "\\%",
-        ),
+        ("Assumed per-epoch coefficient precision", 100 * rel, "\\%"),
         ("Coefficient floor fraction", cov.get("coeff_floor_frac", float("nan")), "--"),
-        ("OD index growth parameter", cov.get("od_alpha", float("nan")), "--"),
+        (
+            "OD order growth parameter",
+            cov.get("od_alpha") if cov.get("od_alpha") is not None else "shaped",
+            "--",
+        ),
+        ("Pre/post coefficient correlation", cov.get("k_epoch", float("nan")), "--"),
     ]
-    if epoch:
-        rows.append(
-            (
-                "Pre/post coefficient correlation",
-                cov.get("rho_epoch", float("nan")),
-                "--",
-            )
-        )
     print("\n  % Table — formal uncertainty of the moved mass (dispersion only)")
     for lab, v, u in rows + [
         ("$\\sqrt{\\Sigma_{\\Delta M}}$", sd, "kg"),
@@ -1729,7 +1725,8 @@ def latex_tables(res, cov=None):
         ("Map-error correlation length", cov["corr_len"], "m"),
         ("Shortest included basis wavelength", cov["lam_min"], "m"),
     ]:
-        print(rf"  {lab} & ${_tex(v, 3)}$ & {u} \\")
+        cell = rf"\text{{{v}}}" if isinstance(v, str) else _tex(v, 3)
+        print(rf"  {lab} & ${cell}$ & {u} \\")
 
     if "mc" in cov:
         mc = cov["mc"]
@@ -1777,9 +1774,9 @@ def latex_tables(res, cov=None):
 def covariance_mc(res, cov, n_mc=200000, n_map=20000, seed=3, batch_size=256):
     """
     Draw ΔCS ~ N(res['d_coeffs'], cov['Sigma_cs']) and invert every draw.
-    With route="delta" this samples the assumed error of the recovered change
-    directly; with route="epoch" it is equivalent to drawing jointly Gaussian
-    pre/post CS and subtracting them (coefficient_difference_covariance).
+    This is equivalent to drawing jointly Gaussian pre/post CS, each with its
+    own od_sigma and correlation k, and subtracting them
+    (coefficient_difference_covariance).
     No field samples, field noise or coefficient refits are used; scatter of
     the field-point geometry is a separate effect (Section 5b).
 
@@ -1893,12 +1890,12 @@ def plot_covariance_mc(res, cov, outdir="Images", n_mc=200000, n_map=20000, mc=N
         (
             axs4[0],
             an,
-            rf"Analytic $\sigma_{{\Delta\sigma}}$  [{_UL['sd']}]",
+            rf"Analytic $\sigma_{{\Delta\varrho}}$  [{_UL['sd']}]",
         ),
         (
             axs4[1],
             nu,
-            rf"Monte-Carlo $\sigma_{{\Delta\sigma}}$  [{_UL['sd']}]",
+            rf"Monte-Carlo $\sigma_{{\Delta\varrho}}$  [{_UL['sd']}]",
         ),
     ):
         # one-signed uncertainty map: GLOBAL's viridis_r, no zero contour
@@ -1909,9 +1906,9 @@ def plot_covariance_mc(res, cov, outdir="Images", n_mc=200000, n_map=20000, mc=N
     ve = 400.0 * tol  # +-4 sigma of the Monte-Carlo scatter itself, in percent
     cr = _map(axs4[2], Xw, Yw, _wrap(rel), "RdBu_r", -ve, ve, bold=0.0)
     fig4.colorbar(cr, ax=axs4[2], **CBAR).set_label(
-        r"$(\sigma_{\Delta\sigma,\mathrm{MC}}"
-        r"-\sigma_{\Delta\sigma,\mathrm{Analytic}})"
-        r"/\sigma_{\Delta\sigma,\mathrm{Analytic}}$  " + (r"[\%]" if USE_TEX else "[%]")
+        r"$(\sigma_{\Delta\varrho,\mathrm{MC}}"
+        r"-\sigma_{\Delta\varrho,\mathrm{Analytic}})"
+        r"/\sigma_{\Delta\varrho,\mathrm{Analytic}}$  " + (r"[\%]" if USE_TEX else "[%]")
     )
     _decor(axs4[2])
     _save(fig4, outdir, "fig4_covariance_map.pdf")
@@ -1952,7 +1949,7 @@ def plot_covariance_mc(res, cov, outdir="Images", n_mc=200000, n_map=20000, mc=N
                 label=r"Analytic $\pm\sigma_{\Delta M}$" if k == 1 else None,
             )
     else:
-        ax.axvline(0, color="k", label="Zero assumed mass variance")
+        ax.axvline(0, color="k", label="Zero Assumed Mass Variance")
     ax.set_xlabel(
         rf"$\Delta M_{{\mathrm{{draw}}}}-\Delta M_{{\mathrm{{nominal}}}}$  [{_UL['mass']}]"
     )
@@ -1972,7 +1969,11 @@ def _selftest_covariance(res, cov):
          recovered feature is not.
       3. A static background common to both epochs (a Bennu-mass point 245 m
          below the sheet, fitted with the same design matrix and cutoff) leaves
-         ΔM and the delta-route σ_ΔM unchanged; the per-epoch σ_ΔM inflates.
+         ΔM unchanged, because it cancels in ΔCS.  The per-epoch σ_ΔM does not:
+         od_sigma is relative, so the background moves it.  The factor is
+         reported, not asserted — with the block-anchored rule a common field
+         pulls the two epochs' anchors together and the factor comes out below
+         one, the opposite of what a per-coefficient relative rule would give.
     """
     dc = res["d_coeffs"]
     m1 = (cov["F_sigma"] @ dc).reshape(res["RHO"].shape)
@@ -2004,26 +2005,27 @@ def _selftest_covariance(res, cov):
         eps=cov["coeff_rel"],
         floor_frac=cov["coeff_floor_frac"],
         od_alpha=cov["od_alpha"],
-        rho_epoch=cov["rho_epoch"],
     )
     f = cov["f_dM"]
 
-    def sd(cp, cq, route):
-        S = coefficient_difference_covariance(cp, cq, route=route, **kw)["Sigma_cs"]
+    def sd(cp, cq, k):
+        S = coefficient_difference_covariance(
+            cp, cq, res["n_max"], k_epoch=k, **kw
+        )["Sigma_cs"]
         return np.sqrt(f @ S @ f)
 
     cp, cq = res["c_pre"], res["c_post"]
     bg_dM = abs(f @ ((cq + c_bg) - (cp + c_bg)) - f @ (cq - cp)) / abs(f @ (cq - cp))
-    bg_delta = abs(sd(cp + c_bg, cq + c_bg, "delta") / sd(cp, cq, "delta") - 1)
     # round-off only: the background coefficients are ~1e6× the TAG change
-    assert (
-        bg_dM < 1e-6 and bg_delta < 1e-6
-    ), f"background leaked into ΔM ({bg_dM:.1e}) or delta σ ({bg_delta:.1e})"
-    bg_epoch = sd(cp + c_bg, cq + c_bg, "epoch") / sd(cp, cq, "epoch")
+    assert bg_dM < 1e-6, f"background leaked into ΔM ({bg_dM:.1e})"
+    k_run = cov["k_epoch"]
+    bg_epoch = sd(cp + c_bg, cq + c_bg, k_run) / sd(cp, cq, k_run)
+    bg_common = sd(cp + c_bg, cq + c_bg, 1.0) / sd(cp, cq, 1.0)
     out.update(
         bg_dM=bg_dM,
-        bg_delta=bg_delta,
         bg_epoch=bg_epoch,
+        bg_common=bg_common,
+        bg_k=k_run,
         bg_depth=depth * TO_SI["length"],
     )
     return out
@@ -2053,11 +2055,10 @@ def run_bennu_tag(
     k_target_R: float = KR_TARGET_DEFAULT,  # bandlimit target for n_max="auto"
     # covariance analysis (Section 4b)
     do_covariance: bool = True,
-    cov_route: str = "delta",  # od_sigma on ΔCS ("delta") or per epoch ("epoch")
-    coeff_rel: float = 0.02,  # od_sigma eps (on ΔCS, or on each epoch's CS)
+    coeff_rel: float = 0.004,  # od_sigma eps on each epoch's CS
     coeff_floor_frac: float = 0.1,  # floor relative to the CS RMS it is applied to
-    od_alpha: float = 0.10,  # GLOBAL's index-based OD growth; distinct from alpha
-    rho_epoch: float = 0.0,  # pre/post error correlation (route="epoch" only)
+    od_alpha: float | None = None,  # None: od_sigma's shaped rule; not Bessel alpha
+    k_epoch: float = 1.0,  # pre/post coefficient error correlation
     refine_map: bool = True,  # terrain refinement of Δσ (Section 4a)
     verbose: bool = True,
 ):
@@ -2068,8 +2069,9 @@ def run_bennu_tag(
     Fit PRE/POST coefficients once, on the same N_field points for both
     epochs; field-sampling scatter is reduced by raising N_field, not by
     averaging repeated fits (Section 5b measures both).
-    Separately, assign OD uncertainty with GLOBAL's od_sigma (on ΔCS by default,
-    see coefficient_difference_covariance) and propagate Σ_ΔCS to mass and
+    Separately, assign OD uncertainty with GLOBAL's od_sigma on EACH epoch's
+    coefficients and combine them as σ_pre² + σ_post² − 2k·σ_pre·σ_post (see
+    coefficient_difference_covariance), then propagate Σ_ΔCS to mass and
     density.  Call covariance_mc(res, res['cov']) to draw coefficient
     realizations; field points and gravity are not redrawn in that Monte Carlo.
     Neither number includes terrain or thin-sheet model bias.
@@ -2321,17 +2323,17 @@ def run_bennu_tag(
 
     # ── 6b. COVARIANCE PROPAGATION (Section 4b) ────────────────────────
     # Assume the fitted CS and their OD uncertainties are the available data.
-    # Form Σ_ΔCS (route: see coefficient_difference_covariance), then propagate.
+    # Form Σ_ΔCS (see coefficient_difference_covariance), then propagate.
     cov = None
     if do_covariance:
         od = coefficient_difference_covariance(
             c_pre,
             c_post,
+            n_max,
             eps=coeff_rel,
             floor_frac=coeff_floor_frac,
             od_alpha=od_alpha,
-            rho_epoch=rho_epoch,
-            route=cov_route,
+            k_epoch=k_epoch,
         )
         cov = propagate_covariance(
             od["Sigma_cs"],
@@ -2644,7 +2646,7 @@ def calibration_report(sw):
         f"(all draws, clearances, cutoffs)"
     )
     print(
-        f"    OD σ_ΔM at c* (delta route): median "
+        f"    OD σ_ΔM at c* (per-epoch rule): median "
         f"{100*np.median(sw['sig_delta'][..., i_s]):.2f} % of ΔM"
     )
 
@@ -3547,13 +3549,13 @@ def plot_results(res, outdir=None):
     lo, hi = float(rms_m.min()), float(rms_m.max())
     # The ASSUMED OD uncertainty of the same coefficients, in the SAME units,
     # drawn the way GLOBAL's fig 4 draws it: as the 1σ/2σ/3σ NOISE FLOOR the
-    # signal stands on.  cov["sigma_delta"] is what od_sigma books on ΔCS
+    # signal stands on.  cov["sigma_delta"] combines the two epochs' od_sigma
     # (Section 4b), reduced over n exactly as the signal is.  The height of the
     # curve above the shading is the per-order signal-to-noise the mass
     # estimate runs on, now readable in sigmas rather than as a gap between two
-    # lines; the ramp is not flat because od_sigma is RELATIVE (eps|ΔCS| with a
-    # floor, times its index-based growth factor), so it inherits part of the
-    # signal's own shape.
+    # lines; the ramp is not flat because od_sigma anchors on the epoch's own
+    # m=0 power (eps|CS|, floor-guarded) before grading in m, so its overall
+    # level follows the epochs while its SHAPE in m does not.
     cov = res.get("cov")
     if cov is not None:
         sd = np.asarray(cov["sigma_delta"], float)
@@ -3600,7 +3602,7 @@ def plot_results(res, outdir=None):
     # that script runs non-dimensional (G = 1, M* = 1); this one runs in SI, so
     # A_mn and B_mn carry the units of a potential and the axis says so.  Under
     # MODE = "ND" the unit string here becomes "-" and the two labels coincide.
-    ax.set_ylabel(rf"RMS Coefficient Power  [{_UL['pot']}]")
+    ax.set_ylabel(rf"RMS Coefficient Amplitude  [{_UL['pot']}]")
     # y only: the shading spans x continuously, and vertical grid lines drawn
     # over it read as structure in the noise (GLOBAL's fig 4 does the same)
     ax.grid(True, axis="y", which="both", ls=":", alpha=0.45)
@@ -3672,8 +3674,8 @@ def plot_results(res, outdir=None):
         for ax, (fld, lab) in zip(
             axs[:2],
             [
-                (mp, rf"Estimated $\widehat{{\Delta\sigma}}$, {stage}  [{_UL['sd']}]"),
-                (st, rf"True $\Delta\sigma$  [{_UL['sd']}]"),
+                (mp, rf"Estimated $\widehat{{\Delta\varrho}}$, {stage}  [{_UL['sd']}]"),
+                (st, rf"True $\Delta\varrho$  [{_UL['sd']}]"),
             ],
         ):
             c = _map(ax, Xw, Yw, _wrap(fld), "RdBu_r", -vmax, vmax)
@@ -3681,7 +3683,7 @@ def plot_results(res, outdir=None):
             fig.colorbar(c, ax=ax, **CBAR).set_label(lab)
         ce = _map(axs[2], Xw, Yw, _wrap(err), "RdBu_r", -verr, verr)
         fig.colorbar(ce, ax=axs[2], **CBAR).set_label(
-            r"$(\widehat{\Delta\sigma}-\Delta\sigma)/\max|\Delta\sigma|$  " + _epct
+            r"$(\widehat{\Delta\varrho}-\Delta\varrho)/\max|\Delta\varrho|$  " + _epct
         )
         _decor3(axs[2])
         # (the old Summary text panel was a fourth cell of this figure; every
@@ -3754,7 +3756,7 @@ def plot_refinement(res, outdir=None):
     ax.plot(p[-1], rmse[-1], marker="o", ms=8, color=CH_VIOLET, zorder=5)
     ax.legend(frameon=False, loc="upper right", fontsize=10 * FONT_SCALE)
     ax.set_xlabel("Iteration [-]")
-    ax.set_ylabel(rf"Map RMSE  [{pct} of $\max|\Delta\sigma|$]")
+    ax.set_ylabel(rf"Map RMSE  [{pct} of $\max|\Delta\varrho|$]")
     ax.set_xlim(p[0], p[-1])
     ax.set_ylim(0.0, rmse[0] * 1.22)
     ax.set_xticks(p[:: max(1, int(len(p) // 9))])
@@ -3791,6 +3793,10 @@ def plot_basis_sweep(sw, outdir=None, error_limits=(-100.0, 100.0), band=5.0):
         raise ValueError("error_limits must be finite and bracket 0")
     ms, ns, alphas = sw["m_max_values"], sw["n_max_values"], sw["alphas"]
     ref = sw["reference"]
+    # The star marks the calibrated basis, so it needs all three of its
+    # coordinates on the sweep grid.  The alpha plane the right panel shows
+    # needs only the nearest swept alpha, so `ia` is NOT gated on that test:
+    # an off-grid m_max or n_max used to silently fall back to alphas[0].
     has_reference = np.any(np.isclose(alphas, ref[0])) and ref[1] in ms and ref[2] in ns
     error = sw.get("error_percent")
     if error is None:
@@ -3804,7 +3810,7 @@ def plot_basis_sweep(sw, outdir=None, error_limits=(-100.0, 100.0), band=5.0):
     # `basis_sweep`, not drawn: neither a third panel nor a header line said
     # anything the one number does not.
     collapsed = np.median(error, axis=1)
-    ia = int(np.argmin(np.abs(alphas - ref[0]))) if has_reference else 0
+    ia = int(np.argmin(np.abs(alphas - ref[0])))
 
     def ticks(values):
         step = max(1, int(np.ceil(len(values) / 6)))
@@ -3949,7 +3955,7 @@ def plot_basis_sweep(sw, outdir=None, error_limits=(-100.0, 100.0), band=5.0):
                 mew=0.8,
                 ms=14,
                 ls="none",
-                label="Main-run Basis",
+                label="Main-Run Basis",
             ),
         )
     # Below the colorbar: the panel titles reach the top edge.
@@ -4036,6 +4042,10 @@ def plot_basis_sweep_map(sw, outdir=None, rmse_limits=None, bands=(15.0,)):
 
     ms, ns, alphas = sw["m_max_values"], sw["n_max_values"], sw["alphas"]
     ref = sw["reference"]
+    # The star marks the calibrated basis, so it needs all three of its
+    # coordinates on the sweep grid.  The alpha plane the right panel shows
+    # needs only the nearest swept alpha, so `ia` is NOT gated on that test:
+    # an off-grid m_max or n_max used to silently fall back to alphas[0].
     has_reference = np.any(np.isclose(alphas, ref[0])) and ref[1] in ms and ref[2] in ns
     pct = r"\%" if USE_TEX else "%"
 
@@ -4043,7 +4053,7 @@ def plot_basis_sweep_map(sw, outdir=None, rmse_limits=None, bands=(15.0,)):
     # (alpha, n_max) column.  It is the same population of cells, so the
     # degeneracy `basis_sweep` reports for the mass carries over.
     collapsed = np.median(rmse, axis=1)
-    ia = int(np.argmin(np.abs(alphas - ref[0]))) if has_reference else 0
+    ia = int(np.argmin(np.abs(alphas - ref[0])))
 
     finite = rmse[np.isfinite(rmse)]
     if rmse_limits is None:
@@ -4174,8 +4184,8 @@ def plot_basis_sweep_map(sw, outdir=None, rmse_limits=None, bands=(15.0,)):
         aspect=45,
     )
     cb.set_label(
-        r"RMS$(\widehat{\Delta\sigma}-\Delta\sigma_{\rm true})\,/\,"
-        r"\max|\Delta\sigma_{\rm true}|$  " f"[{pct}]",
+        r"RMS$(\widehat{\Delta\varrho}-\Delta\varrho_{\rm true})\,/\,"
+        r"\max|\Delta\varrho_{\rm true}|$  " f"[{pct}]",
         fontsize=10 * FONT_SCALE,
     )
     # Plain numbers on a sub-decade log bar: 10^1/10^2 alone would label almost
@@ -4197,7 +4207,7 @@ def plot_basis_sweep_map(sw, outdir=None, rmse_limits=None, bands=(15.0,)):
                 mew=0.8,
                 ms=14,
                 ls="none",
-                label="Main-run Basis",
+                label="Main-Run Basis",
             )
         )
     for i, lev in enumerate(levels):
@@ -4210,7 +4220,7 @@ def plot_basis_sweep_map(sw, outdir=None, rmse_limits=None, bands=(15.0,)):
                 lw=1.0,
                 label=(
                     rf"Median RMSE $={lev:g}$ {pct}"
-                    + (" (no skill)" if lev == 100.0 else "")
+                    + (" (No Skill)" if lev == 100.0 else "")
                 ),
             )
         )
@@ -4238,10 +4248,10 @@ def plot_basis_sweep_map(sw, outdir=None, rmse_limits=None, bands=(15.0,)):
 
 
 # Everything the calibration depends on besides `setup` and the grid: the
-# sheet-plane rule and the selection rule.  Bump this string when either
-# changes; every cached calibration is then recomputed.
+# site-location rule, the sheet-plane rule and the selection rule.  Bump this
+# string when any of them changes; every cached calibration is then recomputed.
 CALIBRATION_RULES_VERSION = (
-    "signed-centroid-plane/cv-instability-fewest-coeffs-bandlimit/v3"
+    "fullgrid-site/signed-centroid-plane/cv-instability-fewest-coeffs-bandlimit/v4"
 )
 
 
@@ -4364,10 +4374,10 @@ if __name__ == "__main__":
     result = run_bennu_tag(
         **setup,
         cond=selected_cond,
-        cov_route="delta",  # OD σ on the recovered change ΔCS, not per epoch
-        coeff_rel=0.02,  # od_sigma eps on ΔCS
+        coeff_rel=0.004,  # od_sigma eps on each epoch's CS
         coeff_floor_frac=0.1,
-        od_alpha=0.10,  # index-based growth from GLOBAL.od_sigma; 0 disables it
+        od_alpha=None,  # None: od_sigma's shaped rule; 0 disables growth in m
+        k_epoch=1.0,  # pre/post errors fully correlated: the common field cancels
         verbose=True,
     )
 
