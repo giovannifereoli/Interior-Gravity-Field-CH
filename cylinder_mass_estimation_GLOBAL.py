@@ -2542,9 +2542,18 @@ def _gain(g):
     A ratio as a factor.  `%.1f` turns every loss into "0.0×" and throws away
     exactly the cases worth seeing — a model 30× WORSE reads the same as one
     300× worse — so anything below 1 keeps two significant figures instead.
+    Above 1000 the decimal goes too: "16460.7×" is eight columns and overran
+    the sweep's seven-wide gain field, printing "7.31e-041207.1×" with the
+    value and its gain fused.  Nothing is lost — a four-digit gain is a
+    statement that the weaker model saw nothing, not a precise measurement —
+    and every output of this function is now at most six columns.
     Unpadded: the caller right-aligns it, since "×" is one column wide and a
     width baked in here would be one too many everywhere it is used.
     """
+    if g >= 1e5:
+        return f"{g:.0e}×"
+    if g >= 1e3:
+        return f"{g:.0f}×"
     return f"{g:.1f}×" if g >= 1.0 else f"{g:.2g}×"
 
 
