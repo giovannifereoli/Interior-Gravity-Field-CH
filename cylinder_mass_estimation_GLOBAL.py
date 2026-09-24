@@ -100,7 +100,7 @@ Constant-density bulk, unit mass:
 """
 
 from __future__ import annotations
-import os, math, io, time, warnings
+import os, math, io, time, warnings, unicodedata
 from dataclasses import dataclass
 import numpy as np
 import matplotlib as mpl
@@ -1504,14 +1504,21 @@ PRIOR_SIGMA = 1.0
 # The position twin of PRIOR_SIGMA — a weak Gaussian seed on every coordinate,
 # about the body's half-length — and the R at or above which a sigma counts as
 # prior-dominated.  Same values as pt2, so the two sweeps flag on one rule.
-# Only the sweep seeds the position covariance (see `position_covariance`).
+# Only the sweep seeds the position covariance (`position_covariance_joint`).
 POS_PRIOR_SIGMA = 1.0  # LU
+# The same prior as a 3-D DISTANCE.  Every position sigma this study REPORTS is
+# a norm (`posterior_norm`), so R = sigma / prior has to divide like by like —
+# against the per-coordinate prior it would read sqrt(3) too small and flag
+# prior-dominated cases as informative ones.
+POS_PRIOR_NORM = math.sqrt(3.0) * POS_PRIOR_SIGMA
 PRIOR_RATIO_THRESHOLD = 0.95  # flag less than or equal to 5% sigma reduction
 
 
 def posterior_rms(C):
     """
-    One isotropic 1σ from a covariance: sqrt(trace(C)/n).
+    One isotropic 1σ from a covariance: sqrt(trace(C)/n).  REFERENCE ONLY —
+    nothing calls it, because every position this study reports is a norm; it
+    stays to name what `posterior_norm` is the sqrt(n) multiple OF.
 
     The scalar summary for a VECTOR parameter — the position, where three
     components share one physical meaning and a single number is what gets
@@ -1519,6 +1526,18 @@ def posterior_rms(C):
     are separate physical quantities and are reported one by one.
     """
     return float(np.sqrt(np.trace(C) / len(C)))
+
+
+def posterior_norm(C):
+    """
+    The same covariance as one 3-D DISTANCE: sqrt(trace(C)) = sqrt(n)·`posterior_rms`.
+
+    `posterior_rms` is per coordinate; the Monte Carlo measures |p̂ − p|, a
+    norm over all three.  Tables that put the two side by side must quote the
+    norm, or the analytic column sits a factor sqrt(3) low for no physical
+    reason.
+    """
+    return float(np.sqrt(np.trace(C)))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1652,7 +1671,10 @@ def mass_fraction_covariance(blocks, prior_sigma=1.0):
     """
     Posterior covariance of the MASS FRACTIONS beta, C = (A^T W A)^-1.
 
-    The twin of `position_covariance`, and the reason both exist as named
+    The twin of `position_covariance` — which nothing calls any more, since
+    every position this study reports comes from the JOINT fit; it stays to
+    name the optimistic experiment the joint one is measured against.
+    The reason both exist as named
     functions: the mass problem is LINEAR, so this C is exact — no expansion
     point, no derivatives — while the position problem is nonlinear and its
     covariance is only a linearization about the truth.  Same (A, sigma) blocks
@@ -1708,7 +1730,7 @@ def position_covariance(
     Jch_w = Jch / _col(sig_ch)
     Fi_ch = Jch_w.T @ Jch_w
 
-    # covariances, not summaries: the caller reduces them with `posterior_rms`,
+    # covariances, not summaries: the caller reduces them with `posterior_norm`,
     # exactly as it reduces `mass_fraction_covariance` with `posterior_sigma`.
     # No prior by default — unlike the mass Fisher, a 3x3 built from a full-rank
     # Jacobian inverts on its own, and CH-only is full rank for any target the
@@ -1721,6 +1743,86 @@ def position_covariance(
         CH_ONLY: np.linalg.inv(Fi_ch + F0),
         SH_CH: np.linalg.inv(Fi_sh + Fi_ch + F0),
     }
+
+
+def position_covariance_joint(
+    P,
+    obs,
+    cyl,
+    ch_modes,
+    sig_sh,
+    sig_ch,
+    Lmax,
+    Rref,
+    pinvPhi,
+    masses=None,
+    prior_sigma=None,
+):
+    """
+    Linearized covariance of EVERY anomaly position solved TOGETHER: one
+    (3·n_a, 3·n_a) matrix per case, whose j-th diagonal block is anomaly j's
+    marginal.
+
+    `position_covariance` frees one anomaly and hands the fit the others as
+    KNOWN, which is a different — and optimistic — experiment: what a position
+    costs when its neighbours are given is not what it costs when they are not.
+    The mass side has always solved jointly (`mass_fraction_covariance` inverts
+    one AᵀWA for all the β at once), so this is the position side's twin, and
+    it is what fig 3 needs now that those fits free all the points at once.
+    The marginals it returns are LARGER than the one-at-a-time ones by exactly
+    the anomaly-to-anomaly correlation — which is the thing the CH block is
+    supposed to break, so the comparison is the point, not a nuisance.
+    """
+    _, _, f_nom = mascon_arrays()
+    m = f_nom if masses is None else np.asarray(masses, float)
+    P = np.asarray(P, float)
+    n_a = len(P)
+    eps = 1e-4
+
+    def jac_block(func, dim, j):
+        """d(observable)/d(p_j), central-differenced, scaled by anomaly j's mass."""
+        J = np.empty((dim, 3))
+        for k in range(3):
+            d = np.zeros(3)
+            d[k] = eps
+            J[:, k] = m[j] * (func(P[j] + d) - func(P[j] - d)) / (2 * eps)
+        return J
+
+    n_sh = A_stokes(P, SH_LMIN, Lmax, Rref).shape[0]
+    Jsh = np.hstack(
+        [
+            jac_block(lambda p: sh_stokes_of_point(p, SH_LMIN, Lmax, Rref), n_sh, j)
+            for j in range(n_a)
+        ]
+    )
+    Jch = np.hstack(
+        [
+            pinvPhi @ jac_block(lambda p: point_mass_field(p, obs), 4 * len(obs), j)
+            for j in range(n_a)
+        ]
+    )
+    Jsh_w = Jsh / _col(sig_sh)
+    Fi_sh = Jsh_w.T @ Jsh_w
+    Jch_w = Jch / _col(sig_ch)
+    Fi_ch = Jch_w.T @ Jch_w
+
+    # A JOINT Fisher can be singular where each 3x3 alone is not: two anomalies
+    # a model cannot tell apart leave a null direction (move one, move the other
+    # back).  That is a real statement about the model, so it is not regularized
+    # away — `pinv` only keeps the run alive long enough to report it.
+    F0 = (
+        np.zeros((3 * n_a, 3 * n_a))
+        if prior_sigma is None
+        else np.eye(3 * n_a) / prior_sigma**2
+    )
+
+    def inv(Fi):
+        try:
+            return np.linalg.inv(Fi + F0)
+        except np.linalg.LinAlgError:
+            return np.linalg.pinv(Fi + F0)
+
+    return {SH_ONLY: inv(Fi_sh), CH_ONLY: inv(Fi_ch), SH_CH: inv(Fi_sh + Fi_ch)}
 
 
 def reach_map(
@@ -1764,7 +1866,7 @@ def reach_map(
     at `beta_test` — known, as `position_covariance` holds it — the Fisher on
     the three coordinates is  F(p) = sum_i J_i^T J_i / sigma_i^2  with
     J = beta_test dA(p)/dp, by the same central differences, and it adds across
-    data sets exactly as the scalar does.  It is reduced with `posterior_rms`,
+    data sets exactly as the scalar does.  It is reduced with `posterior_norm`,
     the isotropic 1-sigma of `rms_pos`, so with beta_test at the target's value
     the map under the target reproduces `rms_pos` (checked: within 1% in all
     three cases, the residual being grid interpolation).  sigma scales as
@@ -1819,7 +1921,7 @@ def reach_map(
     def pos_sigma(Fp):
         out = np.full(XX.size, np.nan)
         C = np.linalg.inv(Fp[ins] + np.eye(3) / R_pos**2)
-        out[ins] = np.sqrt(np.einsum("kii->k", C) / 3.0)  # posterior_rms, stacked
+        out[ins] = np.sqrt(np.einsum("kii->k", C))  # posterior_norm, stacked
         return out.reshape(XX.shape)
 
     return dict(
@@ -1958,27 +2060,22 @@ def detection_sweep(A_sh, sig_sh, A_ch, sig_ch, f_base, mu_grid, n_mc=1000, seed
 # (Experiment 1 — masses free, positions fixed — is the linear fit above.)
 
 
-def _pos_forward(posj, j, P, masses, bulk, Lmax, Rref, obs, pinvPhi, case):
+def _pos_forward_joint(pflat, masses, bulk, Lmax, Rref, obs, pinvPhi, case):
     """
-    Forward observables when ONLY anomaly `j`'s position posj=(x,y,z) is
-    unknown; all mass fractions and the other positions are known.  The model is
-    the full field β̃·CD + Σ β_k pt_k — the bulk is an additive constant here
-    (β̃ is fixed with the masses), present so the forward model is the one the
-    paper writes down.
+    Forward observables when EVERY anomaly position is unknown: `pflat` is the
+    (3·n_a,) flattening of the whole position set, the mass fractions are known.
+    The model is the full field β̃·CD + Σ β_k pt_k — the bulk is an additive
+    constant here (β̃ is fixed with the masses), present so the forward model is
+    the one the paper writes down.
 
     `case` selects which blocks exist.  It replaced a `use_ch` flag, which could
     say "SH, and also CH" but had no way to say "CH, and NOT SH".
-
-    `j` and the full `P` replaced a (pos0, lobe_pos) pair that could only ever
-    free the SHALLOW anomaly — fig 3 now shows the covariance of every anomaly,
-    which needs each of them free in turn.
     """
-    positions = np.asarray(P, float).copy()
-    positions[j] = posj
+    positions = np.asarray(pflat, float).reshape(-1, 3)
     blocks = []
     if case in (SH_ONLY, SH_CH):
         # ONE batched Stokes evaluation for all three anomalies, not one call each.
-        S = sh_stokes_basis(np.asarray(positions, float), SH_LMIN, Lmax, Rref)
+        S = sh_stokes_basis(positions, SH_LMIN, Lmax, Rref)
         y_sh = bulk_fraction(masses) * bulk.stokes(SH_LMIN, Lmax, Rref)
         for mj, Sj in zip(masses, S):
             y_sh = y_sh + mj * Sj
@@ -1989,6 +2086,19 @@ def _pos_forward(posj, j, P, masses, bulk, Lmax, Rref, obs, pinvPhi, case):
             field = field + mj * point_mass_field(pj, obs)
         blocks.append(pinvPhi @ field)
     return blocks
+
+
+def _pos_forward(posj, j, P, masses, bulk, Lmax, Rref, obs, pinvPhi, case):
+    """
+    `_pos_forward_joint` with ONLY anomaly `j` free: the other positions go into
+    the fit as known.  The one-at-a-time diagnostics still ask for this; the
+    truth Monte-Carlo frees every anomaly at once and calls the joint form.
+    """
+    positions = np.asarray(P, float).copy()
+    positions[j] = posj
+    return _pos_forward_joint(
+        positions.ravel(), masses, bulk, Lmax, Rref, obs, pinvPhi, case
+    )
 
 
 def _pos_sigmas(case, s_sh, s_ch):
@@ -2011,6 +2121,25 @@ def _pos_residual(
     case,
 ):
     model = _pos_forward(posj, j, P, masses, bulk, Lmax, Rref, obs, pinvPhi, case)
+    return np.concatenate(
+        [(mo - da) / s for mo, da, s in zip(model, data_blocks, sig_blocks)]
+    )
+
+
+def _pos_residual_joint(
+    pflat,
+    data_blocks,
+    sig_blocks,
+    masses,
+    bulk,
+    Lmax,
+    Rref,
+    obs,
+    pinvPhi,
+    case,
+):
+    """`_pos_residual` with all 3·n_a coordinates free at once."""
+    model = _pos_forward_joint(pflat, masses, bulk, Lmax, Rref, obs, pinvPhi, case)
     return np.concatenate(
         [(mo - da) / s for mo, da, s in zip(model, data_blocks, sig_blocks)]
     )
@@ -2195,25 +2324,69 @@ def truth_mc_position(
     pair_noise=True,
 ):
     """
-    Redraw the truth POSITION of the shallow anomaly near its nominal site; for
-    each, rebuild the data and refit in every observation model.  Returns a dict
-    with per-truth RMS position error, where each truth sat relative to the
-    cylinder, and — for one representative draw (`i_rep`, the truth closest to
-    the nominal site) — the full cloud of recovered positions per case, so the
-    estimator's own scatter and covariance can be shown.
+    Redraw the truth POSITION of EVERY anomaly near its own nominal site; for
+    each interior, rebuild the data and refit all 3·n_a coordinates JOINTLY in
+    every observation model.  Returns a dict with, per case:
+
+      `err_all`  (n_truth, n_a) realized position error, EVERY anomaly
+      `pos_sig`  (n_truth, n_a) the joint Fisher's prediction of it, as a norm
+      `err`      `err_all`'s CH-target column, which is what fig 3(a) plots
+
+    plus where the target sat relative to the cylinder, and — for one
+    representative draw (`i_rep`, the interior closest to nominal) — the full
+    cloud of recovered positions and its covariance, per case per anomaly.
+    `err_all` and `pos_sig` are the position half of `perf_table`; the mass
+    experiment hands it the same two things.
+
+    This used to move the shallow anomaly alone and hand the lobes to the fit as
+    known, while the mass experiment next door redrew every mass and fitted
+    every mass.  The two histograms sit side by side in the paper, so they now
+    ask the same question of the same interior: redraw everything, fit
+    everything, report the CH target's component.  The price is a 3·n_a-
+    parameter nonlinear fit per draw instead of a 3-parameter one, which is
+    where this routine's runtime went — and the answer is the honest one, since
+    an anomaly's position is never really surveyed with its neighbours known.
     """
     rng = np.random.default_rng(seed)
-    pts = draw_truth_positions(n_truth, V, F, tm, rng, center=P[0], spread=spread)
+    n_a = len(P)
+    # Each anomaly redrawn about ITS OWN site.  The cylinder was placed for the
+    # shallow one, so that is where the tight spread belongs; a lobe pinned at
+    # nominal is a lobe the fit is handed for free.
+    pts_all = np.stack(
+        [
+            draw_truth_positions(n_truth, V, F, tm, rng, center=P[j], spread=spread)
+            for j in range(n_a)
+        ],
+        axis=1,
+    )  # (n_truth, n_a, 3)
+    pts = pts_all[:, 0, :]  # the CH target's draws — what fig 3(b) maps
     pinvPhi = ch_pinv_for(cyl, obs, ch_modes)
     axis = cyl.rot() @ np.array([0.0, 0.0, 1.0])
     err = {k: np.empty(n_truth) for k in CASES}
+    # …and the SAME error for every anomaly, plus the analytic 1σ that predicts
+    # it, so the position table can be the mass table's twin: one row per
+    # (anomaly, model), realized RMS beside predicted σ.  `err` stays the CH
+    # target's column of `err_all`, which is what the histogram plots.
+    err_all = {k: np.empty((n_truth, n_a)) for k in CASES}
+    sig_pos = {k: np.empty((n_truth, n_a)) for k in CASES}
     d_ax, dep = np.empty(n_truth), np.empty(n_truth)
     zmax = V[:, 2].max()
-    i_rep = int(np.argmin(np.linalg.norm(pts - P[0], axis=1)))
+    # closest WHOLE interior to nominal, now that the whole interior moves
+    i_rep = int(np.argmin(np.linalg.norm((pts_all - P).reshape(n_truth, -1), axis=1)))
+    # Box bounds on the joint fit: an anomaly is INSIDE the body, and the
+    # bounding box is the loosest honest way to say so.  They cost nothing where
+    # the data constrain the fit — SH and SH+CH never reach them — and they are
+    # what keeps CH-only reportable.  The patch cannot see the deep lobes at
+    # all, so with all 3·n_a coordinates free those run off along a flat
+    # direction (`x_scale="jac"` rescales by the Jacobian, which is precisely
+    # what amplifies a direction with no curvature); unbounded they land ~1e6 LU
+    # out, which says nothing the body edge does not already say.  Saturating at
+    # the body is the honest form of "this model does not constrain it".
+    lo_b, hi_b = V.min(axis=0), V.max(axis=0)
+    bnd = (np.tile(lo_b, n_a), np.tile(hi_b, n_a))
     clouds, covs, rep_truths = {}, {}, P.copy()
-    for i, p0 in enumerate(pts):
-        Pi = P.copy()
-        Pi[0] = p0
+    for i, Pi in enumerate(pts_all):
+        p0 = Pi[0]
         s_sh = od_sigma(
             sh_coefficients_total(beta_true, Pi, bulk, SH_LMIN, Lmax, Rref),
             eps,
@@ -2228,12 +2401,29 @@ def truth_mc_position(
         v = p0 - cyl.center
         d_ax[i] = np.linalg.norm(v - np.dot(v, axis) * axis)
         dep[i] = zmax - p0[2]
+        # J^T W J from the position partials — the covariance the estimator
+        # HAS, rather than the one this particular set of draws happened to
+        # produce.  JOINT, then sliced to its per-anomaly diagonal blocks,
+        # because the fit below is joint: a one-at-a-time 3x3 would predict an
+        # error tighter than its own scatter, by exactly the correlation it
+        # drops.  Costs one Jacobian per interior against a few hundred inside
+        # the fits, so it runs at every interior and the predicted column is
+        # averaged over the same sample as the realized one.
+        cj = position_covariance_joint(
+            Pi, obs, cyl, ch_modes, s_sh, s_ch, Lmax, Rref, pinvPhi, masses=beta_true
+        )
+        for case in CASES:
+            for j in range(n_a):
+                # a NORM, like |p̂ − p| in the Monte Carlo — see `posterior_norm`
+                sig_pos[case][i, j] = posterior_norm(
+                    cj[case][3 * j : 3 * j + 3, 3 * j : 3 * j + 3]
+                )
         # one draw everywhere except the representative interior, which gets
         # the dense cloud the covariance-ellipse panel is drawn from
         n_draw = n_cloud if i == i_rep else 1
         for case in CASES:
-            blocks = _pos_forward(
-                p0, 0, Pi, beta_true, bulk, Lmax, Rref, obs, pinvPhi, case
+            blocks = _pos_forward_joint(
+                Pi.ravel(), beta_true, bulk, Lmax, Rref, obs, pinvPhi, case
             )
             sig_b = _pos_sigmas(case, s_sh, s_ch)
             # Same seed for both cases, so the SH block sees an identical
@@ -2245,6 +2435,8 @@ def truth_mc_position(
             r = np.random.default_rng(
                 seed + 1000 * i + (0 if pair_noise else CASES.index(case))
             )
+            # offset start, pulled back inside the box if the offset left it
+            x0 = np.clip((Pi + start_offset).ravel(), bnd[0], bnd[1])
             acc = []
             for _ in range(n_draw):
                 data = [
@@ -2252,11 +2444,9 @@ def truth_mc_position(
                     for tb, sg in zip(blocks, sig_b)
                 ]
                 sol = least_squares(
-                    _pos_residual,
-                    p0 + start_offset,
+                    _pos_residual_joint,
+                    x0,
                     args=(
-                        0,
-                        Pi,
                         data,
                         sig_b,
                         beta_true,
@@ -2267,8 +2457,9 @@ def truth_mc_position(
                         pinvPhi,
                         case,
                     ),
-                    # Optimization method
+                    # Optimization method (trf, so the box above is available)
                     method="trf",
+                    bounds=bnd,
                     # Better numerical Jacobian
                     jac="3-point",  # More accurate, about 2× the residual evaluations
                     # Automatically account for differently sensitive coordinates
@@ -2277,72 +2468,38 @@ def truth_mc_position(
                     xtol=1e-12,
                     ftol=1e-12,
                     gtol=1e-12,
-                    # Allow difficult cases to converge
-                    max_nfev=2000,
+                    # Allow difficult cases to converge.  With 3·n_a unknowns one
+                    # 3-point Jacobian already costs 6·n_a+1 residual evaluations,
+                    # so the old 2000 was a 3-parameter budget, not a 9-parameter one.
+                    max_nfev=2000 * n_a,
                 )
-                acc.append(sol.x)
-            acc = np.asarray(acc)
-            err[case][i] = np.sqrt(np.mean(np.sum((acc - p0) ** 2, axis=1)))
+                acc.append(sol.x.reshape(-1, 3))
+            acc = np.asarray(acc)  # (n_draw, n_a, 3)
+            # The CH TARGET's component of the joint fit, so this histogram and
+            # the mass-fraction one report the same anomaly out of experiments
+            # that redrew and estimated the same things.
+            err_all[case][i] = np.sqrt(
+                np.mean(np.sum((acc - Pi) ** 2, axis=2), axis=0)
+            )
+            err[case][i] = err_all[case][i, 0]
             if i == i_rep:
-                clouds.setdefault(case, {})[0] = acc
+                for j in range(n_a):
+                    clouds.setdefault(case, {})[j] = acc[:, j]
         if i == i_rep:
-            # J^T W J from the position partials — the covariance the estimator
-            # HAS, rather than the one this particular set of draws happened to
-            # produce.  Cheap, and it needs no Monte-Carlo at all.  Every anomaly
-            # now, not just the shallow one: fig 3 shows the whole grid.
-            for j in range(len(P)):
-                cj = position_covariance(
-                    j, Pi, obs, cyl, ch_modes, s_sh, s_ch, Lmax, Rref, pinvPhi
-                )
-                for case in CASES:
-                    covs.setdefault(case, {})[j] = cj[case]
-            # The MC above only ever moves the SHALLOW anomaly, so only it comes
-            # out of that loop with a cloud.  The other two are fitted here —
-            # same estimator, same draw count, each freed in turn with the rest
-            # held — and only at `i_rep`, the one interior fig 3 is drawn from.
-            for j in range(1, len(P)):
-                for case in CASES:
-                    blocks = _pos_forward(
-                        Pi[j], j, Pi, beta_true, bulk, Lmax, Rref, obs, pinvPhi, case
-                    )
-                    sig_b = _pos_sigmas(case, s_sh, s_ch)
-                    r = np.random.default_rng(seed + 5000 + 100 * j)
-                    acc = []
-                    for _ in range(n_cloud):
-                        data = [
-                            tb + r.normal(0.0, sg, size=tb.shape)
-                            for tb, sg in zip(blocks, sig_b)
-                        ]
-                        sol = least_squares(
-                            _pos_residual,
-                            Pi[j] + start_offset,
-                            args=(
-                                j,
-                                Pi,
-                                data,
-                                sig_b,
-                                beta_true,
-                                bulk,
-                                Lmax,
-                                Rref,
-                                obs,
-                                pinvPhi,
-                                case,
-                            ),
-                            method="trf",
-                            jac="3-point",
-                            x_scale="jac",
-                            xtol=1e-12,
-                            ftol=1e-12,
-                            gtol=1e-12,
-                            max_nfev=2000,
-                        )
-                        acc.append(sol.x)
-                    clouds[case][j] = np.asarray(acc)
+            # the ellipses the cloud panel draws — the same `cj` as above, kept
+            # as full 3x3 blocks rather than reduced to one number
+            for case in CASES:
+                for j in range(n_a):
+                    covs.setdefault(case, {})[j] = cj[case][
+                        3 * j : 3 * j + 3, 3 * j : 3 * j + 3
+                    ]
             rep_truths = Pi.copy()
     return dict(
         err=err,
+        err_all=err_all,
+        pos_sig=sig_pos,
         pos=pts,
+        pos_all=pts_all,
         d_axis=d_ax,
         depth=dep,
         i_rep=i_rep,
@@ -2371,6 +2528,106 @@ def _tex_num(v, sig=2):
     return rf"${m:.{sig}f}\times10^{{{e}}}$"
 
 
+def _pad(s, w):
+    """
+    Left-justify to `w` COLUMNS, not `w` code points.  "β̃" is two code points
+    (a letter and a combining tilde) but one column wide, so plain `:{w}s`
+    leaves that row one short and the table loses its right edge.
+    """
+    return s + " " * max(0, w - sum(unicodedata.combining(c) == 0 for c in s))
+
+
+def _gain(g):
+    """
+    A ratio as a factor.  `%.1f` turns every loss into "0.0×" and throws away
+    exactly the cases worth seeing — a model 30× WORSE reads the same as one
+    300× worse — so anything below 1 keeps two significant figures instead.
+    Unpadded: the caller right-aligns it, since "×" is one column wide and a
+    width baked in here would be one too many everywhere it is used.
+    """
+    return f"{g:.1f}×" if g >= 1.0 else f"{g:.2g}×"
+
+
+def _worst_clause(ratio, where):
+    """
+    "down to N× worse <where>" — except when the ratio never exceeds 1, where
+    that sentence printed "down to 0× worse" and said the opposite of the
+    truth.  `ratio` is sigma_other / sigma_ref over the map, so > 1 is worse.
+    """
+    w = float(np.max(ratio))
+    if w > 1.0:
+        return f"down to {w:.0f}× worse {where}"
+    return f"and never worse — its thinnest margin {where} is still {1.0 / w:.1f}×"
+
+
+def _reach_gain_row(grid, cases, ref, w=22, cw=12, lbl=None):
+    """
+    The reach maps' own gain row: the median over the body of sigma_ref /
+    sigma_case.  TABLES 1-4 all carry a gain against SH, and a map that only
+    reported percentages would be the one place the reader had to read a
+    colour bar to get one.
+    """
+    cells = []
+    for k in cases:
+        ok = np.isfinite(grid[ref]) & np.isfinite(grid[k])
+        cells.append(
+            "" if k == ref else _gain(float(np.median(grid[ref][ok] / grid[k][ok])))
+        )
+    name = ref if lbl is None else lbl[ref]
+    print(f"  {'median gain vs ' + name:{w}s} " + " ".join(f"{c:>{cw}}" for c in cells))
+
+
+def perf_table(names, cases, err, sig, ref=None, name_w=22, case_w=22):
+    """
+    THE table shape for every performance number in this study.
+
+    The mass-fraction half and the position half used to be reported in
+    different currencies — an analytic 1σ for the masses, a Monte-Carlo RMS for
+    the positions — so the two halves of one experiment could not be read
+    against each other, and the covariance check lived in a third table.  One
+    row here is one (component, observation model) pair, and it carries both:
+
+      RMS (MC)   realized root-mean-square error over the truth interiors.
+                 This is EXACTLY what the histograms and the bar charts plot,
+                 so the tables are the figures' own numbers rather than a
+                 second statistic standing next to them.
+      median     the MC median — the figures' peak, quoted because |error| is
+                 skewed and the mean sits above it.
+      1σ (pred)  the analytic 1σ from (A^T W A)^-1 (positions: the joint
+                 Fisher), combined over the same interiors as an RMS so it
+                 pairs with the column beside it.
+      RMS/1σ     their ratio: ≈ 1 says the covariance predicts the error the
+                 estimator actually makes.  This absorbs the old TABLE 1b.
+      gain       `ref`'s value over this row's, for BOTH currencies — how much
+                 better this model is than the reference one (SH alone).  The
+                 two gains agree where the fit is linear and the covariance
+                 holds, and where they disagree the estimator is the reason.
+
+    `err` and `sig` are {case: (n_interiors, len(names))}; the reduction is
+    done here so pt1 and pt2 cannot drift apart in how they average.
+    """
+    ref = cases[0] if ref is None else ref
+    A = lambda d, k: np.atleast_2d(np.asarray(d[k], float).T).T
+    R = {k: np.sqrt(np.mean(A(err, k) ** 2, axis=0)) for k in cases}
+    M = {k: np.median(np.abs(A(err, k)), axis=0) for k in cases}
+    S = {k: np.sqrt(np.mean(A(sig, k) ** 2, axis=0)) for k in cases}
+    print(
+        f"  {'component':{name_w}s} {'model':{case_w}s} {'RMS (MC)':>10} "
+        f"{'median':>10} {'1σ (pred)':>10} {'RMS/1σ':>7} {'gain RMS':>9} "
+        f"{'gain 1σ':>8}"
+    )
+    for i, nm in enumerate(names):
+        for c in cases:
+            gr = "" if c == ref else _gain(R[ref][i] / R[c][i])
+            gs = "" if c == ref else _gain(S[ref][i] / S[c][i])
+            print(
+                f"  {_pad(nm if c == cases[0] else '', name_w)} {c:{case_w}s} "
+                f"{R[c][i]:10.2e} {M[c][i]:10.2e} {S[c][i]:10.2e} "
+                f"{R[c][i] / S[c][i]:7.2f} {gr:>9} {gs:>8}"
+            )
+    return R, M, S
+
+
 def results_report(res, tex=True):
     """
     Every number worth quoting, as aligned tables and as LaTeX tabular bodies.
@@ -2378,22 +2635,15 @@ def results_report(res, tex=True):
     numbers live — copy a block straight into the paper.
     """
     names, tmc, det = res["names"], res["truth_mc"], res["det"]
-    ft, bb = res["beta_true"], res["beta_bulk"]
-    q = lambda v: np.percentile(v, [10, 50, 90])
-    # one row per component, each carrying the 10/50/90 band in EVERY case
-    rows_m = []
-    for j, nm in enumerate(names):
-        qs = {k: q(tmc["sig"][k][:, j]) for k in CASES}
-        g = np.median(tmc["sig"][SH_ONLY][:, j] / tmc["sig"][SH_CH][:, j])
-        rows_m.append((nm, ft[j], qs, g))
-    rows_m.append(
-        (
-            r"body $\tilde\beta$",
-            bb,
-            {k: q(tmc["bulk_sig"][k]) for k in CASES},
-            np.median(tmc["bulk_sig"][SH_ONLY] / tmc["bulk_sig"][SH_CH]),
-        )
-    )
+    ft = res["beta_true"]
+    # The two performance tables take the same input: realized error and
+    # predicted 1σ, one column per component, one matrix per case.  The bulk
+    # β̃ is a component of the mass fit (it is 1 − Σβ, estimated with the rest)
+    # but not of the position fit, which is why only the mass matrix carries it.
+    nms = [n.replace(r"$\tilde\beta$", "β̃") for n in names]
+    row_m = nms + ["body β̃"]
+    err_m = {k: np.column_stack([tmc["dev"][k], tmc["dev_bulk"][k]]) for k in CASES}
+    sig_m = {k: np.column_stack([tmc["sig"][k], tmc["bulk_sig"][k]]) for k in CASES}
 
     print(f"\n{SEP}\n  RESULTS  (figures carry no numbers; quote from here)\n{SEP}")
 
@@ -2432,110 +2682,80 @@ def results_report(res, tex=True):
         f"  body β̃ = {res['beta_bulk']:.3f} > 0, and Σβ + β̃ = 1 exactly, so the "
         "total mass is conserved and positive."
     )
+    # TABLES 1 and 2 are the same table twice: one for the mass fractions, one
+    # for the positions, both realized-vs-predicted with both gains, because
+    # they are two halves of one experiment (every mass redrawn and fitted /
+    # every position redrawn and fitted) and the paper prints them side by side.
+    # The truth β of each component is TABLE 0's first column; it is constant
+    # across the models and would only repeat here.
     print(
-        "\n  TABLE 1 — mass-fraction uncertainty, "
-        f"{len(tmc['sig'][SH_ONLY])} truth interiors, 1σ, median [10–90%]"
+        f"\n  TABLE 1 — mass fraction, {len(tmc['sig'][SH_ONLY])} truth interiors, "
+        "error [-]"
     )
-    print(
-        f"  {'component':22s} {'truth β':>9} "
-        + " ".join(f"{'σ ' + k:>10} {'[10–90%]':>21}" for k in CASES)
-        + f" {'gain':>7}"
-    )
-    for nm, tr, qs, g in rows_m:
-        nm_ = nm.replace(r"$\tilde\beta$", "β̃")
-        print(
-            f"  {nm_:22s} {tr:+9.4f} "
-            + " ".join(
-                f"{qs[k][1]:10.2e} [{qs[k][0]:8.2e},{qs[k][2]:8.2e}]" for k in CASES
-            )
-            + f" {g:6.1f}×"
-        )
-
-    # Does the analytic covariance actually predict the error made?  The
-    # realized column comes from noisy fits, the predicted column from
-    # (A^T W A)^-1 — nothing is shared, so the ratio is a real check.
-    _rms = lambda M: np.sqrt(np.mean(np.asarray(M) ** 2, axis=0))
-    real = {
-        k: _rms(np.column_stack([tmc["dev"][k], tmc["dev_bulk"][k]])) for k in CASES
-    }
-    pred = {
-        k: _rms(np.column_stack([tmc["sig"][k], tmc["bulk_sig"][k]])) for k in CASES
-    }
-    nms = [n.replace(r"$\tilde\beta$", "β̃") for n, *_ in rows_m]
-    print(
-        f"\n  TABLE 1b — covariance consistency, {len(tmc['dev'][SH_ONLY])} noisy "
-        "fits: realized RMS(estimate − truth) vs predicted 1σ"
-    )
-    print(
-        f"  {'component':22s} "
-        + " ".join(f"{'real ' + k:>13} {'pred':>11} {'ratio':>6}" for k in CASES)
-    )
-    for j, nm in enumerate(nms):
-        print(
-            f"  {nm:22s} "
-            + " ".join(
-                f"{real[k][j]:13.2e} {pred[k][j]:11.2e} "
-                f"{real[k][j]/pred[k][j]:6.2f}"
-                for k in CASES
-            )
-        )
+    Rm, _, Sm = perf_table(row_m, list(CASES), err_m, sig_m)
 
     pe, dax = tmc["err"], tmc["d_axis"]
     print(
         f"\n  TABLE 2 — anomaly position, {len(pe[SH_ONLY])} truth interiors, "
-        f"RMS error [LU], median [10–90%]"
+        f"error [LU]; all {3 * len(names)} coordinates fitted jointly"
     )
-    print(f"  {'case':22s} {'median':>10} {'[10–90%]':>21} {'gain over SH':>13}")
-    for k in CASES:
-        Q = q(pe[k])
-        gs = f"{np.median(pe[SH_ONLY] / pe[k]):12.1f}×" if k != SH_ONLY else " " * 13
-        print(f"  {k:22s} {Q[1]:10.2e} [{Q[0]:8.2e},{Q[2]:8.2e}] {gs}")
+    Rp, _, Sp = perf_table(nms, list(CASES), tmc["err_all"], tmc["pos_sig"])
+    print(
+        f"  (figure 3(a) histograms the {nms[res['target']]} row — the anomaly "
+        "the patch was placed for, the same one TABLE 1's histogram shows)"
+    )
     ed = np.quantile(dax, [0, 0.25, 0.5, 0.75, 1.0])
     ed[-1] += 1e-9
-    print(f"\n  TABLE 3 — position error vs distance from the cylinder axis")
+    # Each model gets its own gain column here, as everywhere else in this
+    # report, rather than one column for the SH -> SH+CH end-to-end ratio: the
+    # question this table answers is which model wins WHERE, and that needs CH
+    # alone to be readable against SH alone.
+    print(f"\n  TABLE 3 — CH-target position error vs distance from the cylinder axis")
     print(
         f"  {'range [LU]':>16} {'n':>4} "
-        + " ".join(f"{'median ' + k:>15}" for k in CASES)
-        + f" {'gain':>7}"
+        + " ".join(f"{'median ' + k:>15} {'gain':>8}" for k in CASES)
     )
     for lo, hi in zip(ed[:-1], ed[1:]):
         m = (dax >= lo) & (dax < hi)
         if m.sum():
-            print(
-                f"  {lo:6.3f}–{hi:6.3f} {int(m.sum()):4d} "
-                + " ".join(f"{np.median(pe[k][m]):15.2e}" for k in CASES)
-                + f" {np.median(pe[SH_ONLY][m]/pe[SH_CH][m]):6.1f}×"
-            )
+            cells = []
+            for k in CASES:
+                g = (
+                    ""
+                    if k == SH_ONLY
+                    else _gain(np.median(pe[SH_ONLY][m]) / np.median(pe[k][m]))
+                )
+                cells.append(f"{np.median(pe[k][m]):15.2e} {g:>8}")
+            print(f"  {lo:6.3f}–{hi:6.3f} {int(m.sum()):4d} " + " ".join(cells))
 
     sp = {
-        # `cov` is keyed per case AND per anomaly now; TABLE 4 quotes the target
-        k: np.sqrt(np.trace(tmc["cov"][k][res["target"]][np.ix_([0, 2], [0, 2])]) / 2)
+        # `cov` is keyed per case AND per anomaly now; TABLE 4 quotes the target.
+        # A NORM over the plane, not a per-coordinate σ, so this is the same
+        # currency as TABLE 2 — it is the x–z ellipse of figure 3(b), sized.
+        k: np.sqrt(np.trace(tmc["cov"][k][res["target"]][np.ix_([0, 2], [0, 2])]))
         for k in CASES
     }
-    print(f"\n  TABLE 4 — single-interior detail and detection limit")
+    # Rows are MODELS here, as in TABLES 1-3, so the gain is a column rather
+    # than a single end-to-end ratio bolted onto the right edge.
+    print(f"\n  TABLE 4 — single nominal interior: detail and detection limit")
     print(
-        f"  {'quantity':38s} " + " ".join(f"{k:>12}" for k in CASES) + f" {'ratio':>8}"
+        f"  {'model':22s} {'1σ on |Δ(x,z)| [LU]':>22} {'gain':>8} "
+        f"{'detectable β_0':>15} {'gain':>8}"
     )
+    for k in CASES:
+        g1 = "" if k == SH_ONLY else _gain(sp[SH_ONLY] / sp[k])
+        g2 = "" if k == SH_ONLY else _gain(det["thr"][SH_ONLY] / det["thr"][k])
+        print(
+            f"  {k:22s} {sp[k]:22.2e} {g1:>8} {det['thr'][k]:15.2e} {g2:>8}"
+        )
+    # Per-OBSERVABLE, not per-model: these describe the SH and CH coefficient
+    # blocks themselves, which the joint fit shares, so they have no gain column.
     print(
-        f"  {'analytic position 1σ (x–z) [LU]':38s} "
-        + " ".join(f"{sp[k]:12.2e}" for k in CASES)
-        + f" {sp[SH_ONLY]/sp[SH_CH]:7.1f}×"
-    )
-    print(
-        f"  {'smallest detectable anomaly β_0':38s} "
-        + " ".join(f"{det['thr'][k]:12.2e}" for k in CASES)
-        + f" {det['thr'][SH_ONLY]/det['thr'][SH_CH]:7.1f}×"
-    )
-    # These two rows are per-OBSERVABLE, not per-case: they describe the SH and
-    # CH coefficient blocks themselves, which the joint fit shares.  Printed
-    # under the SH-only and CH-only columns, where those blocks stand alone.
-    print(
-        f"  {'discrepancy-to-noise, RMS ΔCS/σ':38s} {res['snr_sh']:12.1f} "
-        f"{res['snr_ch']:12.1f}"
-    )
-    print(
-        f"  {'post-fit residual [σ]':38s} {res['rms_post_sh']:12.2f} "
-        f"{res['rms_post_ch']:12.2f}"
+        f"  {'':22s} {'SH block':>22} {'':>8} {'CH block':>15}\n"
+        f"  {'discrepancy-to-noise':22s} {res['snr_sh']:22.1f} {'':>8} "
+        f"{res['snr_ch']:15.1f}\n"
+        f"  {'post-fit residual [σ]':22s} {res['rms_post_sh']:22.2f} {'':>8} "
+        f"{res['rms_post_ch']:15.2f}"
     )
 
     # ── TABLE 5 — the reach map, reduced to numbers ───────────────────────
@@ -2552,17 +2772,18 @@ def results_report(res, tex=True):
     a_, b_ = rm["sigma"][SH_ONLY], rm["sigma"][CH_ONLY]
     ok = np.isfinite(a_) & np.isfinite(b_)
     ratio = (b_ / a_)[ok]
+    _reach_gain_row(rm["sigma"], CASES, SH_ONLY)
     print(
         f"  {'dynamic range, best/worst':22s} "
         + " ".join(
-            f"{np.nanmax(rm['sigma'][k][np.isfinite(rm['sigma'][k])])/np.nanmin(rm['sigma'][k][np.isfinite(rm['sigma'][k])]):11.0f}x"
-            for k in CASES
+            f"{_gain(np.nanmax(v[np.isfinite(v)]) / np.nanmin(v[np.isfinite(v)])):>12}"
+            for v in (rm["sigma"][k] for k in CASES)
         )
     )
     print(
         f"  ⇒ CH alone beats SH alone over {100.0*np.sum(ratio < 1)/ratio.size:.0f}% "
         f"of the cross-section: up to\n    {1.0/ratio.min():.0f}× better under the "
-        f"patch, down to {ratio.max():.0f}× worse on the far side.  The two do "
+        f"patch, {_worst_clause(ratio, 'on the far side')}.  The two do "
         f"not\n    differ in QUALITY, they differ in SHAPE — one flat field of "
         f"view against one\n    sharp peak — which is why the joint fit is worth "
         f"making."
@@ -2573,7 +2794,7 @@ def results_report(res, tex=True):
         f"\n  TABLE 5b — reach, position: fraction of the body where a test "
         f"anomaly (β = {rm['beta_test']:.2f}) is placed to"
     )
-    print(f"  {'threshold 1σ [LU]':22s} " + " ".join(f"{k:>12}" for k in CASES))
+    print(f"  {'threshold 1σ |Δp| [LU]':22s} " + " ".join(f"{k:>12}" for k in CASES))
     for thr in REACH_LEVELS_POS:
         cells = []
         for k in CASES:
@@ -2581,34 +2802,37 @@ def results_report(res, tex=True):
             ok = np.isfinite(v)
             cells.append(f"{100.0*np.sum(v[ok] < thr)/max(1, ok.sum()):11.1f}%")
         print(f"  {'below ' + f'{thr:.0e}':22s} " + " ".join(f"{c:>12}" for c in cells))
+    _reach_gain_row(rp, CASES, SH_ONLY)
     a_, b_ = rp[SH_ONLY], rp[CH_ONLY]
     ok = np.isfinite(a_) & np.isfinite(b_)
     ratio = (b_ / a_)[ok]
     print(
         f"  ⇒ CH alone places it better than SH alone over "
         f"{100.0*np.sum(ratio < 1)/ratio.size:.0f}% of the cross-section: up to "
-        f"{1.0/ratio.min():.0f}× better\n    under the patch, down to "
-        f"{ratio.max():.0f}× worse on the far side."
+        f"{1.0/ratio.min():.0f}× better\n    under the patch, "
+        + _worst_clause(ratio, "on the far side")
+        + "."
     )
 
     if not tex:
         return
     print(f"\n{'-'*70}\n  LaTeX tabular bodies\n{'-'*70}")
-    print(r"  % Table 1 — mass-fraction uncertainty (median 1σ per case)")
-    for nm, tr, qs, g in rows_m:
-        print(
-            rf"  {nm} & ${tr:+.4f}$ & "
-            + " & ".join(_tex_num(qs[k][1]) for k in CASES)
-            + rf" & ${g:.1f}$ \\"
-        )
-    print(r"  % Table 2 — position RMS error [LU]")
-    for k in CASES:
-        Q = q(pe[k])
-        print(rf"  {k} & {_tex_num(Q[1])} & {_tex_num(Q[0])} & {_tex_num(Q[2])} \\")
-    print(
-        rf"  % gain (median of per-interior ratios): "
-        rf"${np.median(pe[SH_ONLY]/pe[SH_CH]):.1f}$"
-    )
+    # Both tabulars have the same columns, in the same order, as the terminal
+    # tables above: component, model, RMS, predicted 1σ, gain on each.
+    for cap, rows, R, S in (
+        (r"% Table 1 — mass fraction: RMS (MC), 1\sigma (pred), gains vs SH", row_m, Rm, Sm),
+        (r"% Table 2 — position [LU]: RMS (MC), 1\sigma (pred), gains vs SH", nms, Rp, Sp),
+    ):
+        print(f"  {cap}")
+        for i, nm in enumerate(rows):
+            for k in CASES:
+                gr = "--" if k == SH_ONLY else f"${R[SH_ONLY][i] / R[k][i]:.1f}$"
+                gs = "--" if k == SH_ONLY else f"${S[SH_ONLY][i] / S[k][i]:.1f}$"
+                lab = nm if k == SH_ONLY else ""
+                print(
+                    rf"  {lab} & {k} & {_tex_num(R[k][i])} & {_tex_num(S[k][i])} "
+                    rf"& {gr} & {gs} \\"
+                )
 
 
 def run_experiment(
@@ -2748,7 +2972,7 @@ def run_experiment(
     # ── PART 1 — mass fractions ────────────────────────────────────────────
     # Covariance per case, then reduced to the number that gets quoted — the
     # same two steps PART 2 takes.  A vector parameter there, separate scalars
-    # here, so the reducer differs (`posterior_rms` vs `posterior_sigma`) and
+    # here, so the reducer differs (`posterior_norm` vs `posterior_sigma`) and
     # nothing else does.
     C_mass = {k: mass_fraction_covariance(blocks[k]) for k in CASES}
     sd_mass = {k: posterior_sigma(C_mass[k]) for k in CASES}
@@ -2770,10 +2994,15 @@ def run_experiment(
             )
 
     # ── PART 2 — position of the near-surface anomaly ───────────────────────
-    C_pos = position_covariance(
-        target, P, obs, cyl, ch_modes, sig_sh, sig_ch, Lmax_sh, Rref, pinvPhi
+    # JOINT and sliced to the target, like everything else that reports a
+    # position: this block is a DETAIL of TABLE 2, so it has to be TABLE 2's
+    # number, not the tighter one a one-at-a-time fit would give.
+    C_pos_all = position_covariance_joint(
+        P, obs, cyl, ch_modes, sig_sh, sig_ch, Lmax_sh, Rref, pinvPhi
     )
-    rms_pos = {k: posterior_rms(C_pos[k]) for k in CASES}
+    sl = slice(3 * target, 3 * target + 3)
+    C_pos = {k: C_pos_all[k][sl, sl] for k in CASES}
+    rms_pos = {k: posterior_norm(C_pos[k]) for k in CASES}
     pos_gain = rms_pos[SH_ONLY] / rms_pos[SH_CH]
     if verbose and detail:
         print(
@@ -2829,67 +3058,61 @@ def run_experiment(
     )
     tp_err, tp_dax = tp["err"], tp["d_axis"]
     if verbose and detail:
-        q = lambda v: (np.percentile(v, 10), np.median(v), np.percentile(v, 90))
         print(
             f"\n{'='*70}\n  EXPERIMENT 1 — MASS FRACTIONS, Monte-Carlo over "
             f"{n_truth_m} truth interiors\n{'='*70}"
         )
         print(f"  truth |β| ~ U[0.01,0.06] with random signs; positions fixed")
-        print(
-            f"  {'anomaly':22s} "
-            + " ".join(f"{k + '  10/50/90%':>26}" for k in CASES)
-            + f" {'gain':>7}"
-        )
-        for j, nm in enumerate(names):
-            g = np.median(tmm["sig"][SH_ONLY][:, j] / tmm["sig"][SH_CH][:, j])
-            print(
-                f"  {nm:22s} "
-                + "  ".join(
-                    " ".join(f"{x:8.2e}" for x in q(tmm["sig"][k][:, j])) for k in CASES
-                )
-                + f" {g:6.1f}×"
-            )
-        gb = np.median(tmm["bulk_sig"][SH_ONLY] / tmm["bulk_sig"][SH_CH])
-        print(
-            f"  {'BODY β̃':22s} "
-            + "  ".join(
-                " ".join(f"{x:8.2e}" for x in q(tmm["bulk_sig"][k])) for k in CASES
-            )
-            + f" {gb:6.1f}×"
+        # The same `perf_table` the RESULTS section prints, so this running
+        # commentary and the final tables cannot disagree about a number or
+        # about what a gain means.
+        perf_table(
+            [n.replace(r"$\tilde\beta$", "β̃") for n in names] + ["body β̃"],
+            list(CASES),
+            {
+                k: np.column_stack([tmm["dev"][k], tmm["dev_bulk"][k]])
+                for k in CASES
+            },
+            {
+                k: np.column_stack([tmm["sig"][k], tmm["bulk_sig"][k]])
+                for k in CASES
+            },
         )
         print(
             f"\n{'='*70}\n  EXPERIMENT 2 — ANOMALY POSITION, Monte-Carlo over "
             f"{n_truth_p} truth positions\n{'='*70}"
         )
         print(
-            f"  the shallow anomaly is jittered within {pos_spread} LU of its "
-            f"site (one noise draw each)"
+            f"  EVERY anomaly is jittered within {pos_spread} LU of its own site "
+            f"and all {3*len(P)} coordinates are fitted jointly"
         )
-        print(f"  {'':22s} {'RMS err 10/50/90%  [LU]':>28} {'gain over SH':>13}")
-        for k in CASES:
-            g = (
-                f" {np.median(tp_err[SH_ONLY] / tp_err[k]):12.1f}×"
-                if k != SH_ONLY
-                else ""
-            )
-            print(f"  {k:22s} " + " ".join(f"{x:9.2e}" for x in q(tp_err[k])) + g)
+        print("  (one noise draw each; every anomaly gets a row)")
+        perf_table(
+            [n.replace(r"$\tilde\beta$", "β̃") for n in names],
+            list(CASES),
+            tp["err_all"],
+            tp["pos_sig"],
+        )
         edges = np.quantile(tp_dax, [0.0, 0.25, 0.5, 0.75, 1.0])
         edges[-1] += 1e-9
         print(f"\n  by horizontal distance from the cylinder axis (quartiles):")
         print(
             f"  {'range [LU]':>14} {'n':>4} "
-            + " ".join(f"{'median ' + k:>15s}" for k in CASES)
-            + f" {'gain':>8}"
+            + " ".join(f"{'median ' + k:>15s} {'gain':>8}" for k in CASES)
         )
         for lo, hi in zip(edges[:-1], edges[1:]):
             m = (tp_dax >= lo) & (tp_dax < hi)
             if m.sum() == 0:
                 continue
-            print(
-                f"  {lo:5.3f}–{hi:5.3f} {int(m.sum()):4d} "
-                + " ".join(f"{np.median(tp_err[k][m]):15.2e}" for k in CASES)
-                + f" {np.median(tp_err[SH_ONLY][m] / tp_err[SH_CH][m]):7.1f}×"
-            )
+            cells = []
+            for k in CASES:
+                g = (
+                    ""
+                    if k == SH_ONLY
+                    else _gain(np.median(tp_err[SH_ONLY][m]) / np.median(tp_err[k][m]))
+                )
+                cells.append(f"{np.median(tp_err[k][m]):15.2e} {g:>8}")
+            print(f"  {lo:5.3f}–{hi:5.3f} {int(m.sum()):4d} " + " ".join(cells))
         print(
             "  ⇒ the gain barely moves across the site, so it is a property "
             "of the patch\n    covering the anomaly — not of the anomaly "
@@ -2940,13 +3163,6 @@ def run_experiment(
         Lmax=Lmax_sh,
         ch_modes=ch_modes,
     )
-    if verbose and detail:
-        snr = lambda d, sg: float(np.sqrt(np.mean((d / sg) ** 2)))
-        print(
-            f"\n  discrepancy-to-noise per coefficient (RMS of ΔCS/σ):"
-            f"  SH {snr(d_sh, sig_sh):.1f}   CH {snr(d_ch, sig_ch):.1f}"
-        )
-
     # smallest detectable anomaly (part of Experiment 1: positions fixed)
     f_base = beta_true.copy()
     mu_grid = np.logspace(*det_range, det_n)  # swept truth mass fraction beta_0
@@ -4488,12 +4704,16 @@ def make_plots(res, outdir="Images"):
 
     ax.axhspan(acc, 1e6, color="0.5", alpha=0.15, lw=0, zorder=1)
     ax.axhline(acc, color="0.3", ls="-", lw=1.4, zorder=4)
+    # RIGHT end of the threshold line, not the left: the curves fall with slope
+    # -1, so the left end is where they are highest and the gain bar sits, and
+    # the label had to squeeze between them.  Above the line on the right there
+    # is nothing but the shaded band.
     ax.text(
-        mug.min() * 0.80,
+        mug.max() * 1.35,
         acc * 1.14,
         rf"Identifiability Threshold: {acc:.0f}" + (r"$\%$" if USE_TEX else "%"),
         fontsize=9 * FONT_SCALE,
-        ha="left",
+        ha="right",
         va="bottom",
         color="0.15",
         zorder=6,
@@ -4552,21 +4772,37 @@ def make_plots(res, outdir="Images"):
     # truths were drawn, (c) the estimator's own scatter for one of them.
     tmc = res["truth_mc"]
     pe = tmc["err"]
-    pos, cylc = tmc["pos"], res["cyl"].center
+    pos, pos_all = tmc["pos"], tmc["pos_all"]
+    cylc = res["cyl"].center
 
-    # (a) distribution of the per-truth RMS position error
+    # (a) distribution of the per-truth RMS position error.  Its twin is fig 2a:
+    # both redraw the WHOLE interior, both fit the whole interior, and both
+    # report the CH target's component — so the axis names that component.
     fig, ax = plt.subplots(figsize=FS)
     case_hist(
         ax,
         pe,
-        "Position Error, One Fit per Truth Interior [LU]",
+        r"Position Error, One Fit per Truth Interior,  $\mathbf{p}_0$  [LU]",
         len(pe[SH_ONLY]),
     )
     _save(fig, outdir, PREFIX + "fig3_position_hist.pdf")
 
-    # (b) where the truth anomalies were drawn
+    # (b) where the truth anomalies were drawn.  EVERY anomaly is redrawn, each
+    # about its own site, so every cloud is on the map: the fit never sees an
+    # interior with anything already in its nominal place.
     fig, ax = plt.subplots(figsize=FS_WIDE)
     draw_silhouette(ax, V, F, 0, 2)
+    other = np.concatenate([pos_all[:, j] for j in range(pos_all.shape[1]) if j != 0])
+    ax.scatter(
+        other[:, 0],
+        other[:, 2],
+        s=20,
+        color="0.55",
+        edgecolor="none",
+        alpha=0.55,
+        zorder=4,
+        label="Other Anomaly Draws",
+    )
     ax.scatter(
         pos[:, 0],
         pos[:, 2],
@@ -4576,9 +4812,9 @@ def make_plots(res, outdir="Images"):
         lw=0.4,
         alpha=0.85,
         zorder=5,
-        label="Truth Draws",
+        label="CH Target Draws",
     )
-    ax.plot(P[tgt][0], P[tgt][2], "k*", ms=17, zorder=7, label="Nominal Site")
+    ax.plot(P[:, 0], P[:, 2], "k*", ms=17, zorder=7, label="Nominal Sites")
     ax.plot(
         cylc[0],
         cylc[2],
@@ -5092,34 +5328,45 @@ def sweep_lmax_sh(res, L_values=None, alphas=(None,), ch_alpha=None, verbose=Tru
                 cs_top[:nk] + A_sh @ beta_true, eps, alpha=a, Lmin=SH_LMIN
             )
             blk = case_blocks(A_sh, sig_sh, A_ch, sig_ch)
-            # EVERY anomaly's position, each with the others held — TABLE 2's
-            # linearization, applied beyond the target — seeded with
-            # POS_PRIOR_SIGMA so that R is defined where the data see nothing
-            C_pos = [
-                position_covariance(
-                    j,
-                    P,
-                    obs,
-                    cyl,
-                    ch_modes,
-                    sig_sh,
-                    sig_ch,
-                    L,
-                    Rref,
-                    pinvPhi,
-                    prior_sigma=POS_PRIOR_SIGMA,
-                )
-                for j in range(len(P))
-            ]
+            # EVERY anomaly's position, all of them FREE at once — the same
+            # experiment TABLE 2 and fig 3 run, so the sweep extends those
+            # numbers in L instead of quoting a different, more optimistic
+            # statistic beside them.  One-at-a-time would hand the fit the
+            # neighbours as known and drop exactly the anomaly-to-anomaly
+            # correlation the CH block exists to break.  Seeded with
+            # POS_PRIOR_SIGMA so that R is defined where the data see nothing.
+            C_pos = position_covariance_joint(
+                P,
+                obs,
+                cyl,
+                ch_modes,
+                sig_sh,
+                sig_ch,
+                L,
+                Rref,
+                pinvPhi,
+                # the TRUTH masses, as TABLE 2's call uses: the Jacobian scales
+                # with m_j, so nominal masses here would quote a sigma for a
+                # body the rest of the sweep is not describing (the SH noise on
+                # the line above is already built from `beta_true`)
+                masses=beta_true,
+                prior_sigma=POS_PRIOR_SIGMA,
+            )
             for k in CASES:
                 m_sig = posterior_sigma(
                     mass_fraction_covariance(blk[k], prior_sigma=PRIOR_SIGMA)
                 )
                 mass[k].append(m_sig)
                 mass_prior[k].append(m_sig / PRIOR_SIGMA >= PRIOR_RATIO_THRESHOLD)
-                p_sig = np.array([posterior_rms(c[k]) for c in C_pos])
+                # a NORM per anomaly, from its marginal 3x3 diagonal block
+                p_sig = np.array(
+                    [
+                        posterior_norm(C_pos[k][3 * j : 3 * j + 3, 3 * j : 3 * j + 3])
+                        for j in range(len(P))
+                    ]
+                )
                 pos[k].append(p_sig)
-                pos_prior[k].append(p_sig / POS_PRIOR_SIGMA >= PRIOR_RATIO_THRESHOLD)
+                pos_prior[k].append(p_sig / POS_PRIOR_NORM >= PRIOR_RATIO_THRESHOLD)
             ncf.append(nk)
         out[a] = dict(
             mass={k: np.array(v) for k, v in mass.items()},  # (n_L, n_anom)
@@ -5128,7 +5375,7 @@ def sweep_lmax_sh(res, L_values=None, alphas=(None,), ch_alpha=None, verbose=Tru
             mass_prior_ratio={k: np.array(v) / PRIOR_SIGMA for k, v in mass.items()},
             mass_prior={k: np.array(v) for k, v in mass_prior.items()},
             pos={k: np.array(v) for k, v in pos.items()},  # (n_L, n_anom)
-            pos_prior_ratio={k: np.array(v) / POS_PRIOR_SIGMA for k, v in pos.items()},
+            pos_prior_ratio={k: np.array(v) / POS_PRIOR_NORM for k, v in pos.items()},
             pos_prior={k: np.array(v) for k, v in pos_prior.items()},
             n_coef=np.array(ncf),
             ch_alpha=a_ch,
@@ -5161,7 +5408,13 @@ def sweep_report(sw):
     )
     print(
         f"  Prior-dominated: R = posterior sigma / prior sigma >= "
-        f"{sw['prior_ratio_threshold']:.2f} (position uses the RMS sigma)."
+        f"{sw['prior_ratio_threshold']:.2f}."
+    )
+    print(
+        "  The position sigma below is TABLE 2's statistic — a 3-D norm on |Δp| from"
+        "\n  the joint fit, all anomalies free.  It is ONE nominal interior, where"
+        "\n  TABLE 2 is an RMS over the whole truth sample, so read the two for"
+        "\n  agreement in scale and in ordering, not digit for digit."
     )
     for a in sw["alphas"]:
         d = sw["by_alpha"][a]
@@ -5169,12 +5422,14 @@ def sweep_report(sw):
         print(f"\n  alpha = {lab}  ({rule})")
         if d["ch_alpha"] != a:
             print(f"    [CH block held at alpha = {d['ch_alpha']}]")
-        print(
-            f"  {'L':>3} {'n_coef':>7} "
-            + " ".join(f"{'sig_b ' + k:>13}" for k in CASES)
-            + " | "
-            + " ".join(f"{'pos ' + k:>13}" for k in CASES)
+        # Every other table in this study carries its gain against SH beside
+        # the number it is a gain on; this one does too, so the sweep can be
+        # read for "does the patch still help" without the reader dividing.
+        head = lambda pre: "".join(
+            f"{pre + k:>12}" + ("" if k == SH_ONLY else f"{'gain':>7}")
+            for k in CASES
         )
+        print(f"  {'L':>3} {'n_coef':>7} {head('σβ ')} |{head('pos ')}")
         ms = {k: d["mass"][k][:, tgt] for k in CASES}
         ps = {k: d["pos"][k][:, tgt] for k in CASES}
         bad = d["mass_prior"][SH_ONLY][:, tgt] | d["pos_prior"][SH_ONLY][:, tgt]
@@ -5182,12 +5437,13 @@ def sweep_report(sw):
             mark = "  <- main run" if i == i_nom else ""
             if bad[i]:
                 mark = "  (*)" + mark
+            cell = lambda v: "".join(
+                f"{v[k][i]:12.2e}"
+                + ("" if k == SH_ONLY else f"{_gain(v[SH_ONLY][i] / v[k][i]):>7}")
+                for k in CASES
+            )
             print(
-                f"  {Li:3d} {d['n_coef'][i]:7d} "
-                + " ".join(f"{ms[k][i]:13.2e}" for k in CASES)
-                + " | "
-                + " ".join(f"{ps[k][i]:13.2e}" for k in CASES)
-                + mark
+                f"  {Li:3d} {d['n_coef'][i]:7d} {cell(ms)} |{cell(ps)}" + mark
             )
         if bad.any():
             print(
@@ -5215,10 +5471,10 @@ def sweep_report(sw):
                         f"match the L={Ln} {what} value ({tv:.2e})"
                     )
         print(
-            f"  => SH/SH+CH gain at L={L[0]}: {ms[SH_ONLY][0]/ms[SH_CH][0]:.1f}x "
-            f"mass, {ps[SH_ONLY][0]/ps[SH_CH][0]:.1f}x position;  at L={L[-1]}: "
-            f"{ms[SH_ONLY][-1]/ms[SH_CH][-1]:.1f}x mass, "
-            f"{ps[SH_ONLY][-1]/ps[SH_CH][-1]:.1f}x position"
+            f"  => SH/SH+CH gain at L={L[0]}: {_gain(ms[SH_ONLY][0]/ms[SH_CH][0])} "
+            f"mass, {_gain(ps[SH_ONLY][0]/ps[SH_CH][0])} position;  at "
+            f"L={L[-1]}: {_gain(ms[SH_ONLY][-1]/ms[SH_CH][-1])} mass, "
+            f"{_gain(ps[SH_ONLY][-1]/ps[SH_CH][-1])} position"
         )
     # per-anomaly, at the two ends: the patch is local, and the table should
     # show that it stays local however far the global expansion is pushed
@@ -5230,7 +5486,8 @@ def sweep_report(sw):
         g = d0["mass"][SH_ONLY][:, j] / d0["mass"][SH_CH][:, j]
         pr = d0["mass_prior"][SH_ONLY][:, j]
         cells = "".join(
-            f"{g[i]:8.1f}x" if not pr[i] else f"{'(prior)':>9s}" for i in (0, i_nom, -1)
+            f"{_gain(g[i]):>9}" if not pr[i] else f"{'(prior)':>9s}"
+            for i in (0, i_nom, -1)
         )
         print(f"  {nm:22s}{cells}")
 

@@ -533,8 +533,8 @@ def truth_mc_masses_net(
 
     ONE draw per interior, as in pt1: the Monte-Carlo is over BODIES, and an
     observer gets one realization per body.  The covariance check here is
-    TABLE 1b, realized RMS against predicted 1-sigma over the interiors; the
-    dense single-interior cloud that isolates it lives in pt1.
+    TABLE 1's RMS/1-sigma column, over the interiors; the dense
+    single-interior cloud that isolates it lives in pt1.
 
     beta_tilde = 1 - sum(beta) is DERIVED: its variance is 1^T C 1 and its error
     is minus the sum of the anomaly errors — never a free parameter.
@@ -628,7 +628,10 @@ def truth_mc_position_net(
     read side by side.  One noisy fit per interior; the loop over interiors
     supplies the sample, as in pt1.
 
-    Returns {case: (n_truth, n_anom)} of the realized position error [LU].
+    Returns ({case: (n_truth, n_anom)} realized position error [LU],
+    {case: (n_truth, n_anom)} the JOINT Fisher's prediction of it) — the two
+    columns `G.perf_table` puts side by side, so the position table reads like
+    the mass one instead of quoting a different statistic.
     """
     rng = np.random.default_rng(seed)
     pre = precompute_ch(P, bulk, net, ch_modes)
@@ -636,6 +639,8 @@ def truth_mc_position_net(
     # the same configurations the mass experiment uses
     cfg = case_config(keys, n_cyl)
     err = {k: np.empty((n_truth, len(P))) for k in keys}
+    sig = {k: np.empty((n_truth, len(P))) for k in keys}
+    ch_all, _ = _ch_data(net, True, pinv_list, ch_modes)
     for i in range(n_truth):
         Pi = np.array([_jitter_inside(p, spread, V, F, tm, rng) for p in P])
         sig_sh = G.od_sigma(
@@ -652,8 +657,21 @@ def truth_mc_position_net(
             )
             for q in pre
         ]
+        # One Jacobian for the whole network, sliced per case below: the
+        # predicted 1σ has to come from the SAME joint estimator the fits run,
+        # all 3N coordinates free, or the table's two columns would describe
+        # two different experiments.  One extra Jacobian against the hundreds
+        # the fits evaluate, so it is free.
+        Jall = _pos_jacobian_net(Pi, beta_true, Lmax, Rref, ch_all, use_sh=True)
         for k in keys:
             idx_k, use_sh_k = cfg[k]
+            C = position_covariance_net(
+                Jall[0], Jall[1:], idx_k, sig_sh, sig_ch, use_sh=use_sh_k
+            )
+            sig[k][i] = [
+                G.posterior_norm(C[3 * j : 3 * j + 3, 3 * j : 3 * j + 3])
+                for j in range(len(P))
+            ]
             c = position_mc_net(
                 Pi,
                 beta_true,
@@ -672,7 +690,7 @@ def truth_mc_position_net(
                 use_sh=use_sh_k,
             )
             err[k][i] = np.linalg.norm(c[0] - Pi, axis=1)
-    return err
+    return err, sig
 
 
 def reach_position_joint(reach, P, beta, pre, sig_sh, sig_ch, Lmax, Rref):
@@ -727,7 +745,7 @@ def reach_position_joint(reach, P, beta, pre, sig_sh, sig_ch, Lmax, Rref):
         X = np.linalg.solve(F66, M.reshape(n6, -1)).reshape(M.shape)
         C = np.linalg.inv(Ftt - np.einsum("jia,jib->iab", M, X))
         out = np.full(XX.size, np.nan)
-        out[ins] = np.sqrt(np.einsum("kii->k", C) / 3.0)  # posterior_rms, stacked
+        out[ins] = np.sqrt(np.einsum("kii->k", C))  # posterior_norm, stacked
         return out.reshape(XX.shape)
 
     ch = list(range(1, len(sig)))
@@ -834,7 +852,7 @@ def run(
 
     # ── EXPERIMENT B — POSITIONS over TRUTH INTERIORS ───────────────────────
     pos_bounds = (V.min(0) - 0.05, V.max(0) + 0.05)  # keep the solver on the body
-    pos_err = truth_mc_position_net(
+    pos_err, pos_sig = truth_mc_position_net(
         P,
         beta_true,
         bulk,
@@ -945,6 +963,7 @@ def run(
         cases=tmm["cases"],
         truth_mc=tmm,
         pos_err=pos_err,
+        pos_sig=pos_sig,
         pos_spread=pos_spread,
         spectra=spectra,
         reach=reach,
@@ -1022,7 +1041,6 @@ def results_report(res):
     names, tmm, cases = res["names"], res["truth_mc"], res["cases"]
     ft, sig, bsig = res["beta_true"], tmm["sig"], tmm["bulk_sig"]
     net_k = cases[-1]
-    rms = lambda M: np.sqrt(np.mean(np.asarray(M) ** 2, axis=0))
     print(f"\n{SEP}\n  RESULTS  (figures carry no numbers; quote from here)\n{SEP}")
 
     # ── TABLE 0 — are the truth anomalies physically realizable? ────────────
@@ -1051,93 +1069,55 @@ def results_report(res):
             f"{adm['b_max'][k]:+9.4f}  {v}"
         )
 
-    # ── TABLE 1 — mass-fraction uncertainty per case ────────────────────────
+    # ── TABLES 1 and 2 — mass fraction and position, one shape ─────────────
+    # `G.perf_table` prints both, and prints them exactly as pt1 does: realized
+    # RMS (what the bar charts and histograms plot) beside the analytic 1σ,
+    # their ratio as the covariance check that used to be TABLE 1b, and a gain
+    # ON EACH against SH alone — every configuration, not just the full network,
+    # since choosing between the configurations is what this study is for.
     print(
-        f"\n  TABLE 1 — mass-fraction 1σ, {len(tmm['betas'])} truth interiors,"
-        " median over interiors"
+        f"\n  TABLE 1 — mass fraction, {len(tmm['betas'])} truth interiors, error [-]"
     )
-    print(
-        f"  {'anomaly':16s} "
-        + " ".join(f"{k:>18s}" for k in cases)
-        + f" {'net gain':>9}"
-    )
-    for i, nm in enumerate(names):
-        row = [np.median(sig[k][:, i]) for k in cases]
-        print(
-            f"  {nm:16s} "
-            + " ".join(f"{v:18.2e}" for v in row)
-            + f" {row[0] / row[-1]:8.1f}×"
-        )
-    print(f"  {'-' * 74}")
-    row = [np.median(bsig[k]) for k in cases]
-    print(
-        f"  {'BODY β̃ = 1−Σβ':16s} "
-        + " ".join(f"{v:18.2e}" for v in row)
-        + f" {row[0] / row[-1]:8.1f}×"
+    Rm, _, Sm = G.perf_table(
+        list(names) + ["BODY β̃ = 1−Σβ"],
+        cases,
+        {k: np.column_stack([tmm["dev"][k], tmm["dev_bulk"][k]]) for k in cases},
+        {k: np.column_stack([sig[k], bsig[k]]) for k in cases},
+        name_w=16,
+        case_w=20,
     )
     g = np.median(sig[cases[0]] / sig[net_k], axis=0)
     print(
-        f"  network gain vs SH:  min {g.min():.0f}×   median "
+        f"  network gain vs SH, per-interior median:  min {g.min():.0f}×   median "
         f"{np.median(g):.0f}×   max {g.max():.0f}×"
     )
 
-    # ── TABLE 1b — does the analytic covariance predict the error made? ─────
-    print(
-        f"\n  TABLE 1b — covariance consistency, "
-        f"{len(tmm['betas'])} noisy fits per case (one per interior): "
-        "realized RMS(estimate − truth) vs predicted 1σ"
-    )
-    print(
-        f"  {'anomaly':16s} "
-        + " ".join(
-            f"{'realized/pred ' + k.split('(')[0]:>22s}" for k in (cases[0], net_k)
-        )
-    )
-    for i, nm in enumerate(names):
-        cells = []
-        for k in (cases[0], net_k):
-            r = rms(tmm["dev"][k][:, i])
-            pr = rms(sig[k][:, i])
-            cells.append(f"{r:9.2e} /{pr:9.2e} {r / pr:5.2f}")
-        print(f"  {nm:16s} " + " ".join(f"{c:>22s}" for c in cells))
-    cells = []
-    for k in (cases[0], net_k):
-        r, pr = rms(tmm["dev_bulk"][k].ravel()), rms(bsig[k])
-        cells.append(f"{r:9.2e} /{pr:9.2e} {r / pr:5.2f}")
-    print(f"  {'BODY β̃':16s} " + " ".join(f"{c:>22s}" for c in cells))
-
-    # ── TABLE 2 — position ─────────────────────────────────────────────────
-    pe = res["pos_err"]
+    pe, ps = res["pos_err"], res["pos_sig"]
     print(
         f"\n  TABLE 2 — anomaly position, {len(pe[cases[0]])} truth interiors,"
-        " RMS error [LU]; all positions fitted jointly"
+        f" error [LU]; all {3 * len(names)} coordinates fitted jointly"
     )
+    Rp, _, Sp = G.perf_table(list(names), cases, pe, ps, name_w=16, case_w=20)
     print(
-        f"  {'anomaly':16s} "
-        + " ".join(f"{k:>18s}" for k in cases)
-        + f" {'net gain':>9}"
+        "  (the predicted column carries the isotropic position prior the fits'"
+        " box\n  stands in for, so a model that cannot see an anomaly saturates"
+        " rather than diverging)"
     )
-    for i, nm in enumerate(names):
-        row = [rms(pe[k][:, i]) for k in cases]
-        print(
-            f"  {nm:16s} "
-            + " ".join(f"{v:18.2e}" for v in row)
-            + f" {row[0] / row[-1]:8.1f}×"
-        )
 
-    # ── TABLE 2b — the small-multiple panels, as numbers ───────────────────
-    # Each cell of the two histogram figures gets a log-normal; these are those
-    # fits.  `median ratio` is SH median / network median -- a THIRD gain
-    # definition beside TABLE 1's ratio of analytic sigmas and the RMS ratio the
-    # figures annotate.  They differ because |e| is skewed: expect the median
-    # ratio to sit a little above the RMS one.
+    # ── TABLE 2b — the small-multiple panels' SHAPE ────────────────────────
+    # TABLES 1 and 2 give every panel's location (RMS, median) and its gain;
+    # what they cannot give is how WIDE each panel is, which is what decides
+    # whether one draw from it can be trusted.  So this table drops the medians
+    # it would otherwise repeat and keeps the spread alone — plus the gain on
+    # the median, which is the same ratio as TABLE 1's, taken on the median
+    # instead of the RMS, and sits a little above it because |e| is skewed.
     print(
-        "\n  TABLE 2b — log-normal fit to each panel of the histogram figures"
+        "\n  TABLE 2b — log-normal WIDTH of each panel of the histogram figures"
         f" ({len(tmm['betas'])} / {len(pe[cases[0]])} interiors)"
     )
     print(
-        f"  {'quantity':14s} {'anomaly':16s} {'SH median':>11} {'σx':>6} {'p':>6}"
-        f" {'net median':>12} {'σx':>6} {'p':>6} {'med ratio':>10}"
+        f"  {'quantity':14s} {'anomaly':16s} {'SH σx':>8} {'p':>6}"
+        f" {'net σx':>8} {'p':>6} {'gain median':>12}"
     )
     for title, data in (
         ("mass fraction", {k: np.abs(tmm["dev"][k]) for k in cases}),
@@ -1147,15 +1127,16 @@ def results_report(res):
             ma, fa, pa = _lognorm_fit(data[cases[0]][:, i])
             mb, fb, pb = _lognorm_fit(data[net_k][:, i])
             print(
-                f"  {title:14s} {nm:16s} {ma:11.2e} {fa:6.2f} {pa:6.3f}"
-                f" {mb:12.2e} {fb:6.2f} {pb:6.3f} {ma / mb:9.1f}×"
+                f"  {title:14s} {nm:16s} {fa:8.2f} {pa:6.3f}"
+                f" {fb:8.2f} {pb:6.3f} {G._gain(ma / mb):>12}"
             )
     print(
         "  p is a KS test of the fit; p < 0.05 rejects the log-normal.  At this n"
         " most rows\n  are rejected — |e| from one draw is half-normal and"
-        " |Δp| is a 3-D norm, neither\n  log-normal.  Quote the median and σ as"
-        " location and width, not the shape (see\n  `_lognorm_fit` for the"
-        " measured skew, and why n must match between the two)."
+        " |Δp| is a 3-D norm, neither\n  log-normal.  Quote σx as a width and"
+        " TABLES 1-2's median as a location, not the\n  shape (see"
+        " `_lognorm_fit` for the measured skew, and why n must match between"
+        " the two)."
     )
 
     # ── TABLE 3 — separability ─────────────────────────────────────────────
@@ -1226,18 +1207,20 @@ def results_report(res):
     a_, b_ = rm["sigma"][G.SH_ONLY], rm["sigma"][G.CH_ONLY]
     ok = np.isfinite(a_) & np.isfinite(b_)
     ratio = (b_ / a_)[ok]
+    G._reach_gain_row(rm["sigma"], mk_cases, G.SH_ONLY, w=24, cw=14, lbl=lbl)
     print(
         f"  {'dynamic range, best/worst':24s} "
         + " ".join(
-            f"{np.nanmax(rm['sigma'][k][np.isfinite(rm['sigma'][k])]) / np.nanmin(rm['sigma'][k][np.isfinite(rm['sigma'][k])]):13.0f}x"
-            for k in mk_cases
+            f"{G._gain(np.nanmax(v[np.isfinite(v)]) / np.nanmin(v[np.isfinite(v)])):>14}"
+            for v in (rm["sigma"][k] for k in mk_cases)
         )
     )
     print(
         f"  ⇒ the network alone beats SH alone over "
         f"{100.0 * np.sum(ratio < 1) / ratio.size:.0f}% of the cross-section: up "
-        f"to\n    {1.0 / ratio.min():.0f}× better under a patch, down to "
-        f"{ratio.max():.0f}× worse in the gaps BETWEEN patches.\n    Those gaps "
+        f"to\n    {1.0 / ratio.min():.0f}× better under a patch, "
+        + G._worst_clause(ratio, "in the gaps BETWEEN patches")
+        + f".\n    Those gaps "
         f"are where the deep anomaly sits, which is why adding patches never\n"
         f"    turns it into an easy case."
     )
@@ -1248,7 +1231,7 @@ def results_report(res):
         f"anomaly (β = {rm['beta_test']:.2f}), located jointly with the six, "
         "is placed to"
     )
-    print(f"  {'threshold 1σ [LU]':24s} " + " ".join(f"{lbl[k]:>14}" for k in mk_cases))
+    print(f"  {'threshold 1σ |Δp| [LU]':24s} " + " ".join(f"{lbl[k]:>14}" for k in mk_cases))
     for thr in G.REACH_LEVELS_POS:
         cells = []
         for k in mk_cases:
@@ -1256,39 +1239,37 @@ def results_report(res):
             ok = np.isfinite(v)
             cells.append(f"{100.0 * np.sum(v[ok] < thr) / max(1, ok.sum()):13.1f}%")
         print(f"  {'below ' + f'{thr:.0e}':24s} " + " ".join(f"{c:>14}" for c in cells))
+    G._reach_gain_row(rp, mk_cases, G.SH_ONLY, w=24, cw=14, lbl=lbl)
     a_, b_ = rp[G.SH_ONLY], rp[G.CH_ONLY]
     ok = np.isfinite(a_) & np.isfinite(b_)
     ratio = (b_ / a_)[ok]
     print(
         f"  ⇒ the network alone places it better than SH alone over "
         f"{100.0 * np.sum(ratio < 1) / ratio.size:.0f}% of the cross-section: "
-        f"up to\n    {1.0 / ratio.min():.0f}× better under a patch, down to "
-        f"{ratio.max():.0f}× worse in the gaps."
+        f"up to\n    {1.0 / ratio.min():.0f}× better under a patch, "
+        + G._worst_clause(ratio, "in the gaps")
+        + "."
     )
 
     print(f"\n{'-' * 74}\n  LaTeX tabular bodies\n{'-' * 74}")
-    print("  % Table 1 — mass-fraction 1 sigma per observation model")
-    for i, nm in enumerate(names):
-        row = [np.median(sig[k][:, i]) for k in cases]
-        print(
-            f"  {nm} & "
-            + " & ".join(f"${_tex_num(v)}$" for v in row)
-            + rf" & ${row[0] / row[-1]:.1f}$ \\"
-        )
-    row = [np.median(bsig[k]) for k in cases]
-    print(
-        r"  body $\tilde\beta$ & "
-        + " & ".join(f"${_tex_num(v)}$" for v in row)
-        + rf" & ${row[0] / row[-1]:.1f}$ \\"
-    )
-    print("  % Table 2 — position RMS error [LU] per observation model")
-    for i, nm in enumerate(names):
-        row = [rms(pe[k][:, i]) for k in cases]
-        print(
-            f"  {nm} & "
-            + " & ".join(f"${_tex_num(v)}$" for v in row)
-            + rf" & ${row[0] / row[-1]:.1f}$ \\"
-        )
+    # One row per anomaly, one column PAIR per model (RMS, predicted 1σ), then
+    # the gains — the same columns as the terminal tables and as pt1's.
+    for cap, rows, R, S in (
+        ("% Table 1 — mass fraction: RMS (MC) and 1 sigma (pred) per model",
+         list(names) + [r"body $\tilde\beta$"], Rm, Sm),
+        ("% Table 2 — position [LU]: RMS (MC) and 1 sigma (pred) per model",
+         list(names), Rp, Sp),
+    ):
+        print(f"  {cap}")
+        for i, nm in enumerate(rows):
+            print(
+                f"  {nm} & "
+                + " & ".join(
+                    f"${_tex_num(R[k][i])}$ & ${_tex_num(S[k][i])}$" for k in cases
+                )
+                + rf" & ${R[cases[0]][i] / R[cases[-1]][i]:.1f}$"
+                + rf" & ${S[cases[0]][i] / S[cases[-1]][i]:.1f}$ \\"
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1410,11 +1391,20 @@ def make_plots(res, outdir="Images"):
         """Bars per anomaly across the four models; ticks = analytic 1σ if given."""
         n = len(vals[cases[0]])
         x = np.arange(n, dtype=float) * 1.25
+        # BARS ORDERED BY SIZE, tallest first — and by ONE ordering shared by
+        # every group, ranked on the median across the anomalies.  Sorting each
+        # group on its own values would staircase each of them, but the same
+        # model would then sit in a different slot in each group and nothing
+        # could be read across the panel.  In `case_blocks` order the CH-only
+        # bar interrupts the descent, which is what made the panel look
+        # unsorted; the legend follows the drawing order, so the key reads as
+        # the ranking too.
+        order = sorted(cases, key=lambda k: -float(np.median(vals[k])))
         # five models per group now, so the bars narrow and the offsets are
         # generated rather than written out
-        w = 1.05 / len(cases)
-        offs = (np.arange(len(cases)) - (len(cases) - 1) / 2) * w
-        for k, off in zip(cases, offs):
+        w = 1.05 / len(order)
+        offs = (np.arange(len(order)) - (len(order) - 1) / 2) * w
+        for k, off in zip(order, offs):
             ax.bar(x + off, vals[k], w, color=colmap[k], edgecolor="k", label=k)
             if pred is not None:
                 ax.plot(
@@ -1431,22 +1421,10 @@ def make_plots(res, outdir="Images"):
                 ls="none",
                 label=r"Analytic 1$\sigma$",
             )
-        g = vals[cases[0]] / vals[cases[-1]]
-        for q in range(n):
-            ax.text(
-                x[q] + offs[-1],
-                vals[cases[-1]][q] * 1.15,
-                rf"${g[q]:.0f}\times$",
-                ha="center",
-                va="bottom",
-                fontsize=8 * FONT_SCALE,
-                color=COLOR[0],
-                zorder=7,
-                # opaque backing: the label is centred over the SHORTEST bar of
-                # its group, so at paper font sizes it grows wide enough to run
-                # over the taller neighbour beside it ("10x" read as "0x")
-                bbox=dict(fc="white", ec="none", pad=1.0),
-            )
+        # No per-group "N×" gain label any more: on a log axis the gap between
+        # the first and last bar IS the gain, the tables print it to two digits,
+        # and the label had to be centred over the shortest bar of its group,
+        # where it competed with the bar beside it.
         ax.set_yscale("log")
         ax.set_xticks(x)
         ax.set_xticklabels(
@@ -1902,10 +1880,11 @@ def position_sigma_net(
     ratio_threshold=PRIOR_RATIO_THRESHOLD,
 ):
     """
-    Per-anomaly position 1σ — `G.posterior_rms` of its MARGINAL 3x3 block of
+    Per-anomaly position 1σ — `G.posterior_norm` of its MARGINAL 3x3 block of
     the joint covariance — and a prior-dominated flag.  Compute the covariance
-    once and compare R = sigma / POS_PRIOR_SIGMA with `ratio_threshold`.
-    The isotropic coordinate prior has the same RMS sigma, POS_PRIOR_SIGMA.
+    once and compare R = sigma / G.POS_PRIOR_NORM with `ratio_threshold`.
+    A NORM on |Δp|, which is what TABLE 2 quotes and what the Monte Carlo
+    measures; the isotropic coordinate prior is compared as the same norm.
     R near one means little uncertainty reduction; R much smaller than one
     means substantial reduction.  This summarizes each anomaly's position,
     rather than flagging its three coordinates separately.
@@ -1922,11 +1901,11 @@ def position_sigma_net(
     )
     sigma = np.array(
         [
-            G.posterior_rms(C[3 * j : 3 * j + 3, 3 * j : 3 * j + 3])
+            G.posterior_norm(C[3 * j : 3 * j + 3, 3 * j : 3 * j + 3])
             for j in range(len(C) // 3)
         ]
     )
-    return sigma, sigma / POS_PRIOR_SIGMA >= ratio_threshold
+    return sigma, sigma / G.POS_PRIOR_NORM >= ratio_threshold
 
 
 def sweep_lmax_sh(res, L_values=None, alphas=(None,), ch_alpha=None):
@@ -2027,7 +2006,7 @@ def sweep_lmax_sh(res, L_values=None, alphas=(None,), ch_alpha=None):
             mass_prior_ratio={k: np.array(v) / G.PRIOR_SIGMA for k, v in mass.items()},
             mass_prior={k: np.array(v) for k, v in mass_prior.items()},
             pos={k: np.array(v) for k, v in pos.items()},  # (n_L, n_anom)
-            pos_prior_ratio={k: np.array(v) / POS_PRIOR_SIGMA for k, v in pos.items()},
+            pos_prior_ratio={k: np.array(v) / G.POS_PRIOR_NORM for k, v in pos.items()},
             pos_prior={k: np.array(v) for k, v in pos_prior.items()},
             n_coef=np.array(ncf),
             ch_alpha=a_ch,
@@ -2064,7 +2043,13 @@ def sweep_report(sw):
     print(f"  {sw['n_cyl']} cylinders, CH modes {sw['ch_modes']}, eps = {sw['eps']}")
     print(
         f"  Prior-dominated: R = posterior sigma / prior sigma >= "
-        f"{sw['prior_ratio_threshold']:.2f} (position uses per-anomaly RMS sigma)."
+        f"{sw['prior_ratio_threshold']:.2f}."
+    )
+    print(
+        "  The position sigma below is TABLE 2's statistic — a 3-D norm on |Δp| from"
+        "\n  the joint fit, all anomalies free.  It is ONE nominal interior, where"
+        "\n  TABLE 2 is an RMS over the whole truth sample, so read the two for"
+        "\n  agreement in scale and in ordering, not digit for digit."
     )
     for a in sw["alphas"]:
         d = sw["by_alpha"][a]
@@ -2073,8 +2058,8 @@ def sweep_report(sw):
         if d["ch_alpha"] != a:
             print(f"    [CH blocks held at alpha = {d['ch_alpha']}]")
         print(
-            f"  {'L':>3} {'n_coef':>7} | {'sig_b covered':>14} {'gain':>7} | "
-            f"{'sig_b deep':>12} {'gain':>7} | {'pos deep [LU]':>14} {'gain':>7}"
+            f"  {'L':>3} {'n_coef':>7} | {'σβ covered':>14} {'gain':>7} | "
+            f"{'σβ deep':>12} {'gain':>7} | {'pos deep [LU]':>14} {'gain':>7}"
         )
         mc_s, mc_n = d["mass"][sh_k][:, sw["i_cov"]], d["mass"][net_k][:, sw["i_cov"]]
         md_s, md_n = d["mass"][sh_k][:, sw["i_deep"]], d["mass"][net_k][:, sw["i_deep"]]
@@ -2091,9 +2076,9 @@ def sweep_report(sw):
                 mark = "  (*)" + mark
             print(
                 f"  {Li:3d} {d['n_coef'][i]:7d} | {mc_n[i]:14.2e} "
-                f"{mc_s[i]/mc_n[i]:6.1f}x | {md_n[i]:12.2e} "
-                f"{md_s[i]/md_n[i]:6.1f}x | {pd_n[i]:14.2e} "
-                f"{pd_s[i]/pd_n[i]:6.1f}x{mark}"
+                f"{G._gain(mc_s[i] / mc_n[i]):>7} | {md_n[i]:12.2e} "
+                f"{G._gain(md_s[i] / md_n[i]):>7} | {pd_n[i]:14.2e} "
+                f"{G._gain(pd_s[i] / pd_n[i]):>7}{mark}"
             )
         if bad.any():
             print(
@@ -2133,7 +2118,8 @@ def sweep_report(sw):
         pr = d0["mass_prior"][sh_k][:, j]
         tag = "  <- no patch above it" if j == sw["i_deep"] else ""
         cells = "".join(
-            f"{g[i]:8.1f}x" if not pr[i] else f"{'(prior)':>9s}" for i in (0, i_nom, -1)
+            f"{G._gain(g[i]):>9}" if not pr[i] else f"{'(prior)':>9s}"
+            for i in (0, i_nom, -1)
         )
         print(f"  {nm:22s}{cells}{tag}")
 

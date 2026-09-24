@@ -1771,6 +1771,120 @@ def latex_tables(res, cov=None):
         )
 
 
+def latex_tag_table(res, cov, kappas=(1.0, 0.999, 0.99, 0.9, 0.0)):
+    """
+    The paper's TAG summary table, ΔM and Δσ side by side, row for row.
+
+    Both columns describe the SAME linear flat-sheet inverse (`wahr_invert`):
+    ΔM = f_ΔMᵀ ΔCS and Δσ = F_σ ΔCS.  The map column therefore uses
+    `sigma_map_flat`, never the terrain-refined map, which has no covariance.
+    A map has no single value, so each row reduces it the same way:
+      recovered / true  → max|Δσ| of each map
+      ratio             → ratio of those peaks
+      error             → median over the disc of |Δσ̂ − Δσ| / max|Δσ|
+      formal 1σ         → median over the disc of √Σ_Δσ
+      relative 1σ       → that median / recovered peak (ΔM: / |ΔM̂|)
+      MC/analytic       → median over the disc of the pointwise std ratio
+    """
+    sm = np.asarray(res["sigma_map_flat"], float)
+    st = np.asarray(res["sigma_true"], float)
+    dM, dM_t = res["dM_est"], res["dM_true"]
+    pk, pk_t = float(np.abs(sm).max()), float(np.abs(st).max())
+    map_err = float(np.median(np.abs(100.0 * (sm - st) / pk_t)))
+    sd_map = float(np.median(cov["sigma_map_1sig"]))
+
+    # formal 1σ of both products across the pre/post correlation κ
+    kw = dict(
+        eps=cov["coeff_rel"], floor_frac=cov["coeff_floor_frac"], od_alpha=cov["od_alpha"]
+    )
+    f, F = cov["f_dM"], cov["F_sigma"]
+    sweep = []
+    for k in kappas:
+        S = coefficient_difference_covariance(
+            res["c_pre"], res["c_post"], res["n_max"], k_epoch=k, **kw
+        )["Sigma_cs"]
+        s_m = np.sqrt(max(0.0, float(f @ S @ f)))
+        s_s = np.sqrt(np.maximum(np.einsum("gk,kl,gl->g", F, S, F), 0.0))
+        sweep.append((k, 100 * s_m / abs(dM), 100 * float(np.median(s_s)) / pk))
+
+    def num(v, nd=3):
+        return f"${_tex(v, nd)}$"
+
+    kg, sd_u = "~kg", r"~kg\,m$^{-2}$"
+    rows = [
+        ("Recovered", num(dM) + kg, num(pk, 0) + sd_u),
+        ("True", num(dM_t) + kg, num(pk_t, 0) + sd_u),
+        ("Recovery ratio", num(dM / dM_t), num(pk / pk_t)),
+        (
+            r"Relative error",
+            f"${relative_error_percent(dM, dM_t):+.2f}$\\%",
+            f"${map_err:.1f}$\\%",
+        ),
+        (r"Formal $1\sigma$, $\kappa=1$", num(cov["sigma_dM"], 1) + kg, num(sd_map, 1) + sd_u),
+    ]
+    rows += [
+        (
+            rf"Formal $1\sigma$ / recovered, $\kappa={k:g}$",
+            f"${a:.2f}$\\%",
+            f"${b:.2f}$\\%",
+        )
+        for k, a, b in sweep
+    ]
+    mc = cov.get("mc")
+    if mc is not None:
+        ok = mc["an_sigma_map"] > 0
+        rat = mc["mc_sigma_map"][ok] / mc["an_sigma_map"][ok]
+        rows.append(
+            (
+                r"MC/analytic $1\sigma$ ratio",
+                num(mc["mc_sigma_dM"] / mc["an_sigma_dM"]),
+                num(float(np.median(rat))),
+            )
+        )
+
+    print("\n  % Table — TAG summary: mass and map, row for row (flat-sheet inverse)")
+    out = [
+        r"\begin{table}[htbp]",
+        r"\fontsize{9}{10}\selectfont",
+        r"\caption{TAG Mass-Change Recovery and Formal Uncertainty}",
+        r"\label{tab:tag}",
+        r"\centering",
+        r"\begin{tabular}{lcc}",
+        r"\hline",
+        r"Quantity & Mass change $\Delta M$ & Surface density $\Delta\sigma$$^a$ \\",
+        r"\hline",
+    ]
+    # rules between recovery | formal 1σ | Monte Carlo check
+    breaks = {4, 5 + len(sweep)}
+    for i, (lab, a, b) in enumerate(rows):
+        if i in breaks:
+            out.append(r"\hline")
+        out.append(rf"{lab} & {a} & {b} \\")
+    note = (
+        r"\multicolumn{3}{l}{\footnotesize $^a$\,Flat-sheet map. Recovered, true, "
+        r"ratio: $\max|\Delta\sigma|$; error: median of "
+        r"$|\Delta\hat\sigma-\Delta\sigma|/\max|\Delta\sigma|$;} \\"
+    )
+    note_b = (
+        r"\multicolumn{3}{l}{\footnotesize \phantom{$^a$}\,$1\sigma$ and MC ratio: "
+        r"median over the disc"
+        + (
+            "; MC with ${}$ / ${}$ draws".format(
+                *(
+                    rf"{n / 10 ** int(np.log10(n)):g}\times10^{{{int(np.log10(n))}}}"
+                    for n in (mc["n_mc"], mc["n_map"])
+                )
+            )
+            if mc is not None
+            else ""
+        )
+        + r".} \\"
+    )
+    out += [r"\hline", note, note_b, r"\end{tabular}", r"\end{table}"]
+    for line in out:
+        print("  " + line)
+
+
 def covariance_mc(res, cov, n_mc=200000, n_map=20000, seed=3, batch_size=256):
     """
     Draw ΔCS ~ N(res['d_coeffs'], cov['Sigma_cs']) and invert every draw.
@@ -4398,6 +4512,7 @@ if __name__ == "__main__":
     result["cov"]["mc"] = covariance_mc(result, result["cov"])
 
     latex_tables(result, result.get("cov"))
+    latex_tag_table(result, result["cov"])
 
     figs += plot_results(result, outdir="Images")
     figs += plot_refinement(result, outdir="Images")
