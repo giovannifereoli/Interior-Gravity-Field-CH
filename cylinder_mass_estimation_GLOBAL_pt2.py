@@ -1078,7 +1078,7 @@ def results_report(res):
     print(
         f"\n  TABLE 1 — mass fraction, {len(tmm['betas'])} truth interiors, error [-]"
     )
-    Rm, _, Sm = G.perf_table(
+    Rm, Mm, Sm = G.perf_table(
         list(names) + ["BODY β̃ = 1−Σβ"],
         cases,
         {k: np.column_stack([tmm["dev"][k], tmm["dev_bulk"][k]]) for k in cases},
@@ -1097,7 +1097,7 @@ def results_report(res):
         f"\n  TABLE 2 — anomaly position, {len(pe[cases[0]])} truth interiors,"
         f" error [LU]; all {3 * len(names)} coordinates fitted jointly"
     )
-    Rp, _, Sp = G.perf_table(list(names), cases, pe, ps, name_w=16, case_w=20)
+    Rp, Mp, Sp = G.perf_table(list(names), cases, pe, ps, name_w=16, case_w=20)
     print(
         "  (the predicted column carries the isotropic position prior the fits'"
         " box\n  stands in for, so a model that cannot see an anomaly saturates"
@@ -1252,22 +1252,26 @@ def results_report(res):
     )
 
     print(f"\n{'-' * 74}\n  LaTeX tabular bodies\n{'-' * 74}")
-    # One row per anomaly, one column PAIR per model (RMS, predicted 1σ), then
-    # the gains — the same columns as the terminal tables and as pt1's.
-    for cap, rows, R, S in (
-        ("% Table 1 — mass fraction: RMS (MC) and 1 sigma (pred) per model",
-         list(names) + [r"body $\tilde\beta$"], Rm, Sm),
-        ("% Table 2 — position [LU]: RMS (MC) and 1 sigma (pred) per model",
-         list(names), Rp, Sp),
+    # One row per anomaly, one column TRIPLE per model (RMS, median, predicted
+    # 1σ), then the gains of the full network over SH on each — the same
+    # columns as the terminal tables and as pt1's.
+    for cap, rows, R, M, S in (
+        ("% Table 1 — mass fraction: RMS (MC), median (MC), 1 sigma (pred) per model",
+         list(names) + [r"body $\tilde\beta$"], Rm, Mm, Sm),
+        ("% Table 2 — position [LU]: RMS (MC), median (MC), 1 sigma (pred) per model",
+         list(names), Rp, Mp, Sp),
     ):
         print(f"  {cap}")
         for i, nm in enumerate(rows):
             print(
                 f"  {nm} & "
                 + " & ".join(
-                    f"${_tex_num(R[k][i])}$ & ${_tex_num(S[k][i])}$" for k in cases
+                    f"${_tex_num(R[k][i])}$ & ${_tex_num(M[k][i])}$"
+                    f" & ${_tex_num(S[k][i])}$"
+                    for k in cases
                 )
                 + rf" & ${R[cases[0]][i] / R[cases[-1]][i]:.1f}$"
+                + rf" & ${M[cases[0]][i] / M[cases[-1]][i]:.1f}$"
                 + rf" & ${S[cases[0]][i] / S[cases[-1]][i]:.1f}$ \\"
             )
 

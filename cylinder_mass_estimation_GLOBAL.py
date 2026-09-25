@@ -2607,10 +2607,12 @@ def perf_table(names, cases, err, sig, ref=None, name_w=22, case_w=22):
                  pairs with the column beside it.
       RMS/1σ     their ratio: ≈ 1 says the covariance predicts the error the
                  estimator actually makes.  This absorbs the old TABLE 1b.
-      gain       `ref`'s value over this row's, for BOTH currencies — how much
-                 better this model is than the reference one (SH alone).  The
-                 two gains agree where the fit is linear and the covariance
-                 holds, and where they disagree the estimator is the reason.
+      gain       `ref`'s value over this row's, for ALL THREE currencies (RMS,
+                 median, 1σ) — how much better this model is than the
+                 reference one (SH alone).  The RMS and 1σ gains agree where
+                 the fit is linear and the covariance holds, and where they
+                 disagree the estimator is the reason; the median gain is the
+                 same ratio on the figures' peak, robust to the tail.
 
     `err` and `sig` are {case: (n_interiors, len(names))}; the reduction is
     done here so pt1 and pt2 cannot drift apart in how they average.
@@ -2623,16 +2625,17 @@ def perf_table(names, cases, err, sig, ref=None, name_w=22, case_w=22):
     print(
         f"  {'component':{name_w}s} {'model':{case_w}s} {'RMS (MC)':>10} "
         f"{'median':>10} {'1σ (pred)':>10} {'RMS/1σ':>7} {'gain RMS':>9} "
-        f"{'gain 1σ':>8}"
+        f"{'gain med':>9} {'gain 1σ':>8}"
     )
     for i, nm in enumerate(names):
         for c in cases:
             gr = "" if c == ref else _gain(R[ref][i] / R[c][i])
+            gm = "" if c == ref else _gain(M[ref][i] / M[c][i])
             gs = "" if c == ref else _gain(S[ref][i] / S[c][i])
             print(
                 f"  {_pad(nm if c == cases[0] else '', name_w)} {c:{case_w}s} "
                 f"{R[c][i]:10.2e} {M[c][i]:10.2e} {S[c][i]:10.2e} "
-                f"{R[c][i] / S[c][i]:7.2f} {gr:>9} {gs:>8}"
+                f"{R[c][i] / S[c][i]:7.2f} {gr:>9} {gm:>9} {gs:>8}"
             )
     return R, M, S
 
@@ -2701,14 +2704,14 @@ def results_report(res, tex=True):
         f"\n  TABLE 1 — mass fraction, {len(tmc['sig'][SH_ONLY])} truth interiors, "
         "error [-]"
     )
-    Rm, _, Sm = perf_table(row_m, list(CASES), err_m, sig_m)
+    Rm, Mm, Sm = perf_table(row_m, list(CASES), err_m, sig_m)
 
     pe, dax = tmc["err"], tmc["d_axis"]
     print(
         f"\n  TABLE 2 — anomaly position, {len(pe[SH_ONLY])} truth interiors, "
         f"error [LU]; all {3 * len(names)} coordinates fitted jointly"
     )
-    Rp, _, Sp = perf_table(nms, list(CASES), tmc["err_all"], tmc["pos_sig"])
+    Rp, Mp, Sp = perf_table(nms, list(CASES), tmc["err_all"], tmc["pos_sig"])
     print(
         f"  (figure 3(a) histograms the {nms[res['target']]} row — the anomaly "
         "the patch was placed for, the same one TABLE 1's histogram shows)"
@@ -2827,20 +2830,21 @@ def results_report(res, tex=True):
         return
     print(f"\n{'-'*70}\n  LaTeX tabular bodies\n{'-'*70}")
     # Both tabulars have the same columns, in the same order, as the terminal
-    # tables above: component, model, RMS, predicted 1σ, gain on each.
-    for cap, rows, R, S in (
-        (r"% Table 1 — mass fraction: RMS (MC), 1\sigma (pred), gains vs SH", row_m, Rm, Sm),
-        (r"% Table 2 — position [LU]: RMS (MC), 1\sigma (pred), gains vs SH", nms, Rp, Sp),
+    # tables above: component, model, RMS, median, predicted 1σ, gain on each.
+    for cap, rows, R, M, S in (
+        (r"% Table 1 — mass fraction: RMS (MC), median (MC), 1\sigma (pred), gains vs SH", row_m, Rm, Mm, Sm),
+        (r"% Table 2 — position [LU]: RMS (MC), median (MC), 1\sigma (pred), gains vs SH", nms, Rp, Mp, Sp),
     ):
         print(f"  {cap}")
         for i, nm in enumerate(rows):
             for k in CASES:
                 gr = "--" if k == SH_ONLY else f"${R[SH_ONLY][i] / R[k][i]:.1f}$"
+                gm = "--" if k == SH_ONLY else f"${M[SH_ONLY][i] / M[k][i]:.1f}$"
                 gs = "--" if k == SH_ONLY else f"${S[SH_ONLY][i] / S[k][i]:.1f}$"
                 lab = nm if k == SH_ONLY else ""
                 print(
-                    rf"  {lab} & {k} & {_tex_num(R[k][i])} & {_tex_num(S[k][i])} "
-                    rf"& {gr} & {gs} \\"
+                    rf"  {lab} & {k} & {_tex_num(R[k][i])} & {_tex_num(M[k][i])} "
+                    rf"& {_tex_num(S[k][i])} & {gr} & {gm} & {gs} \\"
                 )
 
 
