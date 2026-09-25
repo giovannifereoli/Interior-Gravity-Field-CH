@@ -2640,6 +2640,29 @@ def perf_table(names, cases, err, sig, ref=None, name_w=22, case_w=22):
     return R, M, S
 
 
+def tex_perf_rows(rows, cases, R, M, S, labels=None, num=None):
+    """
+    `perf_table`'s numbers as the paper's llcccccc tabular body: component,
+    model, RMS, median, 1σ, then the gain on each against cases[0] ("---" in
+    the reference row).  `labels` maps case -> the paper's "(A) SH" style
+    name; `num` formats one value, already in $...$.
+    """
+    labels = labels or {}
+    num = num or _tex_num
+    ref = cases[0]
+    gx = lambda g: rf"${_gain(g)[:-1]}\times$"
+    for i, nm in enumerate(rows):
+        for k in cases:
+            if k == ref:
+                gr = gm = gs = "---"
+            else:
+                gr, gm, gs = (gx(D[ref][i] / D[k][i]) for D in (R, M, S))
+            print(
+                rf"  {nm if k == ref else ''} & {labels.get(k, k)} & {num(R[k][i])} "
+                rf"& {num(M[k][i])} & {num(S[k][i])} & {gr} & {gm} & {gs} \\"
+            )
+
+
 def results_report(res, tex=True):
     """
     Every number worth quoting, as aligned tables and as LaTeX tabular bodies.
@@ -2836,16 +2859,10 @@ def results_report(res, tex=True):
         (r"% Table 2 — position [LU]: RMS (MC), median (MC), 1\sigma (pred), gains vs SH", nms, Rp, Mp, Sp),
     ):
         print(f"  {cap}")
-        for i, nm in enumerate(rows):
-            for k in CASES:
-                gr = "--" if k == SH_ONLY else f"${R[SH_ONLY][i] / R[k][i]:.1f}$"
-                gm = "--" if k == SH_ONLY else f"${M[SH_ONLY][i] / M[k][i]:.1f}$"
-                gs = "--" if k == SH_ONLY else f"${S[SH_ONLY][i] / S[k][i]:.1f}$"
-                lab = nm if k == SH_ONLY else ""
-                print(
-                    rf"  {lab} & {k} & {_tex_num(R[k][i])} & {_tex_num(M[k][i])} "
-                    rf"& {_tex_num(S[k][i])} & {gr} & {gm} & {gs} \\"
-                )
+        tex_perf_rows(
+            rows, list(CASES), R, M, S,
+            labels={SH_ONLY: "(A) SH", CH_ONLY: "(B) CH", SH_CH: "(C) SH+CH"},
+        )
 
 
 def run_experiment(

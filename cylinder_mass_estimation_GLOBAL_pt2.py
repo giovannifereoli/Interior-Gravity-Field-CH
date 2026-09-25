@@ -1252,28 +1252,20 @@ def results_report(res):
     )
 
     print(f"\n{'-' * 74}\n  LaTeX tabular bodies\n{'-' * 74}")
-    # One row per anomaly, one column TRIPLE per model (RMS, median, predicted
-    # 1σ), then the gains of the full network over SH on each — the same
-    # columns as the terminal tables and as pt1's.
-    for cap, rows, R, M, S in (
-        ("% Table 1 — mass fraction: RMS (MC), median (MC), 1 sigma (pred) per model",
-         list(names) + [r"body $\tilde\beta$"], Rm, Mm, Sm),
-        ("% Table 2 — position [LU]: RMS (MC), median (MC), 1 sigma (pred) per model",
-         list(names), Rp, Mp, Sp),
+    # The paper's Tables 5-6 verbatim: the same llcccccc layout as pt1's (and
+    # the same helper), one sub-row per model, every model with its own gains.
+    lab = dict(zip(cases, ["(A) SH", "(B) 6-CH", "(C) SH+1", "(D) SH+2", "(E) SH+6-CH"]))
+    # Sentence case as in the paper ("East lobe"), numerals kept ("West lobe II")
+    sent = lambda n: " ".join(
+        [w if i == 0 or w.isupper() else w.lower() for i, w in enumerate(n.split())]
+    )
+    rows = [sent(n) for n in names]
+    for cap, rws, R, M, S in (
+        ("% Table 5 — network mass fraction", rows + [r"Bulk $\tilde\beta$"], Rm, Mm, Sm),
+        ("% Table 6 — network position [LU]", rows, Rp, Mp, Sp),
     ):
         print(f"  {cap}")
-        for i, nm in enumerate(rows):
-            print(
-                f"  {nm} & "
-                + " & ".join(
-                    f"${_tex_num(R[k][i])}$ & ${_tex_num(M[k][i])}$"
-                    f" & ${_tex_num(S[k][i])}$"
-                    for k in cases
-                )
-                + rf" & ${R[cases[0]][i] / R[cases[-1]][i]:.1f}$"
-                + rf" & ${M[cases[0]][i] / M[cases[-1]][i]:.1f}$"
-                + rf" & ${S[cases[0]][i] / S[cases[-1]][i]:.1f}$ \\"
-            )
+        G.tex_perf_rows(rws, cases, R, M, S, labels=lab, num=lambda v: f"${_tex_num(v)}$")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
