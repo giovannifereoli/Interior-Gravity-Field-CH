@@ -68,6 +68,7 @@ FS, _save = G.FS, G._save
 FONT_SCALE = G.FONT_SCALE  # one knob for all text sizes; see GLOBAL
 FS_BAR = (9.0, 5.4)  # bars: 7 groups x 4 models plus wrapped tick labels
 FS_COR = (6.8, 5.8)  # correlation matrix + its own colour bar
+FS_COR3 = (10.0, 8.6)  # the same for 18 position coordinates
 mpl.rcParams.update({"axes.prop_cycle": mpl.cycler(color=COLOR), "figure.dpi": 110})
 # ── the five models' colours, named once ────────────────────────────────────
 # Constrained from several directions: no orange and no pink (both read badly
@@ -592,35 +593,6 @@ def truth_mc_masses_net(
     )
 
 
-def block_correlation(C, k=3):
-    """
-    Anomaly-to-anomaly correlation of a covariance over k-vectors — positions,
-    k = 3: the FIRST CANONICAL CORRELATION of each pair of diagonal blocks,
-
-        rho_ab = largest singular value of  C_aa^-1/2 C_ab C_bb^-1/2 ,
-
-    the largest correlation between ANY combination of a's coordinates and any
-    of b's.  It is |rho| when k = 1, so it reads on the same scale as the mass
-    map; it is 1 exactly when some direction of a is indistinguishable from some
-    direction of b.  Unsigned by construction: the sign of a direction in space
-    is arbitrary, so a vector pair has no sign to report.
-    Returns (N, N), ones on the diagonal.
-    """
-    n = len(C) // k
-    W = np.zeros_like(C)
-    for j in range(n):
-        s = slice(k * j, k * j + k)
-        w, U = np.linalg.eigh(C[s, s])
-        W[s, s] = (U / np.sqrt(w)) @ U.T  # C_jj^-1/2
-    R = W @ C @ W
-    out = np.eye(n)
-    for a in range(n):
-        for b in range(a + 1, n):
-            blk = R[k * a : k * a + k, k * b : k * b + k]
-            out[a, b] = out[b, a] = min(np.linalg.svd(blk, compute_uv=False)[0], 1.0)
-    return out
-
-
 def _jitter_inside(p, spread, V, F, tm, rng, n_try=200):
     """A truth position drawn uniformly in a ball about `p`, kept inside the body."""
     for _ in range(n_try):
@@ -661,9 +633,9 @@ def truth_mc_position_net(
     {case: (n_truth, n_anom)} the JOINT Fisher's prediction of it) — the two
     columns `G.perf_table` puts side by side, so the position table reads like
     the mass one instead of quoting a different statistic — and
-    {case: (n_anom, n_anom)} the anomaly-to-anomaly `block_correlation` of that
-    same covariance, median over interiors, the position twin of the mass
-    experiment's `corr`.
+    {case: (3 n_anom, 3 n_anom)} the correlation matrix of that same joint
+    covariance, every coordinate of every anomaly, median over interiors: the
+    position twin of the mass experiment's `corr`.
     """
     rng = np.random.default_rng(seed)
     pre = precompute_ch(P, bulk, net, ch_modes)
@@ -672,7 +644,7 @@ def truth_mc_position_net(
     cfg = case_config(keys, n_cyl)
     err = {k: np.empty((n_truth, len(P))) for k in keys}
     sig = {k: np.empty((n_truth, len(P))) for k in keys}
-    cor = {k: np.empty((n_truth, len(P), len(P))) for k in keys}
+    cor = {k: np.empty((n_truth, 3 * len(P), 3 * len(P))) for k in keys}
     ch_all, _ = _ch_data(net, True, pinv_list, ch_modes)
     for i in range(n_truth):
         Pi = np.array([_jitter_inside(p, spread, V, F, tm, rng) for p in P])
@@ -705,7 +677,8 @@ def truth_mc_position_net(
                 G.posterior_norm(C[3 * j : 3 * j + 3, 3 * j : 3 * j + 3])
                 for j in range(len(P))
             ]
-            cor[k][i] = block_correlation(C)
+            d = np.sqrt(np.diag(C))
+            cor[k][i] = C / np.outer(d, d)
             c = position_mc_net(
                 Pi,
                 beta_true,
@@ -1203,20 +1176,24 @@ def results_report(res):
         f" {MA[a, b]:+.3f} → {MB[a, b]:+.3f}"
         "   (near-surface data localizes across the line of sight, not along it)"
     )
-    # the same question for the POSITION experiment; a pair of 3-vectors has
-    # no sign, so this is the first canonical correlation (`block_correlation`)
+    # the same question for the POSITION experiment, coordinate by coordinate:
+    # the entries of the 18x18 map between DIFFERENT anomalies (an anomaly's own
+    # x-y-z correlation says how its error ellipsoid is tilted, not whether it
+    # can be told apart from a neighbour)
     cor_p = res["pos_corr"]
+    xyz = [f"{n} {c}" for n in names for c in "xyz"]
+    off3 = np.kron(off, np.ones((3, 3), dtype=bool))
     print(
-        f"\n  TABLE 3b — position separability: first canonical correlation"
-        " between anomaly positions (median over interiors)"
+        f"\n  TABLE 3b — position separability: posterior |correlation| between"
+        " coordinates of different anomalies (median over interiors)"
     )
-    print(f"  {'observation model':22s} {'max ρ':>9} {'mean ρ':>10}   worst pair")
+    print(f"  {'observation model':22s} {'max |ρ|':>9} {'mean |ρ|':>10}   worst pair")
     for k in cases:
         M = cor_p[k]
-        a, b = np.unravel_index(np.argmax(M * off), M.shape)
+        a, b = np.unravel_index(np.argmax(np.abs(M) * off3), M.shape)
         print(
-            f"  {k:22s} {M[off].max():9.3f} {M[off].mean():10.3f}"
-            f"   {names[a]} <-> {names[b]}"
+            f"  {k:22s} {np.abs(M[off3]).max():9.3f} {np.abs(M[off3]).mean():10.3f}"
+            f"   {xyz[a]} <-> {xyz[b]}  ({M[a, b]:+.3f})"
         )
 
     # ── TABLE 4 — how much signal the joint fit consumes ───────────────────
@@ -1725,24 +1702,10 @@ def make_plots(res, outdir="Images"):
     # its neighbour, which is a thing only local data can do.  The "sh"/"net"
     # file tags are the ones this figure has always written, so they are left
     # alone and CH-only takes "ch".
-    #
-    # POSITIONS get the same map, one file per model under a "_position" tag.
-    # A pair of 3-vectors has no single correlation coefficient, so each cell
-    # is the first canonical correlation (`block_correlation`): |rho| when the
-    # parameters are scalars, hence drawn on the red half of the same colour
-    # map so a cell's colour means the same in both figures.  Unsigned, because
-    # the sign of a direction in space is arbitrary.
-    cor_p = res["pos_corr"]
-    half = mpl.colors.LinearSegmentedColormap.from_list(
-        "RdBu_r_half", plt.get_cmap("RdBu_r")(np.linspace(0.5, 1.0, 256))
-    )
-
-    def _corr_map(M, k, fname, signed):
+    for tag, k in zip(("sh", "ch", "net"), (cases[0], cases[1], net_k)):
         fig, ax = plt.subplots(figsize=FS_COR)
-        if signed:
-            im = ax.imshow(M, cmap="RdBu_r", vmin=-1, vmax=1)
-        else:
-            im = ax.imshow(M, cmap=half, vmin=0, vmax=1)
+        M = cor[k]
+        im = ax.imshow(M, cmap="RdBu_r", vmin=-1, vmax=1)
         for a in range(len(names)):
             for b in range(len(names)):
                 if a == b:
@@ -1750,7 +1713,7 @@ def make_plots(res, outdir="Images"):
                 ax.text(
                     b,
                     a,
-                    f"{M[a, b]:+.2f}" if signed else f"{M[a, b]:.2f}",
+                    f"{M[a, b]:+.2f}",
                     ha="center",
                     va="center",
                     fontsize=7.5 * FONT_SCALE,
@@ -1766,22 +1729,70 @@ def make_plots(res, outdir="Images"):
         ax.tick_params(which="minor", length=0)
         ax.set_xlabel(k, fontsize=10 * FONT_SCALE)
         fig.colorbar(
-            im,
-            ax=ax,
-            fraction=0.046,
-            pad=0.04,
-            label=(
-                "Posterior Correlation  [-]"
-                if signed
-                else "Posterior Canonical Correlation  [-]"
-            ),
+            im, ax=ax, fraction=0.046, pad=0.04, label="Posterior Correlation  [-]"
         )
-        G._savefig(fig, os.path.join(outdir, fname), bbox_inches="tight")
+        G._savefig(
+            fig,
+            os.path.join(outdir, f"global_pt2_fig4_separability_{tag}.pdf"),
+            bbox_inches="tight",
+        )
 
+    # ---- FIG 4b: separability of the POSITIONS ----------------------------
+    # The same map for the position experiment, every coordinate of every
+    # anomaly: 6 anomalies x (x, y, z) = 18 rows, body frame (x the long axis,
+    # z the spin axis), so each entry and its sign read physically.  The 3x3
+    # blocks on the diagonal are an anomaly's own coordinates — how its error
+    # ellipsoid is tilted; the blocks off it are the separability, as in FIG 4.
+    # Median over interiors, elementwise, as FIG 4.
+    cor_p = res["pos_corr"]
+    n3 = 3 * len(names)
+    mid = 3 * np.arange(len(names)) + 1  # centre row/column of each anomaly
     for tag, k in zip(("sh", "ch", "net"), (cases[0], cases[1], net_k)):
-        _corr_map(cor[k], k, f"global_pt2_fig4_separability_{tag}.pdf", True)
-        _corr_map(
-            cor_p[k], k, f"global_pt2_fig4_separability_position_{tag}.pdf", False
+        fig, ax = plt.subplots(figsize=FS_COR3)
+        M = cor_p[k]
+        im = ax.imshow(M, cmap="RdBu_r", vmin=-1, vmax=1)
+        for a in range(n3):
+            for b in range(n3):
+                if a == b:
+                    continue
+                ax.text(
+                    b,
+                    a,
+                    f"{M[a, b]:+.2f}".replace("0.", "."),
+                    ha="center",
+                    va="center",
+                    fontsize=5.4 * FONT_SCALE,
+                    color="w" if abs(M[a, b]) > 0.55 else "0.15",
+                )
+        # two-level labels: the coordinate at every row, the anomaly once per
+        # block, further out
+        ax.set_xticks(range(n3))
+        ax.set_yticks(range(n3))
+        ax.set_xticklabels(list("xyz") * len(names), fontsize=6 * FONT_SCALE)
+        ax.set_yticklabels(list("xyz") * len(names), fontsize=6 * FONT_SCALE)
+        ax.tick_params(length=0, pad=2)
+        for loc, axis in ((ax.secondary_xaxis("bottom"), "x"),
+                          (ax.secondary_yaxis("left"), "y")):
+            (loc.set_xticks if axis == "x" else loc.set_yticks)(mid, short)
+            loc.tick_params(length=0, pad=14 if axis == "x" else 12,
+                            labelsize=7 * FONT_SCALE)
+            for sp in loc.spines.values():
+                sp.set_visible(False)
+        ax.set_xticks(np.arange(n3 + 1) - 0.5, minor=True)
+        ax.set_yticks(np.arange(n3 + 1) - 0.5, minor=True)
+        ax.grid(which="minor", color="w", lw=0.5)
+        ax.tick_params(which="minor", length=0)
+        for e in 3 * np.arange(1, len(names)) - 0.5:  # anomaly boundaries
+            ax.axhline(e, color="0.2", lw=1.0)
+            ax.axvline(e, color="0.2", lw=1.0)
+        ax.set_xlabel(k, fontsize=10 * FONT_SCALE, labelpad=30)
+        fig.colorbar(
+            im, ax=ax, fraction=0.046, pad=0.04, label="Posterior Correlation  [-]"
+        )
+        G._savefig(
+            fig,
+            os.path.join(outdir, f"global_pt2_fig4b_separability_position_{tag}.pdf"),
+            bbox_inches="tight",
         )
 
     # ---- FIG 5: coefficient residuals, before and after the fit ------------
@@ -2446,9 +2457,9 @@ if __name__ == "__main__":
         "global_pt2_fig4_separability_sh.pdf",
         "global_pt2_fig4_separability_ch.pdf",
         "global_pt2_fig4_separability_net.pdf",
-        "global_pt2_fig4_separability_position_sh.pdf",
-        "global_pt2_fig4_separability_position_ch.pdf",
-        "global_pt2_fig4_separability_position_net.pdf",
+        "global_pt2_fig4b_separability_position_sh.pdf",
+        "global_pt2_fig4b_separability_position_ch.pdf",
+        "global_pt2_fig4b_separability_position_net.pdf",
         "global_pt2_fig5_coefficients_sh.pdf",
         "global_pt2_fig5_coefficients_ch.pdf",
         "global_pt2_fig6c_lsh_mass_prior_ratio.pdf",
