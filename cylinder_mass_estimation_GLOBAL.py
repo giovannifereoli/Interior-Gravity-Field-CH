@@ -3982,6 +3982,7 @@ def bouguer_map(
     at="sphere",
     F=None,
     clearance=0.02,
+    percent=True,
 ):
     """
     BOUGUER MAP: the heterogeneous truth MINUS the constant-density shape model,
@@ -4001,6 +4002,13 @@ def bouguer_map(
     the sign flipped so that a mass EXCESS reads positive, as a gravity anomaly
     conventionally does (this file stores accelerations as a = +grad U, so
     a . rhat is negative outside a positive mass).
+
+    `percent` (default) plots it RELATIVE to the constant-density polyhedron's
+    own radial gravity at the same point, 100 Δg_r / g_r,CD [%], so the map
+    reads as "how far the truth departs from the homogeneous body, here" and
+    the sphere and surface maps share a currency despite g falling off with
+    altitude.  The reference carries the same total mass as the truth, so it
+    is `bulk.field` itself, unscaled.  percent=False keeps Δg_r in LU^-2.
 
     WHERE it is evaluated, `at`:
 
@@ -4064,6 +4072,10 @@ def bouguer_map(
     )
     n = len(obs)
     dgr = -(d[n : 2 * n] * ux + d[2 * n : 3 * n] * uy + d[3 * n :] * uz)
+    if percent:
+        a_cd = bulk.field(obs)
+        g_cd = -(a_cd[n : 2 * n] * ux + a_cd[2 * n : 3 * n] * uy + a_cd[3 * n :] * uz)
+        dgr = 100.0 * dgr / g_cd
     dgr = dgr.reshape(LAT.shape)
 
     fig, ax = plt.subplots(figsize=(10.2, 5.2))
@@ -4099,7 +4111,11 @@ def bouguer_map(
     # let the locator pick round ticks: the contour levels are a linspace and
     # reusing them put values like 0.2631 on the bar
     cb = fig.colorbar(c, ax=ax, pad=0.02, fraction=0.030)
-    cb.set_label(r"$\Delta g_r$ [LU$^{-2}$]")
+    cb.set_label(
+        r"$\Delta g_r / g_{r,\mathrm{CD}}$  " + (r"[$\%$]" if USE_TEX else "[%]")
+        if percent
+        else r"$\Delta g_r$ [LU$^{-2}$]"
+    )
 
     # ONE MARKER SHAPE PER ANOMALY, named in the legend rather than written on
     # the map: six labels on a 360x180 field collide with each other and with
