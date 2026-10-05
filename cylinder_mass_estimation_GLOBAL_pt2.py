@@ -1614,12 +1614,14 @@ def make_plots(res, outdir="Images"):
     )
 
     # FIG 3 — POSITIONS  (same two panels, same order, same two files)
-    pe = res["pos_err"]
+    # ticks = TABLE 2's 1σ (pred) column: RMS over the interiors of each
+    # anomaly's marginal 3x3 posterior_norm, the same reduction as fig 2
+    pe, ps = res["pos_err"], res["pos_sig"]
     fig, ax = plt.subplots(figsize=FS_BAR)
     _cases_panel(
         ax,
         {k: rms(pe[k]) for k in cases},
-        None,
+        {k: rms(ps[k]) for k in cases},
         "Position RMS Error  [LU]  (MC)",
         "The same patches, recovering position instead of mass",
     )
