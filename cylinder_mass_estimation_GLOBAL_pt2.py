@@ -1457,7 +1457,30 @@ def make_plots(res, outdir="Images"):
         ax.set_ylabel(ylabel)
         ax.grid(True, axis="y", which="both", ls=":", alpha=0.45)
         ax.set_axisbelow(True)
-        ax.legend(fontsize=8 * FONT_SCALE, ncol=2)
+        # LEGEND HEADROOM.  The key is pinned top-left and the log axis is raised
+        # just enough that its box clears every bar and tick beneath it.  With
+        # loc="best" the six-entry key (five models + the 1σ tick) landed on the
+        # first group's tallest bar of the position panel.  Each panel gets only
+        # the headroom its own key needs (the mass panel rises slightly).
+        leg = ax.legend(fontsize=8 * FONT_SCALE, ncol=2, loc="upper left")
+        ax.figure.canvas.draw()
+        bb = leg.get_window_extent().transformed(ax.transAxes.inverted())
+        x0, x1 = ax.transData.inverted().transform(
+            ax.transAxes.transform([[bb.x0, 0.0], [bb.x1, 0.0]])
+        )[:, 0]
+        under = [
+            p.get_height()
+            for p in ax.patches
+            if p.get_x() < x1 and p.get_x() + p.get_width() > x0
+        ]
+        for ln in ax.lines:
+            xd, yd = np.asarray(ln.get_xdata(), float), np.asarray(ln.get_ydata(), float)
+            under += list(yd[(xd > x0) & (xd < x1)])
+        lo, hi = ax.get_ylim()
+        f = bb.y0 - 0.03  # axes fraction left below the key, small gap
+        need = 10 ** (np.log10(lo) + np.log10(max(under) / lo) / f)
+        if need > hi:
+            ax.set_ylim(lo, need)
 
     def _hist_panel(series, show, xlabel, fname):
         """
